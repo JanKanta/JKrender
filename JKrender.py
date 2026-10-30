@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -27,6 +27,12 @@ import threading
 import time
 from pathlib import Path
 
+# numpy and OpenEXR for the EXR preview, shipped next to this file for Nuke's Python.
+# Appended, so a Python that has its own copies keeps using them.
+_LIB = Path(__file__).resolve().with_name("lib")
+if _LIB.is_dir():
+    sys.path.append(str(_LIB))
+
 try:
     from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 except ImportError:
@@ -37,7 +43,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.4 alpha"
+APP_VERSION = "0.5 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")

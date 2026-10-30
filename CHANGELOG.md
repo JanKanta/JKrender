@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5 alpha — 2026-10-30
+
+### Install
+
+- The JKrender folder is all a colleague needs.
+  - Run `install.bat` to put the folder on Nuke's plugin path. It adds one line to `~/.nuke/init.py`.
+  - Restart Nuke. The folder's `menu.py` adds the JKrender menu.
+  - `INSTALACE.txt` has the steps in Czech.
+- The window runs in Nuke's own Python, which already has PySide6 and psutil, so nothing needs installing.
+  - numpy and OpenEXR for the EXR preview ship in `lib/`.
+  - Set `JKRENDER_PYTHON` to use another Python.
+  - Without Nuke's Python, JKrender looks for an external one as before.
+
+### Logs
+
+- Each render's folder (script snapshot, job file and the log of every Nuke process) now goes to `log/` next to `JKrender.py`, instead of `~/.jkrender/renders/`.
+  - If that folder is read-only, they go to `~/.jkrender/renders/` as before.
+  - JKrender → Open Renders Folder opens `log/`.
+- Settings stay per user in `~/.jkrender/settings.json`.
+
 ## 0.4 alpha — 2026-10-30
 
 - The JKrender menu in Nuke has two items: Render Selected Write(s) (Ctrl+Alt+R) and Open Renders Folder.

@@ -4,9 +4,9 @@ JKrender > Render Selected Write(s) saves a snapshot of the script, writes a job
 JKrender window for that render. The window and its Nuke processes are separate from this Nuke,
 so you keep working (and saving) while it renders.
 
-menu.py:
-    import JKrender_NukeIntegration as _jk
-    _jk.install_menu()
+Put the whole JKrender folder on Nuke's plugin path (install.bat does it); its menu.py adds the menu.
+The window runs in Nuke's own Python, and each render's snapshot, job file and logs go to the
+log folder next to JKrender.py.
 """
 
 import datetime
@@ -22,8 +22,9 @@ from pathlib import Path
 
 import nuke
 
+HERE = Path(__file__).resolve().parent
 NUKE_DIR = Path.home() / ".nuke"
-RENDERS_DIR = Path.home() / ".jkrender" / "renders"
+FALLBACK_RENDERS_DIR = Path.home() / ".jkrender" / "renders"  # when the folder next to JKrender.py is read-only
 CONFIG_PATH = NUKE_DIR / "jkrender_path.txt"  # location of JKrender.py
 PYTHON_CACHE = NUKE_DIR / "jkrender_python.txt"  # external Python that has PySide6
 DEFAULT_APP = Path.home() / "JKrender" / "JKrender.py"
@@ -157,7 +158,7 @@ def _nuke_executable():
     return exe if "nuke" in Path(exe).name.lower() else ""
 
 
-def _make_job(writes, current_frame_only=False):
+def _make_job(writes, renders_dir, current_frame_only=False):
     script = _script_path()
     if not script:
         return None
@@ -172,7 +173,7 @@ def _make_job(writes, current_frame_only=False):
         first, last = int(root["first_frame"].value()), int(root["last_frame"].value())
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     label = re.sub(r"[^A-Za-z0-9_.-]+", "_", "%s_%s" % (Path(script).stem, writes[0].fullName()))
-    folder = RENDERS_DIR / ("%s_%s" % (stamp, label))
+    folder = renders_dir / ("%s_%s" % (stamp, label))
     folder.mkdir(parents=True, exist_ok=True)
     snapshot = folder / ("snapshot_" + Path(script).name)
     shutil.copy2(script, snapshot)  # you can keep working and saving; the render uses this copy
@@ -205,10 +206,18 @@ def _make_job(writes, current_frame_only=False):
 # ----------------------------------------------------------------------------
 # Launching the window (external Python with PySide6, never Nuke's own)
 # ----------------------------------------------------------------------------
-def _app_path():
-    for value in (os.environ.get("JKRENDER", ""), _read(CONFIG_PATH), str(DEFAULT_APP)):
+def _known_app():
+    """JKrender.py: next to this file when the whole folder is on Nuke's plugin path."""
+    for value in (os.environ.get("JKRENDER", ""), str(HERE / "JKrender.py"), _read(CONFIG_PATH), str(DEFAULT_APP)):
         if value and Path(value).is_file():
             return value
+    return ""
+
+
+def _app_path():
+    known = _known_app()
+    if known:
+        return known
     path = nuke.getFilename("Locate JKrender.py", "*.py")
     if path and Path(path).is_file():
         try:
@@ -224,6 +233,43 @@ def _read(path):
         return path.read_text(encoding="utf-8").strip()
     except Exception:
         return ""
+
+
+def _renders_dir(app=None):
+    """Render folders (snapshot, job, logs) go to the log folder next to JKrender.py."""
+    app = app or _known_app()
+    if app:
+        folder = Path(app).resolve().parent / "log"
+        try:
+            folder.mkdir(exist_ok=True)
+            probe = folder / ".write_test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return folder
+        except Exception:
+            pass
+    return FALLBACK_RENDERS_DIR
+
+
+def _nuke_python():
+    """Nuke's own Python with Nuke's PySide6 and psutil, so nothing has to be installed.
+
+    Returns (python, environment), or None when this Nuke does not ship them."""
+    exe = Path(os.path.abspath(os.sys.executable))
+    if "nuke" not in exe.name.lower():
+        return None
+    folder = exe.parent
+    python_exe = folder / ("python.exe" if os.name == "nt" else "python3")
+    site = folder / "pythonextensions" / "site-packages"
+    if not python_exe.is_file() or not (site / "PySide6").is_dir():
+        return None
+    env = dict(os.environ)
+    for key in ("PYTHONHOME", "PYTHONSTARTUP", "QML2_IMPORT_PATH", "PYSIDE_DESIGNER_PLUGINS"):
+        env.pop(key, None)
+    env["PYTHONPATH"] = str(site)
+    env["QT_PLUGIN_PATH"] = str(folder / "qtplugins")
+    env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
+    return str(python_exe), env
 
 
 def _python_candidates():
@@ -281,18 +327,22 @@ def _has_pyside6(python_exe, env):
 
 def _launch(app, job_paths):
     """Background thread, so Nuke never waits for the Python check. One launch carries every render."""
-    env = _clean_env()
-    python_exe = next((exe for exe in _python_candidates() if _has_pyside6(exe, env)), None)
-    if not python_exe:
-        nuke.executeInMainThread(nuke.message, args=(
-            "JKrender needs an external Python with PySide6 and psutil.\n\n"
-            "Install them with:  python -m pip install PySide6 psutil\n"
-            "or set JKRENDER_PYTHON to that python executable.",))
-        return
-    try:
-        PYTHON_CACHE.write_text(python_exe, encoding="utf-8")
-    except Exception:
-        pass
+    own = None if os.environ.get("JKRENDER_PYTHON") else _nuke_python()
+    if own and _has_pyside6(*own):
+        python_exe, env = own
+    else:
+        env = _clean_env()
+        python_exe = next((exe for exe in _python_candidates() if _has_pyside6(exe, env)), None)
+        if not python_exe:
+            nuke.executeInMainThread(nuke.message, args=(
+                "JKrender needs a Python with PySide6 and psutil.\n\n"
+                "Install them with:  python -m pip install PySide6 psutil\n"
+                "or set JKRENDER_PYTHON to that python executable.",))
+            return
+        try:
+            PYTHON_CACHE.write_text(python_exe, encoding="utf-8")
+        except Exception:
+            pass
     kwargs = {"cwd": str(Path(app).parent), "env": env}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
@@ -312,11 +362,12 @@ def _render(current_frame_only=False):
     app = _app_path()
     if not app:
         return
+    renders_dir = _renders_dir(app)
     # Every Write is its own render: its own card, range, chunks and output check in JKrender.
     job_paths = []
     for node in writes:
         try:
-            job_path = _make_job([node], current_frame_only)
+            job_path = _make_job([node], renders_dir, current_frame_only)
         except Exception as exc:
             nuke.message("JKrender could not prepare %s:\n%s" % (node.fullName(), exc))
             continue
@@ -332,11 +383,12 @@ def render_selected():
 
 
 def open_renders_folder():
-    RENDERS_DIR.mkdir(parents=True, exist_ok=True)
+    folder = _renders_dir()
+    folder.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        os.startfile(str(RENDERS_DIR))
+        os.startfile(str(folder))
     else:
-        subprocess.Popen(["open" if os.sys.platform == "darwin" else "xdg-open", str(RENDERS_DIR)])
+        subprocess.Popen(["open" if os.sys.platform == "darwin" else "xdg-open", str(folder)])
 
 
 # ----------------------------------------------------------------------------

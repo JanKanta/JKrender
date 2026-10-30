@@ -1,0 +1,16 @@
+JKrender - instalace
+
+1. Zkopíruj celou složku JKrender tam, kde zůstane (např. C:\Tools\JKrender).
+   Když ji později přesuneš, spusť install.bat znovu.
+2. Spusť install.bat (dvojklik). Přidá jeden řádek do %USERPROFILE%\.nuke\init.py.
+3. Restartuj Nuke.
+
+Použití: označ Write (nebo Group s Writy) a dej JKrender > Render Selected Write(s), nebo Ctrl+Alt+R.
+
+Nic dalšího se instalovat nemusí: okno běží v Pythonu, který má Nuke v sobě.
+Napsané pro Nuke 16 na Windows.
+
+Volitelně: pro informace o MOV a přehrávač MOV nainstaluj ffmpeg:  winget install ffmpeg
+
+Logy, kopie skriptu a job každého renderu jsou ve složce log vedle JKrender.py.
+Odinstalace: smaž v %USERPROFILE%\.nuke\init.py řádek s "# JKrender".
