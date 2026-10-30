@@ -1,10 +1,12 @@
 # JKrender
 
+![JKrender rendering a 4K comp: 8 Nuke processes on the timeline, chunks under the progress bar, and the EXR preview of a finished frame](docs/screenshot.png)
+
 Fast local rendering for Nuke. JKrender splits a render into chunks and renders them in several
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.6 alpha.** It works in tests; expect rough edges.
+**Version 0.7 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 

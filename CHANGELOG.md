@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7 alpha — 2026-10-30
+
+- README: a screenshot of a 4K comp rendering in 8 Nuke processes, with the EXR preview.
+- Output: in a low window, the frame preview shrinks instead of being drawn over the frame info under it.
+
 ## 0.6 alpha — 2026-10-30
 
 - Install like JKplayer: copy the JKrender folder into `~/.nuke` and add `nuke.pluginAddPath("./JKrender")` to `~/.nuke/init.py`. `install.bat` is gone.
