@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13 alpha — 2026-10-30
+
+- RAM guard: when RAM runs over, the process started last closes first (W08, then W07, ...).
+  - A replacement such as "W01 started again" counts as the newest.
+  - 0.11 went by when a process started its first frame. All processes open the script within the same second, so that picked one at random; on the CTH comp it closed W01 first.
+- The orange progress bar between the stats and the chunk map is gone; the chunk map and Frames show the progress.
+
 ## 0.12 alpha — 2026-10-30
 
 - Settings → Auto-tune processes now holds everything that changes the number of Nuke processes.
