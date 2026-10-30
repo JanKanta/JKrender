@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 alpha — 2026-10-30
+
+- `INSTALL.txt` now really has the steps in English (0.7.1 renamed the file but kept the Czech text).
+
 ## 0.7.1 alpha — 2026-10-30
 
 - The install note is in English: `INSTALACE.txt` is now `INSTALL.txt`.
