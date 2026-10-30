@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 alpha — 2026-10-30
+
+- System: the RAM used column shows only what each Nuke process takes (e.g. 11.3 GB), without the RAM setting next to it.
+
 ## 0.9 alpha — 2026-10-30
 
 - A process that had to close (RAM guard, recycled) is replaced under its own name and on its own timeline row: W01 starts again instead of a new W09.

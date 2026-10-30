@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.9 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.9.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.9 alpha"
+APP_VERSION = "0.9.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3485,7 +3485,7 @@ class MainWindow(QtWidgets.QMainWindow):
             gone = w.state == "gone"
             values = ["%d  %s" % (x.number, x.name), w.name, str(w.proc.pid), w.state if not gone else "closed (%s)" % w.exit_code,
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
-                      "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f / %d GB" % (w.rss, w.ram),
+                      "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else ""]
             for col, v in enumerate(values):
                 item = t.item(row, col)
