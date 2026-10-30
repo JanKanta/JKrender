@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.11 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.12 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.11 alpha"
+APP_VERSION = "0.12 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -62,7 +62,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_limit": 90,
                     "test_frames": True, "test_pause": False, "auto_chunk": True}
 TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
@@ -1315,6 +1315,8 @@ class RenderEngine:
     def _make_test_chunks(self):
         """First, middle and last frame go first, each on its own, so a broken output shows up in seconds."""
         self.test = None
+        for c in self.chunks:  # test chunks left over from a stopped run are ordinary chunks now
+            c.test = False
         if not self.settings.get("test_frames", True) or self.movie:
             return
         queued = sorted(f for f, fr in self.frames.items() if fr.state == "queued")
@@ -1479,7 +1481,7 @@ class RenderEngine:
     def _fit_ram(self):
         """Start only as many processes as fit in RAM, from what this script took last time, so the RAM guard
         does not have to close any in the middle of a frame."""
-        if not psutil or not self.manager or not self.settings.get("ram_guard", True) or self.movie:
+        if not psutil or not self.manager or not self.settings.get("auto_tune", True) or self.movie:
             return
         need = self.ram_need()
         m = self.manager
@@ -1755,7 +1757,7 @@ class RenderManager:
         if not psutil or now - self._ram_checked < 2:
             return
         self._ram_checked = now
-        if not self.settings.get("ram_guard", True):
+        if not self.settings.get("auto_tune", True):
             self.ram_cap = None
             return
         limit = float(self.settings.get("ram_limit", 90))
@@ -2941,28 +2943,32 @@ class MainWindow(QtWidgets.QMainWindow):
         # -- speed and safety
         right = column("Speed and safety")
         self.c_tune = check(right, "Auto-tune processes", "auto_tune", True,
-                            "On the first frames of a render with at least %d frames, try the processes as set\n"
-                            "(e.g. 8 x 4 threads) and half as many with twice the threads (4 x 8), and keep the faster.\n"
-                            "The winner is remembered for that script; later renders of it start with it." % TUNE_MIN_FRAMES)
-        tuned = QtWidgets.QPushButton("Forget tuned scripts")
-        tuned.setToolTip("Auto-tune measures every script again on its next render")
-        tuned.clicked.connect(self._forget_tuned)
-        spin_row(right, "", tuned)
-        self.c_chunk_auto = check(right, "Auto chunk size", "auto_chunk", True,
-                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
-                                  "so every Nuke process finishes at about the same time.\n"
-                                  "Off: every chunk keeps the size set under Chunk.")
-        self.c_guard = check(right, "RAM guard", "ram_guard", True,
-                             "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first);\n"
-                             "close to full, one is closed at once. The newest go first, so the least work is lost.\n"
-                             "They come back when they fit again. JKrender remembers what one process of a script takes,\n"
-                             "so later renders of it start only as many as fit.")
+                            "Everything that changes the number of Nuke processes. Off: exactly the processes set\n"
+                            "under Nuke processes run, from start to end.\n\n"
+                            "On:\n"
+                            "- Split: on the first frames of a render with at least %d frames, try the processes as set\n"
+                            "  (e.g. 8 x 4 threads) and half as many with twice the threads (4 x 8), and keep the faster.\n"
+                            "- RAM guard: over the RAM limit fewer processes run, the newest closing first, so the least\n"
+                            "  work is lost; they come back when they fit again.\n"
+                            "- Both are remembered per script: later renders start with the faster split and only as\n"
+                            "  many processes as fit in RAM." % TUNE_MIN_FRAMES, self._tune_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
         self.s_limit.setSuffix(" %")
         self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
+        self.s_limit.setToolTip("Auto-tune keeps RAM under this")
         self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
-        spin_row(right, "RAM limit", self.s_limit)
+        spin_row(right, "      RAM limit", self.s_limit)
+        self.b_forget = QtWidgets.QPushButton("Forget tuned scripts")
+        self.b_forget.setToolTip("Forget the split and the RAM per process found for every script;\n"
+                                 "auto-tune measures each again on its next render")
+        self.b_forget.clicked.connect(self._forget_tuned)
+        spin_row(right, "     ", self.b_forget)
+        self._tune_changed(self.c_tune.isChecked(), save=False)
+        self.c_chunk_auto = check(right, "Auto chunk size", "auto_chunk", True,
+                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
+                                  "so every Nuke process finishes at about the same time.\n"
+                                  "Off: every chunk keeps the size set under Chunk.")
         self.c_test = check(right, "Render test frames first", "test_frames", True,
                             "First, middle and last frame render before the rest. If one is broken on disk the render\n"
                             "pauses; if they are fine you get an estimate of the whole render.")
@@ -2974,8 +2980,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _forget_tuned(self):
         self.settings["tuned"] = {}
+        self.settings["script_ram"] = {}
         write_settings(self.settings)
-        self.engine.note("Tuned splits forgotten; auto-tune measures each script again", "ok")
+        self.engine.note("Tuned splits and RAM per process forgotten; auto-tune measures each script again", "ok")
+
+    def _tune_changed(self, on, save=True):
+        if save:
+            self._save_setting("auto_tune", on)
+        for widget in (self.s_limit, self.b_forget):
+            widget.setEnabled(on)
 
     def _all_workers_changed(self, on):
         self._save_setting("show_all_workers", on)
