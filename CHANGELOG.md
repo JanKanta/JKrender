@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4 alpha — 2026-10-30
+
+- The JKrender menu in Nuke has two items: Render Selected Write(s) (Ctrl+Alt+R) and Open Renders Folder.
+  - Removed: Render Selected Write(s) - Current Frame.
+  - Removed: the Include Writes inside Groups toggle. A selected Group now always renders the Writes inside it.
+
 ## 0.3 alpha — 2026-10-30
 
 - **Auto chunk size** (Settings → Speed and safety, on by default). A process is given at most
