@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.13 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.14 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.13 alpha"
+APP_VERSION = "0.14 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -62,7 +62,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
                     "test_frames": True, "test_pause": False, "auto_chunk": True}
 TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
@@ -1478,7 +1478,8 @@ class RenderEngine:
     def _fit_ram(self):
         """Start only as many processes as fit in RAM, from what this script took last time, so the RAM guard
         does not have to close any in the middle of a frame."""
-        if not psutil or not self.manager or not self.settings.get("auto_tune", True) or self.movie:
+        if (not psutil or not self.manager or self.movie or not self.settings.get("auto_tune", True)
+                or not self.settings.get("ram_guard", True)):
             return
         need = self.ram_need()
         m = self.manager
@@ -1754,7 +1755,7 @@ class RenderManager:
         if not psutil or now - self._ram_checked < 2:
             return
         self._ram_checked = now
-        if not self.settings.get("auto_tune", True):
+        if not self.settings.get("ram_guard", True):
             self.ram_cap = None
             return
         limit = float(self.settings.get("ram_limit", 90))
@@ -2936,28 +2937,38 @@ class MainWindow(QtWidgets.QMainWindow):
         # -- speed and safety
         right = column("Speed and safety")
         self.c_tune = check(right, "Auto-tune processes", "auto_tune", True,
-                            "Everything that changes the number of Nuke processes. Off: exactly the processes set\n"
-                            "under Nuke processes run, from start to end.\n\n"
+                            "Off: exactly the processes set under Nuke processes start.\n\n"
                             "On:\n"
                             "- Split: on the first frames of a render with at least %d frames, try the processes as set\n"
                             "  (e.g. 8 x 4 threads) and half as many with twice the threads (4 x 8), and keep the faster.\n"
-                            "- RAM guard: over the RAM limit fewer processes run, the newest closing first, so the least\n"
-                            "  work is lost; they come back when they fit again.\n"
-                            "- Both are remembered per script: later renders start with the faster split and only as\n"
-                            "  many processes as fit in RAM." % TUNE_MIN_FRAMES, self._tune_changed)
-        self.s_limit = QtWidgets.QSpinBox()
-        self.s_limit.setRange(50, 98)
-        self.s_limit.setSuffix(" %")
-        self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
-        self.s_limit.setToolTip("Auto-tune keeps RAM under this")
-        self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
-        spin_row(right, "      RAM limit", self.s_limit)
+                            "- Start only as many processes as fit under the RAM limit, from the RAM one process of the\n"
+                            "  script took last time (needs RAM limit on).\n"
+                            "Both are remembered per script." % TUNE_MIN_FRAMES, self._tune_changed)
         self.b_forget = QtWidgets.QPushButton("Forget tuned scripts")
         self.b_forget.setToolTip("Forget the split and the RAM per process found for every script;\n"
                                  "auto-tune measures each again on its next render")
         self.b_forget.clicked.connect(self._forget_tuned)
         spin_row(right, "     ", self.b_forget)
         self._tune_changed(self.c_tune.isChecked(), save=False)
+        limit_row = QtWidgets.QHBoxLayout()
+        self.c_guard = QtWidgets.QCheckBox("RAM limit")
+        self.c_guard.setChecked(bool(self.settings.get("ram_guard", True)))
+        self.c_guard.setToolTip("Works with Auto-tune on or off. When RAM goes over the limit, fewer Nuke processes run:\n"
+                                "the one started last closes first, so the least work is lost (close to full at once,\n"
+                                "otherwise after its chunk). They come back when they fit again.\n"
+                                "Off: nothing watches RAM; Windows starts swapping when it runs out.")
+        self.c_guard.toggled.connect(self._guard_changed)
+        self.s_limit = QtWidgets.QSpinBox()
+        self.s_limit.setRange(50, 98)
+        self.s_limit.setSuffix(" %")
+        self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
+        self.s_limit.setToolTip("RAM use of the whole PC to stay under")
+        self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
+        self.s_limit.setEnabled(self.c_guard.isChecked())
+        limit_row.addWidget(self.c_guard)
+        limit_row.addWidget(self.s_limit)
+        limit_row.addStretch(1)
+        right.addLayout(limit_row)
         self.c_chunk_auto = check(right, "Auto chunk size", "auto_chunk", True,
                                   "Chunks get smaller towards the end of a render, down to single frames,\n"
                                   "so every Nuke process finishes at about the same time.\n"
@@ -2980,8 +2991,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _tune_changed(self, on, save=True):
         if save:
             self._save_setting("auto_tune", on)
-        for widget in (self.s_limit, self.b_forget):
-            widget.setEnabled(on)
+        self.b_forget.setEnabled(on)
+
+    def _guard_changed(self, on):
+        self._save_setting("ram_guard", on)
+        self.s_limit.setEnabled(on)
 
     def _all_workers_changed(self, on):
         self._save_setting("show_all_workers", on)

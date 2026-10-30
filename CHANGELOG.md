@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14 alpha — 2026-10-30
+
+- Settings → RAM limit is its own checkbox again, separate from Auto-tune processes, and works with Auto-tune on or off.
+  - When RAM goes over the limit, the process started last closes first.
+  - Off: nothing watches RAM.
+- Auto-tune processes now does the split comparison and starts only as many processes as fit (the latter needs RAM limit on).
+- With Auto-tune off, all processes set start; only the RAM limit can close some.
+
 ## 0.13 alpha — 2026-10-30
 
 - RAM guard: when RAM runs over, the process started last closes first (W08, then W07, ...).
