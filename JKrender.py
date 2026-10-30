@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -37,7 +37,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.1 alpha"
+APP_VERSION = "0.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -51,7 +51,9 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3}
+DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
+                    "test_frames": True, "test_pause": False}
+TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
@@ -486,6 +488,7 @@ class Chunk:
         self.frames = list(frames)  # frames still to render
         self.all_frames = list(frames)
         self.whole_range = whole_range
+        self.test = False  # one of the test frames that go first
         self.state = "queued"  # queued / rendering / done / failed
         self.worker = None
         self.attempts = 0
@@ -615,6 +618,10 @@ class RenderEngine:
         self.everything = False
         self.resume_state = "ready"
         self.movie_info = None  # probe_movie() of the movie file, for movie output
+        self.proc_cap = None  # auto-tune's process count for this render, None = whatever the manager gives
+        self.tune = None  # auto-tune in progress
+        self.test = None  # test frames in progress
+        self.notice = None  # (text, "ok" / "warn" / "bad") for the banner while rendering
         self.rebuild_plan()
 
     # ---- planning -----------------------------------------------------------
@@ -717,10 +724,15 @@ class RenderEngine:
         self.paused_at = None
         self.pauses = []
         self.done_times.clear()
-        self.note("Render started: %d frames in %d chunks, %d workers x %d threads, %d GB each"
+        self.notice = None
+        self.proc_cap = None
+        if self.manager:
+            self.threads = self.manager.threads
+        self._make_test_chunks()
+        self.note("Render started: %d frames in %d chunks, %d threads and %d GB per Nuke process"
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
-                     sum(1 for c in self.chunks if c.state == "queued"),
-                     self.workers_target, self.threads, self.ram))
+                     sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
+        self._tune_start()
 
     def scan_disk(self):
         """Mark frames the Write already rendered as done, so only the rest gets rendered.
@@ -1033,6 +1045,8 @@ class RenderEngine:
             self._flag_small()
         if self.state in ("rendering", "paused"):
             self._schedule()
+            self._test_step()
+            self._tune_step()
             changed = True
         elif self.state == "finishing" and self.pending_checks <= 0:
             self._finish()
@@ -1250,6 +1264,157 @@ class RenderEngine:
         for f in self.frames:
             self._submit_check(f)
 
+    # ---- test frames ----------------------------------------------------------
+    def _make_test_chunks(self):
+        """First, middle and last frame go first, each on its own, so a broken output shows up in seconds."""
+        self.test = None
+        if not self.settings.get("test_frames", True) or self.movie:
+            return
+        queued = sorted(f for f, fr in self.frames.items() if fr.state == "queued")
+        if len(queued) < 6:
+            return
+        picks = sorted({queued[0], queued[len(queued) // 2], queued[-1]})
+        for c in list(self.chunks):
+            if c.state == "queued" and set(c.frames) & set(picks):
+                c.frames = [f for f in c.frames if f not in picks]
+                c.all_frames = [f for f in c.all_frames if f not in picks]
+                if not c.all_frames:
+                    self.chunks.remove(c)
+        for f in picks:
+            c = Chunk(self.next_cid, [f])
+            c.test = True
+            self.next_cid += 1
+            self.chunks.append(c)
+            self.frames[f].chunk = c.name
+        self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))
+        self.test = {"frames": picks, "reported": False}
+        self.note("Test frames first: %s" % ", ".join(str(f) for f in picks))
+
+    def _test_step(self):
+        t = self.test
+        if not t or t["reported"]:
+            return
+        frames = [self.frames[f] for f in t["frames"]]
+        if any(fr.state in ("queued", "rendering") for fr in frames):
+            return
+        if any(fr.state == "done" and not fr.checks for fr in frames):
+            return  # their output check is still running
+        t["reported"] = True
+        bad = [f for f in t["frames"] if self.frames[f].state in ("bad", "failed")]
+        if bad:
+            self.notice = ("Test frame %s is broken on disk. The render is paused: look at it in Output, then "
+                           "Resume or Stop." % ", ".join(str(f) for f in bad), "bad")
+            self.note("!! " + self.notice[0], "err")
+            self.pause()
+            return
+        secs = [self.frames[f].secs for f in t["frames"] if self.frames[f].secs]
+        left = sum(1 for fr in self.frames.values() if fr.state in ("queued", "rendering"))
+        procs = max(1, self.proc_cap or (self.manager.budget() if self.manager else self.workers_target))
+        text = "Test frames %s are fine" % ", ".join(str(f) for f in t["frames"])
+        if secs:
+            avg = sum(secs) / len(secs)
+            text += " (%.1f s each). The other %d frames should take about %s." % (avg, left, fmt_secs(left * avg / procs))
+        self.note(text, "ok")
+        if self.settings.get("test_pause"):
+            self.notice = (text + " Paused: press Resume to render the rest.", "ok")
+            self.pause()
+        else:
+            self.notice = (text, "ok")
+
+    # ---- auto-tune ------------------------------------------------------------
+    def _tune_start(self):
+        """Try two splits of the PC on the first frames (e.g. 8 x 4 threads, then 4 x 8) and keep the faster.
+
+        A comp that one Nuke uses well renders faster with fewer, wider processes; one that it uses
+        badly, with more narrow ones. The winner is remembered for this script."""
+        self.tune = None
+        if not self.settings.get("auto_tune", True) or self.movie or self.manager is None:
+            return
+        remembered = (self.settings.get("tuned") or {}).get(self.name)
+        if remembered:
+            self.threads, self.proc_cap = int(remembered["threads"]), int(remembered["procs"])
+            self.note("Using the split found earlier for this script: %d Nuke processes x %d threads"
+                      % (self.proc_cap, self.threads))
+            return
+        queued = sum(len(c.frames) for c in self.chunks if c.state == "queued")
+        if queued < TUNE_MIN_FRAMES:
+            return
+        if any(e is not self and e.state in ("rendering", "paused", "finishing") for e in self.manager.engines):
+            self.note("Auto-tune skipped: other renders share the PC")
+            return
+        procs, threads = self.manager.budget(), self.manager.threads
+        cpu = os.cpu_count() or 8
+        wide = (max(1, procs // 2), min(cpu, threads * 2))
+        if wide[0] == procs:
+            return
+        self.tune = {"configs": [(procs, threads), wide], "i": 0, "phase": "warm", "rates": [], "budget": procs}
+        self.proc_cap = procs
+        self.note("Auto-tune: comparing %d x %d threads with %d x %d threads on the first frames"
+                  % (procs, threads, wide[0], wide[1]))
+
+    def _tune_abort(self, why):
+        """Stop comparing and go back to the first split; nothing is remembered."""
+        procs, threads = self.tune["configs"][0]
+        self.note("Auto-tune stopped (%s); rendering on with %d x %d threads" % (why, procs, threads))
+        self.tune = None
+        self._tune_apply(procs, threads)
+
+    def _tune_apply(self, procs, threads):
+        self.threads, self.proc_cap = threads, procs
+        for w in list(self.workers.values()):
+            if w.state in ("loading", "idle", "busy") and w.threads != threads and not w.retire:
+                if w.state == "busy":
+                    w.retire = True  # finishes its chunk first
+                else:
+                    self._quit(w, "auto-tune")
+
+    def _tune_step(self):
+        t = self.tune
+        if not t or self.state != "rendering":
+            return
+        if any(e is not self and e.state in ("rendering", "paused") for e in self.manager.engines):
+            self._tune_abort("another render started")
+            return
+        if self.manager.budget() < t["budget"]:
+            self._tune_abort("the RAM guard lowered the number of processes")
+            return
+        procs, threads = t["configs"][t["i"]]
+        done = len(self.done_times)
+        if t["phase"] == "warm":
+            ready = [w for w in self.workers.values()
+                     if w.state in ("idle", "busy") and w.threads == threads and not w.retire]
+            if len(ready) >= procs and all(w.frames_done >= 1 for w in ready):
+                t.update(phase="measure", t0=self.elapsed(), d0=done)
+            return
+        need = max(8, 2 * procs)
+        if done - t["d0"] < need:
+            return
+        rate = (done - t["d0"]) / max(0.1, self.elapsed() - t["t0"])
+        t["rates"].append(rate)
+        left = sum(len(c.frames) for c in self.chunks if c.state == "queued")
+        if t["i"] + 1 < len(t["configs"]):
+            procs2 = t["configs"][t["i"] + 1][0]
+            if left < max(8, 2 * procs2) + 2 * procs2:
+                self._tune_abort("too few frames left to try %d processes" % procs2)
+                return
+            t["i"] += 1
+            t["phase"] = "warm"
+            procs2, threads2 = t["configs"][t["i"]]
+            self.note("Auto-tune: %d x %d threads makes %.2f frames/s; now trying %d x %d threads"
+                      % (procs, threads, rate, procs2, threads2))
+            self._tune_apply(procs2, threads2)
+            return
+        best = max(range(len(t["rates"])), key=lambda i: t["rates"][i])
+        procs_b, threads_b = t["configs"][best]
+        summary = ", ".join("%d x %d threads %.2f fr/s" % (c[0], c[1], r) for c, r in zip(t["configs"], t["rates"]))
+        self.note("Auto-tune: %s. Keeping %d x %d threads for this script." % (summary, procs_b, threads_b), "ok")
+        self._tune_apply(procs_b, threads_b)
+        tuned = dict(self.settings.get("tuned") or {})
+        tuned[self.name] = {"procs": procs_b, "threads": threads_b}
+        self.settings["tuned"] = tuned
+        write_settings(self.settings)
+        self.tune = None
+
     def _schedule(self):
         now = time.time()
         for w in list(self.workers.values()):
@@ -1260,7 +1425,8 @@ class RenderEngine:
                     pass
         if self.state == "rendering":
             # Chunks go out in frame order; a retried one goes first, so a problem shows up again quickly.
-            queued = sorted((c for c in self.chunks if c.state == "queued"), key=lambda c: (c.attempts == 0, min(c.frames)))
+            queued = sorted((c for c in self.chunks if c.state == "queued"),
+                            key=lambda c: (not c.test, c.attempts == 0, min(c.frames)))
             for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
                 if not queued:
                     break
@@ -1407,6 +1573,10 @@ class RenderManager:
         self.next_number = 1
         self.pauses = []  # times when every render was paused: the timeline leaves them out
         self.paused_at = None
+        self.ram_cap = None  # RAM guard's lower process count while memory is short
+        self._ram_checked = 0.0
+        self._ram_ok_since = None
+        self._last_kill = 0.0
 
     @property
     def max_renders(self):
@@ -1436,8 +1606,64 @@ class RenderManager:
     def live_count(self):
         return sum(1 for e in self.engines for w in e.workers.values() if w.state != "gone")
 
+    def budget(self):
+        """Processes the renders may use now: the total, unless the RAM guard holds it lower."""
+        return max(1, min(self.total, self.ram_cap or self.total))
+
     def free_slots(self):
-        return self.total - self.live_count()
+        return self.budget() - self.live_count()
+
+    @staticmethod
+    def ram_percent():
+        return psutil.virtual_memory().percent if psutil else 0.0
+
+    def _note_running(self, text, level="ev"):
+        for e in self.engines:
+            if e.state in ("rendering", "paused", "finishing"):
+                e.note(text, level)
+
+    def _ram_guard(self):
+        """Fewer Nuke processes while RAM is nearly full, so Windows never starts swapping."""
+        now = time.time()
+        if not psutil or now - self._ram_checked < 2:
+            return
+        self._ram_checked = now
+        if not self.settings.get("ram_guard", True):
+            self.ram_cap = None
+            return
+        limit = float(self.settings.get("ram_limit", 90))
+        pct = self.ram_percent()
+        live = self.live_count()
+        rendering = any(e.state == "rendering" for e in self.engines)
+        if pct >= limit and live > 1 and rendering:
+            # One process fewer at a time, and only once the last one has closed (busy ones finish their chunk).
+            cap = max(1, min(self.budget(), live) - 1)
+            if self.ram_cap is None or (live <= self.ram_cap and cap < self.ram_cap):
+                self.ram_cap = cap
+                self._note_running("!! RAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
+                                   % (pct, limit, cap), "warn")
+            self._ram_ok_since = None
+            if pct >= min(98.0, limit + 6) and now - self._last_kill > 5:
+                # Nearly out of memory: one process gives up its chunk now instead of after it.
+                busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
+                if busy:
+                    e, w = min(busy, key=lambda ew: ew[1].frame_started or 0)
+                    e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
+                    e._kill(w, requeue=True, note="stopped")
+                    self._last_kill = now
+        elif self.ram_cap is not None and pct < limit - 8:
+            if self._ram_ok_since is None:
+                self._ram_ok_since = now
+            elif now - self._ram_ok_since >= 15:
+                self.ram_cap += 1
+                self._ram_ok_since = now
+                if self.ram_cap >= self.total:
+                    self.ram_cap = None
+                    self._note_running("RAM is %.0f %% again: back to %d Nuke processes" % (pct, self.total), "ok")
+                else:
+                    self._note_running("RAM is %.0f %%: up to %d Nuke processes" % (pct, self.ram_cap))
+        else:
+            self._ram_ok_since = None
 
     def take_wid(self):
         """Process numbers run on across renders (W01-W08, then W09...), so every process has its own name.
@@ -1491,6 +1717,7 @@ class RenderManager:
         changed = False
         for e in list(self.engines):
             changed = e.tick() or changed
+        self._ram_guard()
         self._admit()
         self._allocate()
         all_paused = any(e.state == "paused" for e in self.engines) and not any(
@@ -1514,9 +1741,9 @@ class RenderManager:
     def _allocate(self):
         active = sorted((e for e in self.engines if e.state in ("rendering", "paused")),
                         key=lambda e: (e.started or 0, e.number))
-        needs = {e: e.need() for e in active}
+        needs = {e: min(e.need(), e.proc_cap) if e.proc_cap else e.need() for e in active}
         share = {e: 0 for e in active}
-        left = self.total
+        left = self.budget()
         while left > 0:
             gave = False
             for e in active:
@@ -2509,15 +2736,43 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
+        """Two columns: how renders are handled, and speed / safety."""
         w = QtWidgets.QWidget()
-        lay = QtWidgets.QVBoxLayout(w)
-        lay.setContentsMargins(14, 14, 14, 14)
-        self.c_auto = QtWidgets.QCheckBox("Start Render on open")
-        self.c_auto.setToolTip("Render as soon as the window opens, without clicking Render")
-        self.c_auto.setChecked(bool(self.settings.get("auto_start", False)))
-        self.c_auto.toggled.connect(lambda v: self._save_setting("auto_start", v))
-        lay.addWidget(self.c_auto)
-        row = QtWidgets.QHBoxLayout()
+        outer = QtWidgets.QHBoxLayout(w)
+        outer.setContentsMargins(14, 10, 14, 10)
+        outer.setSpacing(40)
+
+        def column(title):
+            col = QtWidgets.QVBoxLayout()
+            col.setSpacing(7)
+            head = QtWidgets.QLabel(title)
+            head.setStyleSheet("color: %s; font-weight: 600; font-size: 10pt;" % C["accent"])
+            col.addWidget(head)
+            outer.addLayout(col)
+            return col
+
+        def check(col, text, key, default, tip, slot=None):
+            box = QtWidgets.QCheckBox(text)
+            box.setChecked(bool(self.settings.get(key, default)))
+            box.setToolTip(tip)
+            box.toggled.connect(slot or (lambda v, key=key: self._save_setting(key, v)))
+            col.addWidget(box)
+            return box
+
+        def spin_row(col, label, widget, after=""):
+            row = QtWidgets.QHBoxLayout()
+            if label:
+                row.addWidget(QtWidgets.QLabel(label))
+            row.addWidget(widget)
+            if after:
+                row.addWidget(QtWidgets.QLabel(after))
+            row.addStretch(1)
+            col.addLayout(row)
+
+        # -- renders
+        left = column("Renders")
+        self.c_auto = check(left, "Start Render on open", "auto_start", False,
+                            "Render as soon as the window opens, without clicking Render")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -2527,11 +2782,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "2-3: renders run side by side and share the Nuke processes. Not faster in total,\n"
             "but you see frames of every shot early.")
         self.s_max.valueChanged.connect(lambda v: self._save_setting("max_renders", v))
-        lab = QtWidgets.QLabel("Max renders at once")
-        row.addWidget(lab)
-        row.addWidget(self.s_max)
-        row.addStretch(1)
-        lay.addLayout(row)
+        spin_row(left, "Max renders at once", self.s_max)
         slate_row = QtWidgets.QHBoxLayout()
         self.c_slate = QtWidgets.QCheckBox("Render slate frame")
         self.c_slate.setChecked(bool(self.settings.get("slate")))
@@ -2547,15 +2798,44 @@ class MainWindow(QtWidgets.QMainWindow):
         slate_row.addWidget(QtWidgets.QLabel("on frame"))
         slate_row.addWidget(self.s_slate)
         slate_row.addStretch(1)
-        lay.addLayout(slate_row)
-        self.c_all_workers = QtWidgets.QCheckBox("Show processes of all renders")
-        self.c_all_workers.setChecked(bool(self.settings.get("show_all_workers", True)))
-        self.c_all_workers.setToolTip("On: Workers and System show the Nuke processes of every render in the window.\n"
-                                      "Off: only those of the render you picked at the top.")
-        self.c_all_workers.toggled.connect(self._all_workers_changed)
-        lay.addWidget(self.c_all_workers)
-        lay.addStretch(1)
+        left.addLayout(slate_row)
+        self.c_all_workers = check(left, "Show processes of all renders", "show_all_workers", True,
+                                   "On: Workers and System show the Nuke processes of every render in the window.\n"
+                                   "Off: only those of the render you picked at the top.", self._all_workers_changed)
+        left.addStretch(1)
+
+        # -- speed and safety
+        right = column("Speed and safety")
+        self.c_tune = check(right, "Auto-tune processes", "auto_tune", True,
+                            "On the first frames of a render with at least %d frames, try the processes as set\n"
+                            "(e.g. 8 x 4 threads) and half as many with twice the threads (4 x 8), and keep the faster.\n"
+                            "The winner is remembered for that script; later renders of it start with it." % TUNE_MIN_FRAMES)
+        tuned = QtWidgets.QPushButton("Forget tuned scripts")
+        tuned.setToolTip("Auto-tune measures every script again on its next render")
+        tuned.clicked.connect(self._forget_tuned)
+        spin_row(right, "", tuned)
+        self.c_guard = check(right, "RAM guard", "ram_guard", True,
+                             "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first)\n"
+                             "until it is %d %% below the limit; then one more every 15 s. Close to full, one process is closed at once." % 8)
+        self.s_limit = QtWidgets.QSpinBox()
+        self.s_limit.setRange(50, 98)
+        self.s_limit.setSuffix(" %")
+        self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
+        self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
+        spin_row(right, "RAM limit", self.s_limit)
+        self.c_test = check(right, "Render test frames first", "test_frames", True,
+                            "First, middle and last frame render before the rest. If one is broken on disk the render\n"
+                            "pauses; if they are fine you get an estimate of the whole render.")
+        self.c_test_pause = check(right, "Pause after the test frames", "test_pause", False,
+                                  "Wait for Resume after the test frames, so you can look at them first")
+        right.addStretch(1)
+        outer.addStretch(1)
         return w
+
+    def _forget_tuned(self):
+        self.settings["tuned"] = {}
+        write_settings(self.settings)
+        self.engine.note("Tuned splits forgotten; auto-tune measures each script again", "ok")
 
     def _all_workers_changed(self, on):
         self._save_setting("show_all_workers", on)
@@ -2925,6 +3205,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 extra = (" %d frame(s) are much smaller than the rest; worth a look." % small) if small else ""
                 self._banner("Done in %s. All %d frames are on disk and pass the check.%s"
                              % (fmt_secs(e.elapsed()), len(e.frames), extra), C["done"])
+        elif e.notice and e.state in ("rendering", "paused"):
+            self._banner(e.notice[0], {"ok": C["done"], "warn": C["small"], "bad": C["failed"]}[e.notice[1]])
         elif e.state == "waiting":
             self._banner("Waiting: %d render(s) already use the PC. It starts as soon as one is on its last chunks "
                          "(Settings > Max renders at once)." % self.manager.max_renders, C["loading"])
@@ -2939,6 +3221,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _slow_tick(self):
         self._refresh_cards()
         e = self.engine
+        if e.notice and e.state in ("rendering", "paused") and self.banner.text() != e.notice[0]:
+            self._state_changed()
         c = e.counts()
         total = max(1, len(e.frames))
         finished = c["done"] + c["skipped"] + c["bad"]
@@ -3043,7 +3327,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._io_last = (now, io)
         self._net_last = (now, net)
         self.m_cpu.set("%.0f %%" % cpu, "%d threads" % len(per))
-        self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB" % (vm.used / 1024 ** 3, vm.total / 1024 ** 3))
+        guard = ("  ·  guard: %d of %d processes" % (m.ram_cap, m.total)) if m.ram_cap else ""
+        self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB%s" % (vm.used / 1024 ** 3, vm.total / 1024 ** 3, guard))
         per_render = ["%d: %.1f" % (x.number, sum(w.rss for w in x.workers.values() if w.state != "gone"))
                       for x in shown if any(w.state != "gone" for w in x.workers.values())]
         self.m_nuke.set("%.1f GB" % nuke_ram, "%d processes%s" % (
