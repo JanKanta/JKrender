@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12 alpha — 2026-10-30
+
+- Settings → Auto-tune processes now holds everything that changes the number of Nuke processes.
+  - Off: exactly the processes set under Nuke processes run, from start to end.
+  - On:
+    - the split comparison (8 x 4 or 4 x 8),
+    - the RAM guard (the newest close first when RAM runs over),
+    - starting only as many processes as fit, from the RAM one took last time.
+  - The separate RAM guard checkbox is gone. RAM limit and Forget tuned scripts sit under Auto-tune and are greyed out when it is off.
+  - Forget tuned scripts also forgets the RAM per process.
+- Fixed: test frames rendered first even with Render test frames first off.
+  - After Stop, the test chunks of the stopped run stayed test chunks and were still sent first.
+  - Each start now turns them into ordinary chunks.
+
 ## 0.11 alpha — 2026-10-30
 
 - The gradual start from 0.10 is gone: it cost time. All Nuke processes start one after another straight away again.
