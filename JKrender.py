@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.7.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.8 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.7.2 alpha"
+APP_VERSION = "0.8 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -551,6 +551,7 @@ class Worker:
         self.log_path = log_path
         self.cpu = 0.0
         self.rss = 0.0
+        self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -1039,6 +1040,11 @@ class RenderEngine:
         entry = ("", "%s  %s" % (datetime.datetime.now().strftime("%H:%M:%S"), text), level)
         self.log.append(entry)
         self.new_log.append(entry)
+        try:  # the Log tab's events, kept next to the workers' logs
+            with open(self.dir / "jkrender.log", "a", encoding="utf-8") as f:
+                f.write(entry[1] + "\n")
+        except Exception:
+            pass
 
     def tick(self):
         changed = False
@@ -1135,9 +1141,17 @@ class RenderEngine:
             w.chunk = None
             w.frame = None
             w.state = "idle"
-            budget = w.ram * 1.3
-            if w.rss > budget:
-                self._quit(w, "recycled: %.1f GB RAM, over its %d GB budget" % (w.rss, w.ram))
+            # Recycle a process whose RAM keeps growing (a leak), not one that a heavy script simply needs:
+            # closing it after every chunk only costs a script load each time.
+            if w.rss_base is None:
+                w.rss_base = w.rss
+                if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
+                    self._ram_noted = True
+                    self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB set under RAM. "
+                              "That is fine; set RAM higher to match, or use fewer processes if the PC runs short."
+                              % (w.name, w.rss, w.ram), "warn")
+            if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
+                self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
             elif w.retire:
                 self._quit(w, "not needed")
         elif kind == "FAIL":
@@ -1655,6 +1669,14 @@ class RenderManager:
     def ram_percent():
         return psutil.virtual_memory().percent if psutil else 0.0
 
+    def _process_ram_percent(self):
+        """RAM one Nuke process of these renders takes, as % of the PC's RAM (the largest one, to be safe)."""
+        sizes = [w.rss for e in self.engines for w in e.workers.values() if w.state != "gone" and w.rss]
+        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 0
+        if not sizes or not total:
+            return 8.0
+        return max(sizes) / total * 100
+
     def _note_running(self, text, level="ev"):
         for e in self.engines:
             if e.state in ("rendering", "paused", "finishing"):
@@ -1689,7 +1711,9 @@ class RenderManager:
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
-        elif self.ram_cap is not None and pct < limit - 8:
+        elif self.ram_cap is not None and pct + self._process_ram_percent() < limit - 2:
+            # Only when one more process fits under the limit; otherwise it would just push RAM over again
+            # and one process would be closed and another started, round and round.
             if self._ram_ok_since is None:
                 self._ram_ok_since = now
             elif now - self._ram_ok_since >= 15:
