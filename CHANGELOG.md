@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2 alpha — 2026-10-30
+
+- System: the column is called RAM (was RAM used).
+
 ## 0.9.1 alpha — 2026-10-30
 
 - System: the RAM used column shows only what each Nuke process takes (e.g. 11.3 GB), without the RAM setting next to it.

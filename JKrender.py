@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.9.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.9.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.9.1 alpha"
+APP_VERSION = "0.9.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3134,7 +3134,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addWidget(self.cores)
         self.worker_table = QtWidgets.QTableWidget(0, 11)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM used", "Frames", "Avg frame",
+            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Frames", "Avg frame",
              "Script load"])
         self.worker_table.verticalHeader().hide()
         self.worker_table.setAlternatingRowColors(True)
