@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.12 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.13 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.12 alpha"
+APP_VERSION = "0.13 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -540,7 +540,6 @@ class Worker:
         self.chunk = None
         self.frame = None
         self.frame_started = None
-        self.render_started = None  # its first frame; the newest is the first to go when RAM runs over
         self.spawned = time.time()
         self.ready_at = None
         self.load_secs = None
@@ -1031,9 +1030,8 @@ class RenderEngine:
         extra = len(live) - self.workers_target
         if extra > 0:
             # Idle and still-loading ones go first; busy ones finish their chunk.
-            # newest first within each state: they have the least work to lose
-            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state],
-                                                 -(w.render_started or w.spawned)))[:extra]:
+            # the last one started first within each state: it has rendered the shortest time
+            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state], -w.spawned))[:extra]:
                 if w.state == "busy":
                     w.retire = True
                 else:
@@ -1126,7 +1124,6 @@ class RenderEngine:
         elif kind == "START":
             f = int(rest[0])
             w.frame, w.frame_started = f, now
-            w.render_started = w.render_started or now
             if f in self.frames:
                 self.frames[f].state = "rendering"
                 self.frames[f].worker = w.name
@@ -1776,7 +1773,7 @@ class RenderManager:
                 # Nearly out of memory: one process gives up its chunk now instead of after it.
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
                 if busy:
-                    e, w = max(busy, key=lambda ew: ew[1].render_started or ew[1].spawned)  # the newest
+                    e, w = max(busy, key=lambda ew: ew[1].spawned)  # the last one started
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
@@ -2754,10 +2751,6 @@ class MainWindow(QtWidgets.QMainWindow):
             stats.addWidget(t, 1)
         lay.addLayout(stats)
 
-        self.progress = QtWidgets.QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setMaximumHeight(8)
-        lay.addWidget(self.progress)
         self.frame_map = FrameMap(self.engine)
         self.frame_map.frameClicked.connect(self._show_frame)
         lay.addWidget(self.frame_map)
@@ -3362,8 +3355,6 @@ class MainWindow(QtWidgets.QMainWindow):
         c = e.counts()
         total = max(1, len(e.frames))
         finished = c["done"] + c["skipped"] + c["bad"]
-        self.progress.setMaximum(total)
-        self.progress.setValue(finished)
         self.t_frames.set("%d / %d" % (finished, total), "%.0f %%  ·  %d rendering" % (100.0 * finished / total, c["rendering"]))
         self.t_elapsed.set(fmt_secs(e.elapsed()) if e.started else "—",
                            "started %s" % datetime.datetime.fromtimestamp(e.started).strftime("%H:%M:%S") if e.started else "")
