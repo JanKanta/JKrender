@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8 alpha — 2026-10-30
+
+- Fixed: with a heavy script, a new Nuke process started after every chunk (29 processes for 46 frames on a 4312x2304 comp).
+  - A process was closed after any chunk that left it over 1.3 x the RAM setting, so a script that simply needs more RAM was reloaded every time.
+  - Now a process is recycled only when its RAM grows to 1.5 x what it used after its first chunk (a leak). The Log says once when the RAM setting is lower than what the script needs.
+- RAM guard: a process comes back only when one more fits under the limit (measured by the largest running process). Before, RAM 8 % under the limit was enough, so one process was closed and another started, round and round.
+- The Log tab's events are also written to jkrender.log in the render's folder, next to the processes' logs.
+
 ## 0.7.2 alpha — 2026-10-30
 
 - `INSTALL.txt` now really has the steps in English (0.7.1 renamed the file but kept the Czech text).
