@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10 alpha — 2026-10-30
+
+### Speed and safety
+
+- A script's first render (RAM per process not known yet) starts 2 Nuke processes.
+  - Once one has finished a frame and its RAM use is known, as many more start as fit under the RAM limit.
+  - Before, all 8 started at once, RAM ran over and the RAM guard had to close the first ones mid-frame.
+- Auto-tune waits until that start is over, so it compares the two splits with every process running.
+- Later renders of the script start as many processes as fit straight away, as in 0.9.
+
+### Window
+
+- Processes, Threads, RAM and Chunk moved from the row next to Render into Settings, in a first column "Nuke processes".
+- The frame range is shown as plain text, "FrameRanges 1000-1095". It comes from Nuke and can no longer be edited in JKrender.
+- The Auto button is gone for now.
+- System → CPU shows how many threads are in use out of all of them, e.g. "8 of 32 threads in use".
+
 ## 0.9.2 alpha — 2026-10-30
 
 - System: the column is called RAM (was RAM used).
