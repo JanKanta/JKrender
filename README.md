@@ -4,7 +4,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.4 alpha.** It works in tests; expect rough edges.
+**Version 0.5 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -27,34 +27,38 @@ on disk.
 
 | File | Runs in | Role |
 |---|---|---|
-| `JKrender.py` | external Python 3 with PySide6 and psutil | the window and the scheduler |
+| `JKrender.py` | Nuke's own Python (PySide6 and psutil) | the window and the scheduler |
 | `jkrender_worker.py` | each Nuke process (`nuke -t`) | opens the script once and renders the chunks it is sent |
 | `JKrender_NukeIntegration.py` | Nuke GUI | the **JKrender** menu (Ctrl+Alt+R) |
+| `menu.py` | Nuke GUI | adds the menu when this folder is on Nuke's plugin path |
+| `install.bat` | Windows | puts this folder on Nuke's plugin path |
+| `INSTALACE.txt` | | the install steps in Czech |
+| `lib/` | the window | numpy and OpenEXR for Nuke's Python 3.11, for the EXR preview (not in git) |
+| `log/` | | one folder per render: script snapshot, job file and the log of every Nuke process (not in git) |
 
 ## Setup
 
-1. Install the Python packages:
-
-   ```
-   python -m pip install PySide6 psutil
-   ```
-
-   For movie details and the player, also put `ffprobe` / `ffmpeg` on PATH:
-
-   ```
-   winget install ffmpeg
-   ```
-
-2. Copy `JKrender_NukeIntegration.py` to `~/.nuke`.
-3. Add these lines to `~/.nuke/menu.py`:
+1. Put the JKrender folder where it will stay. If you move it later, run `install.bat` again.
+2. Run `install.bat`. It adds one line to `~/.nuke/init.py`:
 
    ```python
-   import JKrender_NukeIntegration as _jk
-   _jk.install_menu()
+   nuke.pluginAddPath(r"<this folder>")  # JKrender
    ```
 
-4. Keep `JKrender.py` in `~/JKrender/`, or set `JKRENDER` to its path.
+3. Restart Nuke.
 
 In Nuke, select Writes (or Groups that contain Writes) and choose **JKrender → Render Selected Write(s)**.
 
-Settings and render folders are stored in `~/.jkrender/`.
+The window runs in Nuke's own Python, which already has PySide6 and psutil, so nothing else needs installing.
+To use another Python, set `JKRENDER_PYTHON`. That Python needs `python -m pip install PySide6 psutil numpy OpenEXR`.
+
+Optional: for movie details and the movie player, put `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
+
+To fill `lib/` when building the folder (Nuke 16 has Python 3.11):
+
+```
+"C:\Program Files\Nuke16.0v9\python.exe" -m pip install --only-binary=:all: --target lib numpy OpenEXR
+```
+
+Renders and logs go to `log/` next to `JKrender.py`. If that folder is read-only, they go to `~/.jkrender/renders/`.
+Settings are per user, in `~/.jkrender/settings.json`.
