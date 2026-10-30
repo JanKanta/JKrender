@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9 alpha — 2026-10-30
+
+- A process that had to close (RAM guard, recycled) is replaced under its own name and on its own timeline row: W01 starts again instead of a new W09.
+- JKrender remembers how much RAM one Nuke process of each script takes (after its first chunk).
+  - The next render of that script starts only as many processes as fit in RAM right now, so the RAM guard does not have to close any in the middle of a frame.
+  - On the CTH 4312x2304 comp that is about 11 GB per process: 8 of them do not fit in 94 GB next to Nuke's GUI.
+- The RAM guard adds back as many processes as fit at once, counting the RAM that just-started processes are still about to take, instead of one every 15 s.
+- The RAM setting is Nuke's cache limit (-c), not a cap on the whole process; a heavy script takes more. The README says so.
+
 ## 0.8 alpha — 2026-10-30
 
 - Fixed: with a heavy script, a new Nuke process started after every chunk (29 processes for 46 frames on a 4312x2304 comp).

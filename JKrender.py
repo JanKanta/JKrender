@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.8 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.9 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.8 alpha"
+APP_VERSION = "0.9 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -747,6 +747,8 @@ class RenderEngine:
         self.note("Render started: %d frames in %d chunks, %d threads and %d GB per Nuke process"
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
                      sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
+        self._ram_seen = 0.0
+        self._fit_ram()
         self._tune_start()
 
     def scan_disk(self):
@@ -882,8 +884,15 @@ class RenderEngine:
         ]
 
     def _spawn(self):
-        wid = self.manager.take_wid() if self.manager else self.next_wid
-        self.next_wid = max(self.next_wid, wid) + 1
+        # A process that had to close (RAM guard, recycled) is replaced under its own number and on its
+        # own timeline row, so the render keeps the same W01-W08 instead of W09, W10...
+        gone = sorted(i for i, x in self.workers.items() if x.state == "gone")
+        old = self.workers[gone[0]] if gone else None
+        if old:
+            wid = old.id
+        else:
+            wid = self.manager.take_wid() if self.manager else self.next_wid
+            self.next_wid = max(self.next_wid, wid) + 1
         cmd = self._command()
         kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                       text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -902,24 +911,27 @@ class RenderEngine:
             return None
         w = Worker(wid, proc, log_path, *self._process_size())
         w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
+        if old:
+            w.segments, w.frames_done, w.frame_secs = old.segments, old.frames_done, old.frame_secs
         self.workers[wid] = w
         self.last_spawn = time.time()
         threading.Thread(target=self._reader, args=(w,), daemon=True).start()
-        self.note("%s started (pid %d, %d threads, %d GB)" % (w.name, proc.pid, w.threads, w.ram))
+        self.note("%s %s (pid %d, %d threads, %d GB)"
+                  % (w.name, "started again" if old else "started", proc.pid, w.threads, w.ram))
         return w
 
     def _reader(self, w):
         try:
             for line in w.proc.stdout:
-                self.events.put(("line", w.id, line))
+                self.events.put(("line", w, line))
         except Exception as exc:
-            self.events.put(("line", w.id, "[output read error: %s]\n" % exc))
+            self.events.put(("line", w, "[output read error: %s]\n" % exc))
         finally:
             try:
                 w.proc.wait(timeout=30)
             except Exception:
                 pass
-            self.events.put(("exit", w.id, w.proc.returncode))
+            self.events.put(("exit", w, w.proc.returncode))
 
     def _kill(self, w, requeue, note):
         if w.state == "gone":
@@ -1056,9 +1068,9 @@ class RenderEngine:
             changed = True
             kind = ev[0]
             if kind == "line":
-                self._on_line(self.workers.get(ev[1]), ev[2])
+                self._on_line(ev[1], ev[2])
             elif kind == "exit":
-                self._on_exit(self.workers.get(ev[1]), ev[2])
+                self._on_exit(ev[1], ev[2])
             elif kind == "check":
                 self._on_check(*ev[1:])
         if self._small_dirty:
@@ -1083,6 +1095,8 @@ class RenderEngine:
         if w is None:
             return
         w.log.write(line)
+        if w.state == "gone":  # last words of a closed process; its replacement may already use its name
+            return
         w.tail.append(line)
         m = JKR_LINE.search(line.rstrip("\r\n"))
         if not m:
@@ -1145,6 +1159,7 @@ class RenderEngine:
             # closing it after every chunk only costs a script load each time.
             if w.rss_base is None:
                 w.rss_base = w.rss
+                self._remember_ram(w.rss)
                 if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
                     self._ram_noted = True
                     self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB set under RAM. "
@@ -1443,6 +1458,37 @@ class RenderEngine:
         write_settings(self.settings)
         self.tune = None
 
+    def _remember_ram(self, gb):
+        """RAM one Nuke process of this script took after its first chunk (the most seen this run)."""
+        if self.movie or gb <= getattr(self, "_ram_seen", 0.0):
+            return
+        self._ram_seen = gb
+        need = dict(self.settings.get("script_ram") or {})
+        need[self.name] = round(gb, 1)
+        self.settings["script_ram"] = need
+        write_settings(self.settings)
+
+    def ram_need(self):
+        """GB per Nuke process this script took last time, or None."""
+        return None if self.movie else (self.settings.get("script_ram") or {}).get(self.name)
+
+    def _fit_ram(self):
+        """Start only as many processes as fit in RAM, from what this script took last time, so the RAM guard
+        does not have to close any in the middle of a frame."""
+        need = self.ram_need()
+        if not need or not psutil or not self.manager or not self.settings.get("ram_guard", True):
+            return
+        vm = psutil.virtual_memory()
+        gb = 1024 ** 3
+        limit = float(self.settings.get("ram_limit", 90))
+        fit = max(1, int((vm.total / gb * limit / 100 - (vm.total - vm.available) / gb) / need))
+        m = self.manager
+        cap = m.live_count() + fit
+        if cap < m.budget():
+            m.ram_cap = cap
+            self.note("This script took %.1f GB per Nuke process last time; with RAM as it is now, %d fit under the "
+                      "%.0f %% limit, so %d start. More join when RAM allows." % (need, fit, limit, fit), "warn")
+
     def _schedule(self):
         now = time.time()
         for w in list(self.workers.values()):
@@ -1669,9 +1715,24 @@ class RenderManager:
     def ram_percent():
         return psutil.virtual_memory().percent if psutil else 0.0
 
+    def _more_fit(self, pct, limit):
+        """How many more Nuke processes fit under the limit, counting the RAM that processes still loading or on
+        their first frame are about to take (up to what their script took last time)."""
+        if not psutil:
+            return 0
+        total = psutil.virtual_memory().total / 1024 ** 3
+        growing = 0.0
+        for e in self.engines:
+            need = e.ram_need()
+            if need:
+                growing += sum(max(0.0, need - w.rss) for w in e.workers.values() if w.state != "gone") / total * 100
+        return max(0, int((limit - 2 - pct - growing) // max(0.5, self._process_ram_percent())))
+
     def _process_ram_percent(self):
         """RAM one Nuke process of these renders takes, as % of the PC's RAM (the largest one, to be safe)."""
         sizes = [w.rss for e in self.engines for w in e.workers.values() if w.state != "gone" and w.rss]
+        # still-loading processes are small; what the script took last time is the better guess
+        sizes += [e.ram_need() for e in self.engines if e.state == "rendering" and e.ram_need()]
         total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 0
         if not sizes or not total:
             return 8.0
@@ -1711,13 +1772,13 @@ class RenderManager:
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
-        elif self.ram_cap is not None and pct + self._process_ram_percent() < limit - 2:
-            # Only when one more process fits under the limit; otherwise it would just push RAM over again
-            # and one process would be closed and another started, round and round.
+        elif self.ram_cap is not None and self._more_fit(pct, limit) > 0:
+            # Only processes that fit under the limit; one more would just push RAM over again and one
+            # process would be closed and another started, round and round.
             if self._ram_ok_since is None:
                 self._ram_ok_since = now
             elif now - self._ram_ok_since >= 15:
-                self.ram_cap += 1
+                self.ram_cap += self._more_fit(pct, limit)
                 self._ram_ok_since = now
                 if self.ram_cap >= self.total:
                     self.ram_cap = None
