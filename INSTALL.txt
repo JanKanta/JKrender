@@ -1,21 +1,21 @@
-JKrender - instalace
+JKrender - install
 
-1. Zkopíruj celou složku JKrender do %USERPROFILE%\.nuke\
-2. Do %USERPROFILE%\.nuke\init.py přidej řádek (když soubor není, vytvoř ho):
+1. Copy the whole JKrender folder into %USERPROFILE%\.nuke\
+2. Add this line to %USERPROFILE%\.nuke\init.py (create the file if it is not there):
 
        nuke.pluginAddPath("./JKrender")
 
-3. Restartuj Nuke. Při prvním startu se JKrender zeptá, jestli stáhnout numpy a OpenEXR
-   pro náhled EXR (asi 15 MB). Stáhnou se na pozadí do JKrender\lib.
-   Když dáš Ne, renderovat jde dál, jen bez náhledu EXR, a už se nezeptá.
-   Aby se zeptal znovu, smaž JKrender\lib\DECLINED.
+3. Restart Nuke. On the first start, JKrender asks to download numpy and OpenEXR
+   for the EXR preview (about 15 MB). They download in the background into JKrender\lib.
+   If you say No, rendering still works, only without the EXR preview, and you are not asked again.
+   To be asked again, delete JKrender\lib\DECLINED.
 
-Použití: označ Write (nebo Group s Writy) a dej JKrender > Render Selected Write(s), nebo Ctrl+Alt+R.
+Use: select a Write (or a Group with Writes) and choose JKrender > Render Selected Write(s), or press Ctrl+Alt+R.
 
-Okno běží v Pythonu, který má Nuke v sobě, takže nic dalšího se instalovat nemusí.
-Napsané pro Nuke 16 na Windows.
+The window runs in Nuke's own Python, so nothing else needs installing.
+Made for Nuke 16 on Windows.
 
-Volitelně: pro informace o MOV a přehrávač MOV nainstaluj ffmpeg:  winget install ffmpeg
+Optional: for MOV details and the MOV player, install ffmpeg:  winget install ffmpeg
 
-Logy, kopie skriptu a job každého renderu jsou ve složce JKrender\log.
-Odinstalace: smaž řádek z init.py a složku JKrender.
+Each render's logs, script copy and job file are in the JKrender\log folder.
+Uninstall: delete the line from init.py and the JKrender folder.
