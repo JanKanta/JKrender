@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.6 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -27,11 +27,16 @@ import threading
 import time
 from pathlib import Path
 
-# numpy and OpenEXR for the EXR preview, shipped next to this file for Nuke's Python.
+# numpy and OpenEXR for the EXR preview, fetched into lib/ on the first Nuke start (see jkrender_deps).
 # Appended, so a Python that has its own copies keeps using them.
-_LIB = Path(__file__).resolve().with_name("lib")
-if _LIB.is_dir():
-    sys.path.append(str(_LIB))
+try:
+    import jkrender_deps
+
+    for _lib in jkrender_deps.lib_dirs():
+        if os.path.isdir(_lib):
+            sys.path.append(_lib)
+except ImportError:
+    pass
 
 try:
     from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
@@ -43,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.5 alpha"
+APP_VERSION = "0.6 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -327,9 +332,12 @@ def _exr_rgb(path):
 def preview_image(path, max_w, max_h):
     """QImage of a rendered frame; EXR is shown linear -> sRGB, clipped to 0-1."""
     if path.lower().endswith(".exr"):
-        import numpy as np
+        try:
+            import numpy as np
 
-        a = _exr_rgb(path)
+            a = _exr_rgb(path)
+        except ImportError:
+            raise RuntimeError("the EXR preview needs numpy and OpenEXR.\nRestart Nuke to download them.")
         h, w = a.shape[:2]
         step = max(1, int(math.ceil(max(w / max(1, max_w), h / max(1, max_h)))))
         a = np.clip(np.nan_to_num(a[::step, ::step], nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
