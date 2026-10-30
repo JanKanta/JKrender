@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -37,7 +37,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.2 alpha"
+APP_VERSION = "0.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -52,7 +52,7 @@ JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
-                    "test_frames": True, "test_pause": False}
+                    "test_frames": True, "test_pause": False, "auto_chunk": True}
 TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -1430,7 +1430,7 @@ class RenderEngine:
             for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
                 if not queued:
                     break
-                self._dispatch(w, queued.pop(0))
+                self._dispatch(w, self._tail_split(queued.pop(0)))
             live = self._live()
             busy = sum(1 for w in live if w.state == "busy")
             loading = sum(1 for w in live if w.state in ("loading", "idle"))
@@ -1449,6 +1449,30 @@ class RenderEngine:
             for w in list(self.workers.values()):
                 if w.state in ("idle", "loading"):
                     self._quit(w, "render finished")
+
+    def _tail_split(self, chunk):
+        """Hand out at most remaining frames / (2 x processes) at a time.
+
+        Early on that is the whole chunk; towards the end chunks shrink down to single frames,
+        so every process finishes at about the same time instead of one working through a long
+        last chunk while the others wait. The rest of a split chunk goes back to the queue."""
+        if self.movie or chunk.test or chunk.attempts or not self.settings.get("auto_chunk", True):
+            return chunk
+        remaining = sum(len(c.frames) for c in self.chunks if c.state == "queued")
+        procs = max(1, sum(1 for w in self.workers.values() if w.state in ("loading", "idle", "busy") and not w.retire))
+        size = max(1, int(math.ceil(remaining / (2.0 * procs))))
+        if len(chunk.frames) <= size:
+            return chunk
+        head, tail = chunk.frames[:size], chunk.frames[size:]
+        rest = Chunk(self.next_cid, tail)
+        self.next_cid += 1
+        chunk.frames = head
+        chunk.all_frames = [f for f in chunk.all_frames if f not in set(tail)]
+        for f in tail:
+            self.frames[f].chunk = rest.name
+        self.chunks.append(rest)
+        self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))
+        return chunk
 
     def _dispatch(self, w, chunk):
         chunk.state = "rendering"
@@ -2682,7 +2706,8 @@ class MainWindow(QtWidgets.QMainWindow):
                           "Cache per Nuke process (-c). A process that grows past 1.3x this\n"
                           "is replaced by a fresh one after its chunk, so it never slows down.")
         self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
-                            "Frames per chunk. Applies to chunks that have not started yet.")
+                            "Frames per chunk. Applies to chunks that have not started yet.\n"
+                            "With Settings > Auto chunk size this is the largest chunk; towards the end they get smaller.")
         self.range_edit = QtWidgets.QLineEdit(e.range_text)
         self.range_edit.setMaximumWidth(140)
         self.range_edit.setToolTip("Frames to render, e.g. 1001-1100 or 1001-1010,1050. Editable while not rendering.")
@@ -2814,6 +2839,10 @@ class MainWindow(QtWidgets.QMainWindow):
         tuned.setToolTip("Auto-tune measures every script again on its next render")
         tuned.clicked.connect(self._forget_tuned)
         spin_row(right, "", tuned)
+        self.c_chunk_auto = check(right, "Auto chunk size", "auto_chunk", True,
+                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
+                                  "so every Nuke process finishes at about the same time.\n"
+                                  "Off: every chunk keeps the size set under Chunk.")
         self.c_guard = check(right, "RAM guard", "ram_guard", True,
                              "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first)\n"
                              "until it is %d %% below the limit; then one more every 15 s. Close to full, one process is closed at once." % 8)

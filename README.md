@@ -4,12 +4,12 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.2 alpha.** It works in tests; expect rough edges.
+**Version 0.3 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
 - **Chunks across processes.** By default the work is spread over 8 Nuke processes with 4 threads each.
-  Chunks go to whichever process is free, so none sits idle at the end.
+  Chunks go to whichever process is free and shrink towards the end, so none sits idle.
 - **Several renders in one window.** Each Write is a card at the top. They share one budget of
   Nuke processes, and up to 3 run side by side.
 - **Output check.**

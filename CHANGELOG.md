@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3 alpha — 2026-10-30
+
+- **Auto chunk size** (Settings → Speed and safety, on by default). A process is given at most
+  remaining frames / (2 × processes) at a time, so chunks shrink towards the end of a render, down to
+  single frames, and every process finishes at about the same time. The Chunk field is now the largest chunk.
+  - On 48 frames of a 4K Kronos comp with 8 processes, chunk 12 went from 60.4 s to 51.6 s (no process waits any more).
+  - Chunk 6 went from 50.8 s to 50.1 s.
+- Choosing chunk size from the script's time nodes was tried and left out.
+  Frames in a row rendered no faster in one process (7.47 s at chunk 6 against 7.51 s at chunk 1).
+
 ## 0.2 alpha — 2026-10-30
 
 ### Speed
