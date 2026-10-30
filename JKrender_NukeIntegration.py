@@ -4,9 +4,10 @@ JKrender > Render Selected Write(s) saves a snapshot of the script, writes a job
 JKrender window for that render. The window and its Nuke processes are separate from this Nuke,
 so you keep working (and saving) while it renders.
 
-Put the whole JKrender folder on Nuke's plugin path (install.bat does it); its menu.py adds the menu.
-The window runs in Nuke's own Python, and each render's snapshot, job file and logs go to the
-log folder next to JKrender.py.
+Install: copy the JKrender folder into ~/.nuke and add  nuke.pluginAddPath("./JKrender")  to
+~/.nuke/init.py; the folder's menu.py adds the menu. The window runs in Nuke's own Python; on the
+first start JKrender offers to fetch numpy and OpenEXR for the EXR preview into lib/. Each render's
+snapshot, job file and logs go to the log folder next to JKrender.py.
 """
 
 import datetime
@@ -487,11 +488,52 @@ def start_listener():
 # ----------------------------------------------------------------------------
 # Menu
 # ----------------------------------------------------------------------------
+def _offer_preview_libs():
+    """First start: offer to fetch numpy and OpenEXR for the EXR preview, the way JKplayer fetches numpy.
+
+    Asked once; saying no leaves a marker, and rendering works without them."""
+    import jkrender_deps as deps
+
+    marker = deps.declined_marker()
+    if deps.installed() or os.environ.get(deps.NO_FETCH_ENV) or os.path.exists(marker):
+        return
+    python_exe = deps.nuke_python()
+    if not python_exe:
+        return
+    target = deps.target_dir()
+    if not nuke.ask("JKrender shows rendered EXR frames with numpy and OpenEXR, which Nuke does not ship.\n\n"
+                    "Download them now? About %d MB, in the background.\nThey go into:\n%s\n\n"
+                    "Rendering works without them; only the EXR preview needs them." % (deps.DOWNLOAD_MB, target)):
+        try:
+            os.makedirs(os.path.dirname(marker), exist_ok=True)
+            Path(marker).write_text("Delete this file to be asked again on the next Nuke start.\n", encoding="utf-8")
+        except OSError:
+            pass
+        print("JKrender: no EXR preview libraries. Delete %s to be asked again." % marker)
+        return
+
+    def fetch():
+        ok, result = deps.install(target, python_exe)
+        if ok:
+            print("JKrender: numpy and OpenEXR are in %s" % target)
+        else:
+            nuke.executeInMainThread(nuke.message, args=(
+                "JKrender could not download numpy and OpenEXR.\n\n%s\n\nInstall them by hand with:\n%s"
+                % (result, deps.pip_command_text(target, python_exe)),))
+
+    print("JKrender: downloading numpy and OpenEXR into %s" % target)
+    threading.Thread(target=fetch, daemon=True).start()
+
+
 def install_menu():
     menu = nuke.menu("Nuke").addMenu("JKrender")
     menu.addCommand("Render Selected Write(s)", render_selected, "Ctrl+Alt+R")
     menu.addCommand("Open Renders Folder", open_renders_folder)
     if nuke.GUI:
+        try:
+            _offer_preview_libs()
+        except Exception as exc:
+            print("JKrender: EXR preview libraries:", exc)
         try:
             start_listener()
         except Exception as exc:

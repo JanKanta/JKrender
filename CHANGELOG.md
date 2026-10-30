@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6 alpha — 2026-10-30
+
+- Install like JKplayer: copy the JKrender folder into `~/.nuke` and add `nuke.pluginAddPath("./JKrender")` to `~/.nuke/init.py`. `install.bat` is gone.
+- numpy and OpenEXR for the EXR preview are no longer shipped in the folder; on the first Nuke start JKrender asks to download them.
+  - About 15 MB, in the background, with Nuke's own python.
+  - They go into `lib/<platform>-cp<version>` (e.g. `lib/win_amd64-cp311`), or `~/.jkrender/lib/...` when the folder is read-only.
+  - Saying no leaves `lib/DECLINED`; rendering works without them. `JKRENDER_NO_FETCH=1` never asks.
+  - Without them, the preview says to restart Nuke to download them.
+
 ## 0.5 alpha — 2026-10-30
 
 ### Install
