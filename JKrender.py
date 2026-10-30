@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.9.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.10 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.9.2 alpha"
+APP_VERSION = "0.10 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -64,6 +64,7 @@ PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
                     "test_frames": True, "test_pause": False, "auto_chunk": True}
+RAMP_START = 2  # processes a script starts with while nobody knows yet how much RAM one takes
 TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -748,6 +749,7 @@ class RenderEngine:
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
                      sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
         self._ram_seen = 0.0
+        self.ramping = False
         self._fit_ram()
         self._tune_start()
 
@@ -1133,6 +1135,8 @@ class RenderEngine:
             w.frame = None
             w.frames_done += 1
             w.frame_secs.append(secs)
+            if getattr(self, "ramping", False) and w.rss:
+                self._ramp_done(w)
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
             fr = self.frames.get(f)
@@ -1371,7 +1375,11 @@ class RenderEngine:
         A comp that one Nuke uses well renders faster with fewer, wider processes; one that it uses
         badly, with more narrow ones. The winner is remembered for this script."""
         self.tune = None
+        self.tune_pending = False
         if not self.settings.get("auto_tune", True) or self.movie or self.manager is None:
+            return
+        if getattr(self, "ramping", False):
+            self.tune_pending = True  # once every process that fits is running
             return
         remembered = (self.settings.get("tuned") or {}).get(self.name)
         if remembered:
@@ -1468,6 +1476,21 @@ class RenderEngine:
         self.settings["script_ram"] = need
         write_settings(self.settings)
 
+    def _ramp_done(self, w):
+        """A process finished a frame: start as many more as fit next to it, then let auto-tune run."""
+        self.ramping = False
+        self._remember_ram(w.rss)
+        m = self.manager
+        more = m._more_fit(m.ram_percent(), float(self.settings.get("ram_limit", 90)))
+        cap = min(m.total, m.live_count() + more)
+        m.ram_cap = None if cap >= m.total else cap
+        self.note("%s took %.1f GB for a frame: %s" % (
+            w.name, w.rss, "all %d Nuke processes start" % m.total if m.ram_cap is None else
+            "%d Nuke processes fit in RAM now (limit %.0f %%); more join when RAM allows"
+            % (cap, float(self.settings.get("ram_limit", 90)))), "ok" if m.ram_cap is None else "warn")
+        if self.tune_pending:
+            self._tune_start()
+
     def ram_need(self):
         """GB per Nuke process this script took last time, or None."""
         return None if self.movie else (self.settings.get("script_ram") or {}).get(self.name)
@@ -1475,14 +1498,23 @@ class RenderEngine:
     def _fit_ram(self):
         """Start only as many processes as fit in RAM, from what this script took last time, so the RAM guard
         does not have to close any in the middle of a frame."""
+        if not psutil or not self.manager or not self.settings.get("ram_guard", True) or self.movie:
+            return
         need = self.ram_need()
-        if not need or not psutil or not self.manager or not self.settings.get("ram_guard", True):
+        m = self.manager
+        if not need:
+            # First render of this script: a few processes first, the rest once one frame shows what they take.
+            cap = m.live_count() + RAMP_START
+            if cap < m.budget():
+                m.ram_cap = cap
+                self.ramping = True
+                self.note("First render of this script: %d Nuke processes start, the rest join once a frame is done "
+                          "and their RAM use is known" % RAMP_START)
             return
         vm = psutil.virtual_memory()
         gb = 1024 ** 3
         limit = float(self.settings.get("ram_limit", 90))
         fit = max(1, int((vm.total / gb * limit / 100 - (vm.total - vm.available) / gb) / need))
-        m = self.manager
         cap = m.live_count() + fit
         if cap < m.budget():
             m.ram_cap = cap
@@ -1718,7 +1750,7 @@ class RenderManager:
     def _more_fit(self, pct, limit):
         """How many more Nuke processes fit under the limit, counting the RAM that processes still loading or on
         their first frame are about to take (up to what their script took last time)."""
-        if not psutil:
+        if not psutil or any(getattr(e, "ramping", False) for e in self.engines if e.state == "rendering"):
             return 0
         total = psutil.virtual_memory().total / 1024 ** 3
         growing = 0.0
@@ -2782,15 +2814,12 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addSpacing(14)
 
         def spin(label, lo, hi, value, suffix, tip):
+            # placed in the Settings tab (see _settings_tab)
             box = QtWidgets.QSpinBox()
             box.setRange(lo, hi)
             box.setValue(value)
             box.setSuffix(suffix)
             box.setToolTip(tip)
-            lab = QtWidgets.QLabel(label)
-            lab.setObjectName("dim")
-            ctl.addWidget(lab)
-            ctl.addWidget(box)
             return box
 
         cpu = os.cpu_count() or 8
@@ -2802,29 +2831,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_threads = spin("Threads", 1, cpu, m.threads, "",
                               "Threads per Nuke process (-m).")
         self.s_ram = spin("RAM", 1, ram, m.ram, " GB",
-                          "Cache per Nuke process (-c). A process that grows past 1.3x this\n"
-                          "is replaced by a fresh one after its chunk, so it never slows down.")
+                          "Nuke's cache limit per process (-c). A heavy script takes more than this;\n"
+                          "System > RAM shows what each process really takes.")
         self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
                             "Frames per chunk. Applies to chunks that have not started yet.\n"
                             "With Settings > Auto chunk size this is the largest chunk; towards the end they get smaller.")
-        self.range_edit = QtWidgets.QLineEdit(e.range_text)
-        self.range_edit.setMaximumWidth(140)
-        self.range_edit.setToolTip("Frames to render, e.g. 1001-1100 or 1001-1010,1050. Editable while not rendering.")
-        lab = QtWidgets.QLabel("Frames")
+        self.range_edit = QtWidgets.QLabel(e.range_text)  # plain text: the range comes from Nuke
+        self.range_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.range_edit.setToolTip("Frames this render covers: the Write's range from Nuke,\n"
+                                   "plus the slate frame when Settings > Render slate frame is on.")
+        lab = QtWidgets.QLabel("FrameRanges")
         lab.setObjectName("dim")
         ctl.addWidget(lab)
         ctl.addWidget(self.range_edit)
-        self.b_auto = QtWidgets.QPushButton("Auto")
-        self.b_auto.setToolTip("Processes, threads, RAM and chunk size worked out for this PC")
-        self.b_auto.clicked.connect(self._auto)
-        ctl.addWidget(self.b_auto)
         ctl.addStretch(1)
         lay.addLayout(ctl)
         self.s_workers.valueChanged.connect(self._workers_changed)
         self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))
         self.s_ram.valueChanged.connect(lambda v: self._budget_changed("ram", v))
         self.s_chunk.valueChanged.connect(self._chunk_changed)
-        self.range_edit.editingFinished.connect(self._range_changed)
 
         self.banner = QtWidgets.QLabel("")
         self.banner.setWordWrap(True)
@@ -2883,15 +2908,26 @@ class MainWindow(QtWidgets.QMainWindow):
             col.addWidget(box)
             return box
 
-        def spin_row(col, label, widget, after=""):
+        def spin_row(col, label, widget, after="", width=0):
             row = QtWidgets.QHBoxLayout()
             if label:
-                row.addWidget(QtWidgets.QLabel(label))
+                lab = QtWidgets.QLabel(label)
+                if width:
+                    lab.setFixedWidth(width)
+                row.addWidget(lab)
             row.addWidget(widget)
             if after:
                 row.addWidget(QtWidgets.QLabel(after))
             row.addStretch(1)
             col.addLayout(row)
+
+        # -- Nuke processes (locked while rendering; Processes, Threads and RAM are shared by every render)
+        procs = column("Nuke processes")
+        for label, box, after in (("Processes", self.s_workers, ""), ("Threads", self.s_threads, ""),
+                                  ("RAM", self.s_ram, ""), ("Chunk", self.s_chunk, "(this render)")):
+            box.setMinimumWidth(80)
+            spin_row(procs, label, box, after, width=72)
+        procs.addStretch(1)
 
         # -- renders
         left = column("Renders")
@@ -2943,8 +2979,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                   "so every Nuke process finishes at about the same time.\n"
                                   "Off: every chunk keeps the size set under Chunk.")
         self.c_guard = check(right, "RAM guard", "ram_guard", True,
-                             "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first)\n"
-                             "until it is %d %% below the limit; then one more every 15 s. Close to full, one process is closed at once." % 8)
+                             "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first);\n"
+                             "close to full, one is closed at once. They come back when they fit again.\n"
+                             "A script's first render starts 2 processes and the rest once a frame shows what one takes;\n"
+                             "later renders start as many as fit right away.")
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
         self.s_limit.setSuffix(" %")
@@ -3179,7 +3217,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if e.state == "paused":
             e.resume()
         else:
-            self._range_changed()
             self.manager.request_start(e, everything=e.state == "done" or e.nothing_to_render())
             self.frames_model.refilter()
         self._sync_controls()
@@ -3203,7 +3240,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 if x.state in ("ready", "stopped", "failed") and not x.nothing_to_render()]
 
     def _render_all(self):
-        self._range_changed()
         for x in self._startable():
             self.manager.request_start(x)
         self.frames_model.refilter()
@@ -3230,24 +3266,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.engine.set_chunk_size(v)
         self.frame_map.update()
 
-    def _range_changed(self):
-        text = self.range_edit.text().strip()
-        if text != self.engine.range_text:
-            if self.engine.set_range(text):
-                plan = auto_plan(len(self.engine.frames), self.engine.movie)
-                self.s_chunk.setValue(plan["chunk"])
-                self.engine.scan_disk()
-                self.frames_model.refilter()
-            else:
-                self.range_edit.setText(self.engine.range_text)
-
-    def _auto(self):
-        plan = auto_plan(len(self.engine.frames), self.engine.movie)
-        self.s_workers.setValue(plan["workers"])
-        self.s_threads.setValue(plan["threads"])
-        self.s_ram.setValue(plan["ram"])
-        self.s_chunk.setValue(plan["chunk"])
-
     def _sync_controls(self):
         s = self.engine.state
         running = s in ("rendering", "paused", "finishing", "waiting")
@@ -3260,10 +3278,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # Render settings are fixed while a render runs (paused too); Stop makes them editable again.
         # Processes, threads and RAM are shared by every render, so they wait until none runs.
         any_running = bool(self.manager.running())
-        for widget in (self.range_edit, self.b_delete, self.b_delete_movie):
+        for widget in (self.b_delete, self.b_delete_movie):
             widget.setEnabled(not running)
         self.s_chunk.setEnabled(not running and not self.engine.movie)
-        for widget in (self.s_workers, self.s_threads, self.s_ram, self.b_auto):
+        for widget in (self.s_workers, self.s_threads, self.s_ram):
             widget.setEnabled(not any_running)
         rendering = any(x.state == "rendering" for x in self.manager.engines)
         paused = any(x.state == "paused" for x in self.manager.engines)
@@ -3457,7 +3475,8 @@ class MainWindow(QtWidgets.QMainWindow):
             nmb = ((net.bytes_recv + net.bytes_sent) - (self._net_last[1].bytes_recv + self._net_last[1].bytes_sent)) / dt / 1024 ** 2
         self._io_last = (now, io)
         self._net_last = (now, net)
-        self.m_cpu.set("%.0f %%" % cpu, "%d threads" % len(per))
+        # sum of every thread's load = how many threads' worth of work runs right now
+        self.m_cpu.set("%.0f %%" % cpu, "%d of %d threads in use" % (round(sum(per) / 100), len(per)))
         guard = ("  ·  guard: %d of %d processes" % (m.ram_cap, m.total)) if m.ram_cap else ""
         self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB%s" % (vm.used / 1024 ** 3, vm.total / 1024 ** 3, guard))
         per_render = ["%d: %.1f" % (x.number, sum(w.rss for w in x.workers.values() if w.state != "gone"))
