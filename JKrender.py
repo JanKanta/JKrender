@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.6 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.7 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.6 alpha"
+APP_VERSION = "0.7 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3008,7 +3008,10 @@ class MainWindow(QtWidgets.QMainWindow):
         right = QtWidgets.QVBoxLayout()
         self.preview = QtWidgets.QLabel("Click a frame to see it")
         self.preview.setAlignment(QtCore.Qt.AlignCenter)
-        self.preview.setMinimumSize(420, 300)
+        # Small minimum and an ignored size hint: in a low panel the picture shrinks instead of
+        # being drawn over the frame info under it.
+        self.preview.setMinimumSize(320, 120)
+        self.preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
         self.preview.setStyleSheet("background: #0d0e10; color: %s;" % C["dim"])
         self.preview_info = QtWidgets.QLabel("")
         self.preview_info.setObjectName("dim")
