@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.7 alpha.** It works in tests; expect rough edges.
+**Version 0.7.1 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -34,7 +34,7 @@ on disk.
 | `JKrender_NukeIntegration.py` | Nuke GUI | the **JKrender** menu (Ctrl+Alt+R) |
 | `menu.py` | Nuke GUI | adds the menu when this folder is on Nuke's plugin path |
 | `jkrender_deps.py` | Nuke GUI and the window | fetches numpy and OpenEXR for the EXR preview, and finds them |
-| `INSTALACE.txt` | | the install steps in Czech |
+| `INSTALL.txt` | | the install steps in short |
 | `lib/<platform>-cp<version>/` | the window | numpy and OpenEXR, fetched on the first Nuke start (not in git) |
 | `log/` | | one folder per render: script snapshot, job file and the log of every Nuke process (not in git) |
 

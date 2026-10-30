@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 alpha — 2026-10-30
+
+- The install note is in English: `INSTALACE.txt` is now `INSTALL.txt`.
+
 ## 0.7 alpha — 2026-10-30
 
 - README: a screenshot of a 4K comp rendering in 8 Nuke processes, with the EXR preview.
