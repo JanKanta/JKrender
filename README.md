@@ -4,7 +4,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.1 alpha.** It works in tests; expect rough edges.
+**Version 0.2 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -19,6 +19,9 @@ on disk.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process.
 - **Slate frame**: optional, for projects that start at 1001 with the slate on 1000.
+- **Auto-tune**: finds the faster split of the PC per script (e.g. 8 × 4 or 4 × 8 threads) and remembers it.
+- **RAM guard**: runs fewer Nuke processes when RAM is nearly full, so Windows never swaps.
+- **Test frames first**: renders the first, middle and last frame before the rest, with an estimate.
 
 ## Files
 
