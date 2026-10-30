@@ -26,7 +26,6 @@ NUKE_DIR = Path.home() / ".nuke"
 RENDERS_DIR = Path.home() / ".jkrender" / "renders"
 CONFIG_PATH = NUKE_DIR / "jkrender_path.txt"  # location of JKrender.py
 PYTHON_CACHE = NUKE_DIR / "jkrender_python.txt"  # external Python that has PySide6
-GROUPS_PREF = NUKE_DIR / "jkrender_groups.txt"  # "1" = a selected Group stands for the Writes inside it
 DEFAULT_APP = Path.home() / "JKrender" / "JKrender.py"
 WRITE_CLASSES = ("Write", "Write2", "DeepWrite")
 LISTEN_PORTS = range(54340, 54350)
@@ -43,21 +42,14 @@ def _is_disabled(node):
         return False
 
 
-def _include_groups():
-    try:
-        return GROUPS_PREF.read_text(encoding="utf-8").strip() == "1"
-    except Exception:
-        return False
-
-
 def _write_nodes():
     nodes = nuke.selectedNodes()
-    if _include_groups():
-        for group in [n for n in nodes if isinstance(n, nuke.Group)]:
-            try:
-                nodes += nuke.allNodes(group=group, recurseGroups=True)
-            except Exception:
-                pass
+    # A selected Group stands for the Writes inside it.
+    for group in [n for n in nodes if isinstance(n, nuke.Group)]:
+        try:
+            nodes += nuke.allNodes(group=group, recurseGroups=True)
+        except Exception:
+            pass
     seen = set()
     writes = []
     for n in nodes:
@@ -69,8 +61,6 @@ def _write_nodes():
     if not writes:
         if disabled:
             nuke.message("The Write node(s) are disabled:\n\n" + "\n".join(n.fullName() for n in disabled))
-        elif not _include_groups() and any(isinstance(n, nuke.Group) for n in nodes):
-            nuke.message("Only Groups are selected.\n\nTurn on JKrender > Include Writes inside Groups.")
         else:
             nuke.message("Select a Write node first.")
     return writes
@@ -341,10 +331,6 @@ def render_selected():
     _render(False)
 
 
-def render_selected_current_frame():
-    _render(True)
-
-
 def open_renders_folder():
     RENDERS_DIR.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
@@ -449,40 +435,9 @@ def start_listener():
 # ----------------------------------------------------------------------------
 # Menu
 # ----------------------------------------------------------------------------
-_groups_item = None
-
-
-def _show_groups_state():
-    on = _include_groups()
-    try:
-        action = _groups_item.action()
-        action.setCheckable(True)
-        action.setChecked(on)
-    except Exception:
-        try:
-            _groups_item.setName("Include Writes inside Groups: " + ("On" if on else "Off"))
-        except Exception:
-            pass
-
-
-def toggle_include_groups():
-    try:
-        GROUPS_PREF.write_text("0" if _include_groups() else "1", encoding="utf-8")
-    except Exception as exc:
-        nuke.message("Could not save the setting:\n%s" % exc)
-        return
-    _show_groups_state()
-
-
 def install_menu():
-    global _groups_item
     menu = nuke.menu("Nuke").addMenu("JKrender")
     menu.addCommand("Render Selected Write(s)", render_selected, "Ctrl+Alt+R")
-    menu.addCommand("Render Selected Write(s) - Current Frame", render_selected_current_frame)
-    menu.addSeparator()
-    _groups_item = menu.addCommand("Include Writes inside Groups", toggle_include_groups)
-    _show_groups_state()
-    menu.addSeparator()
     menu.addCommand("Open Renders Folder", open_renders_folder)
     if nuke.GUI:
         try:
