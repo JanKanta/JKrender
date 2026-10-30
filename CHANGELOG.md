@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11 alpha — 2026-10-30
+
+- The gradual start from 0.10 is gone: it cost time. All Nuke processes start one after another straight away again.
+- When RAM runs over, the RAM guard closes the processes that started rendering last, so the least work is lost.
+  - It closes idle and still-loading ones first, then busy ones from the newest.
+  - Close to full it used to close the one that had worked longest on its frame.
+- Later renders of a script still start only as many processes as fit, from the RAM one process took last time.
+
 ## 0.10 alpha — 2026-10-30
 
 ### Speed and safety

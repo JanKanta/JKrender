@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.10 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.11 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.10 alpha"
+APP_VERSION = "0.11 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -64,7 +64,6 @@ PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "auto_tune": True, "ram_guard": True, "ram_limit": 90,
                     "test_frames": True, "test_pause": False, "auto_chunk": True}
-RAMP_START = 2  # processes a script starts with while nobody knows yet how much RAM one takes
 TUNE_MIN_FRAMES = 80  # shorter renders are over before trying two splits pays off
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -541,6 +540,7 @@ class Worker:
         self.chunk = None
         self.frame = None
         self.frame_started = None
+        self.render_started = None  # its first frame; the newest is the first to go when RAM runs over
         self.spawned = time.time()
         self.ready_at = None
         self.load_secs = None
@@ -749,7 +749,6 @@ class RenderEngine:
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
                      sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
         self._ram_seen = 0.0
-        self.ramping = False
         self._fit_ram()
         self._tune_start()
 
@@ -1032,7 +1031,9 @@ class RenderEngine:
         extra = len(live) - self.workers_target
         if extra > 0:
             # Idle and still-loading ones go first; busy ones finish their chunk.
-            for w in sorted(live, key=lambda w: {"idle": 0, "loading": 1, "busy": 2}[w.state])[:extra]:
+            # newest first within each state: they have the least work to lose
+            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state],
+                                                 -(w.render_started or w.spawned)))[:extra]:
                 if w.state == "busy":
                     w.retire = True
                 else:
@@ -1125,6 +1126,7 @@ class RenderEngine:
         elif kind == "START":
             f = int(rest[0])
             w.frame, w.frame_started = f, now
+            w.render_started = w.render_started or now
             if f in self.frames:
                 self.frames[f].state = "rendering"
                 self.frames[f].worker = w.name
@@ -1135,8 +1137,6 @@ class RenderEngine:
             w.frame = None
             w.frames_done += 1
             w.frame_secs.append(secs)
-            if getattr(self, "ramping", False) and w.rss:
-                self._ramp_done(w)
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
             fr = self.frames.get(f)
@@ -1375,11 +1375,7 @@ class RenderEngine:
         A comp that one Nuke uses well renders faster with fewer, wider processes; one that it uses
         badly, with more narrow ones. The winner is remembered for this script."""
         self.tune = None
-        self.tune_pending = False
         if not self.settings.get("auto_tune", True) or self.movie or self.manager is None:
-            return
-        if getattr(self, "ramping", False):
-            self.tune_pending = True  # once every process that fits is running
             return
         remembered = (self.settings.get("tuned") or {}).get(self.name)
         if remembered:
@@ -1476,21 +1472,6 @@ class RenderEngine:
         self.settings["script_ram"] = need
         write_settings(self.settings)
 
-    def _ramp_done(self, w):
-        """A process finished a frame: start as many more as fit next to it, then let auto-tune run."""
-        self.ramping = False
-        self._remember_ram(w.rss)
-        m = self.manager
-        more = m._more_fit(m.ram_percent(), float(self.settings.get("ram_limit", 90)))
-        cap = min(m.total, m.live_count() + more)
-        m.ram_cap = None if cap >= m.total else cap
-        self.note("%s took %.1f GB for a frame: %s" % (
-            w.name, w.rss, "all %d Nuke processes start" % m.total if m.ram_cap is None else
-            "%d Nuke processes fit in RAM now (limit %.0f %%); more join when RAM allows"
-            % (cap, float(self.settings.get("ram_limit", 90)))), "ok" if m.ram_cap is None else "warn")
-        if self.tune_pending:
-            self._tune_start()
-
     def ram_need(self):
         """GB per Nuke process this script took last time, or None."""
         return None if self.movie else (self.settings.get("script_ram") or {}).get(self.name)
@@ -1503,14 +1484,7 @@ class RenderEngine:
         need = self.ram_need()
         m = self.manager
         if not need:
-            # First render of this script: a few processes first, the rest once one frame shows what they take.
-            cap = m.live_count() + RAMP_START
-            if cap < m.budget():
-                m.ram_cap = cap
-                self.ramping = True
-                self.note("First render of this script: %d Nuke processes start, the rest join once a frame is done "
-                          "and their RAM use is known" % RAMP_START)
-            return
+            return  # first render of this script: all start, and the RAM guard closes the newest if RAM runs over
         vm = psutil.virtual_memory()
         gb = 1024 ** 3
         limit = float(self.settings.get("ram_limit", 90))
@@ -1750,7 +1724,7 @@ class RenderManager:
     def _more_fit(self, pct, limit):
         """How many more Nuke processes fit under the limit, counting the RAM that processes still loading or on
         their first frame are about to take (up to what their script took last time)."""
-        if not psutil or any(getattr(e, "ramping", False) for e in self.engines if e.state == "rendering"):
+        if not psutil:
             return 0
         total = psutil.virtual_memory().total / 1024 ** 3
         growing = 0.0
@@ -1800,7 +1774,7 @@ class RenderManager:
                 # Nearly out of memory: one process gives up its chunk now instead of after it.
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
                 if busy:
-                    e, w = min(busy, key=lambda ew: ew[1].frame_started or 0)
+                    e, w = max(busy, key=lambda ew: ew[1].render_started or ew[1].spawned)  # the newest
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
@@ -2980,9 +2954,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                   "Off: every chunk keeps the size set under Chunk.")
         self.c_guard = check(right, "RAM guard", "ram_guard", True,
                              "When RAM goes over the limit, fewer Nuke processes run (busy ones finish their chunk first);\n"
-                             "close to full, one is closed at once. They come back when they fit again.\n"
-                             "A script's first render starts 2 processes and the rest once a frame shows what one takes;\n"
-                             "later renders start as many as fit right away.")
+                             "close to full, one is closed at once. The newest go first, so the least work is lost.\n"
+                             "They come back when they fit again. JKrender remembers what one process of a script takes,\n"
+                             "so later renders of it start only as many as fit.")
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
         self.s_limit.setSuffix(" %")
