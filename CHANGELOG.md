@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.22 alpha — 2026-10-31
+
+- System: a Cache column after RAM shows how much of its cache each Nuke process uses, against the Nuke cache limit, e.g. "3.4 / 8 GB".
+  - Each process reports it after every frame, from Nuke's `nuke.memory2`.
+  - RAM stays the whole process, so the gap between the two is what the nodes themselves take.
+  - On 1.nk, each process held about 3 GB in cache and took about 4 GB in all.
+
 ## 0.21 alpha — 2026-10-31
 
 - Nuke cache is a setting again, under Settings → Nuke processes, as in 0.19. The automatic cache from 0.20 is undone.
