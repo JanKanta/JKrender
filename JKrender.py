@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.23 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.24 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.23 alpha"
+APP_VERSION = "0.24 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -64,7 +64,7 @@ PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "chunk_auto": True, "use_gpu": False, "log_cleanup": True, "log_days": 30,
-                    "test_frames": True, "test_pause": False, "auto_chunk": True}
+                    "auto_chunk": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
@@ -591,7 +591,6 @@ class Chunk:
         self.frames = list(frames)  # frames still to render
         self.all_frames = list(frames)
         self.whole_range = whole_range
-        self.test = False  # one of the test frames that go first
         self.state = "queued"  # queued / rendering / done / failed
         self.worker = None
         self.attempts = 0
@@ -726,7 +725,6 @@ class RenderEngine:
         self.everything = False
         self.resume_state = "ready"
         self.movie_info = None  # probe_movie() of the movie file, for movie output
-        self.test = None  # test frames in progress
         self.notice = None  # (text, "ok" / "warn" / "bad") for the banner while rendering
         self.rebuild_plan()
 
@@ -851,7 +849,6 @@ class RenderEngine:
         self.notice = None
         if self.manager:
             self.threads = self.manager.threads
-        self._make_test_chunks()
         self.note("Render started: %d frames in %d chunks, %d threads and %d GB per Nuke process"
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
                      sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
@@ -1238,7 +1235,6 @@ class RenderEngine:
             self._flag_small()
         if self.state in ("rendering", "paused"):
             self._schedule()
-            self._test_step()
             changed = True
         elif self.state == "finishing" and self.pending_checks <= 0:
             self._finish()
@@ -1472,65 +1468,6 @@ class RenderEngine:
         for f in self.frames:
             self._submit_check(f)
 
-    # ---- test frames ----------------------------------------------------------
-    def _make_test_chunks(self):
-        """First, middle and last frame go first, each on its own, so a broken output shows up in seconds."""
-        self.test = None
-        for c in self.chunks:  # test chunks left over from a stopped run are ordinary chunks now
-            c.test = False
-        if not self.settings.get("test_frames", True) or self.movie:
-            return
-        queued = sorted(f for f, fr in self.frames.items() if fr.state == "queued")
-        if len(queued) < 6:
-            return
-        picks = sorted({queued[0], queued[len(queued) // 2], queued[-1]})
-        for c in list(self.chunks):
-            if c.state == "queued" and set(c.frames) & set(picks):
-                c.frames = [f for f in c.frames if f not in picks]
-                c.all_frames = [f for f in c.all_frames if f not in picks]
-                if not c.all_frames:
-                    self.chunks.remove(c)
-        for f in picks:
-            c = Chunk(self.next_cid, [f])
-            c.test = True
-            self.next_cid += 1
-            self.chunks.append(c)
-            self.frames[f].chunk = c.name
-        self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))
-        self.test = {"frames": picks, "reported": False}
-        self.note("Test frames first: %s" % ", ".join(str(f) for f in picks))
-
-    def _test_step(self):
-        t = self.test
-        if not t or t["reported"]:
-            return
-        frames = [self.frames[f] for f in t["frames"]]
-        if any(fr.state in ("queued", "rendering") for fr in frames):
-            return
-        if any(fr.state == "done" and not fr.checks for fr in frames):
-            return  # their output check is still running
-        t["reported"] = True
-        bad = [f for f in t["frames"] if self.frames[f].state in ("bad", "failed")]
-        if bad:
-            self.notice = ("Test frame %s is broken on disk. The render is paused: look at it in Output, then "
-                           "Resume or Stop." % ", ".join(str(f) for f in bad), "bad")
-            self.note("!! " + self.notice[0], "err")
-            self.pause()
-            return
-        secs = [self.frames[f].secs for f in t["frames"] if self.frames[f].secs]
-        left = sum(1 for fr in self.frames.values() if fr.state in ("queued", "rendering"))
-        procs = max(1, self.manager.budget() if self.manager else self.workers_target)
-        text = "Test frames %s are fine" % ", ".join(str(f) for f in t["frames"])
-        if secs:
-            avg = sum(secs) / len(secs)
-            text += " (%.1f s each). The other %d frames should take about %s." % (avg, left, fmt_secs(left * avg / procs))
-        self.note(text, "ok")
-        if self.settings.get("test_pause"):
-            self.notice = (text + " Paused: press Resume to render the rest.", "ok")
-            self.pause()
-        else:
-            self.notice = (text, "ok")
-
     def _remember_ram(self, gb):
         """RAM one Nuke process of this script took after its first chunk (the most seen this run)."""
         if self.movie or gb <= getattr(self, "_ram_seen", 0.0):
@@ -1556,7 +1493,7 @@ class RenderEngine:
         if self.state == "rendering":
             # Chunks go out in frame order; a retried one goes first, so a problem shows up again quickly.
             queued = sorted((c for c in self.chunks if c.state == "queued"),
-                            key=lambda c: (not c.test, c.attempts == 0, min(c.frames)))
+                            key=lambda c: (c.attempts == 0, min(c.frames)))
             for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
                 if not queued:
                     break
@@ -1586,7 +1523,7 @@ class RenderEngine:
         Early on that is the whole chunk; towards the end chunks shrink down to single frames,
         so every process finishes at about the same time instead of one working through a long
         last chunk while the others wait. The rest of a split chunk goes back to the queue."""
-        if self.movie or chunk.test or chunk.attempts or not self.settings.get("auto_chunk", True):
+        if self.movie or chunk.attempts or not self.settings.get("auto_chunk", True):
             return chunk
         remaining = sum(len(c.frames) for c in self.chunks if c.state == "queued")
         procs = max(1, sum(1 for w in self.workers.values() if w.state in ("loading", "idle", "busy") and not w.retire))
@@ -3051,15 +2988,6 @@ class MainWindow(QtWidgets.QMainWindow):
         limit_row.addWidget(self.s_limit)
         limit_row.addStretch(1)
         right.addLayout(limit_row)
-        self.c_chunk_auto = check(right, "Smaller chunks towards the end", "auto_chunk", True,
-                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
-                                  "so every Nuke process finishes at about the same time.\n"
-                                  "Off: every chunk keeps the size set under Chunk.")
-        self.c_test = check(right, "Render test frames first", "test_frames", True,
-                            "First, middle and last frame render before the rest. If one is broken on disk the render\n"
-                            "pauses; if they are fine you get an estimate of the whole render.")
-        self.c_test_pause = check(right, "Pause after the test frames", "test_pause", False,
-                                  "Wait for Resume after the test frames, so you can look at them first")
         right.addStretch(1)
         # -- processes and chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
         procs = column("Processes and Chunks")
@@ -3088,6 +3016,10 @@ class MainWindow(QtWidgets.QMainWindow):
         chunk_row.addStretch(1)
         procs.addLayout(chunk_row)
         self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
+        self.c_chunk_auto = check(procs, "Smaller chunks towards the end", "auto_chunk", True,
+                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
+                                  "so every Nuke process finishes at about the same time.\n"
+                                  "Off: every chunk keeps the size set under Chunk.")
         procs.addStretch(1)
         outer.addStretch(1)
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
@@ -3129,8 +3061,8 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 30)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_slate, False), (self.c_all_workers, True), (self.c_clean, True),
-                        (self.c_gpu, False), (self.c_guard, True), (self.c_chunk_auto, True), (self.c_test, True),
-                        (self.c_test_pause, False), (self.r_chunk_auto, True)):
+                        (self.c_gpu, False), (self.c_guard, True), (self.c_chunk_auto, True),
+                        (self.r_chunk_auto, True)):
             box.setChecked(on)
         self._apply_chunks()
         self.engine.note("Settings reset to defaults", "ok")
