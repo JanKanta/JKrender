@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.30 alpha — 2026-10-31
+
+- A frame bar under the preview in Output:
+  - previous / Play / next, a slider over every frame of the render, and the frame number;
+  - the Output list follows it: the frame is selected and scrolled to.
+- Play goes through the rendered frames at the script's fps and loops, skipping frames not on disk yet.
+  - The first pass decodes each EXR (about 5 frames/s for 4K).
+  - Later passes come from a cache of preview pictures (about 300 MB) and play at full speed.
+- Enlarge (the corners button, or a double-click on the preview) makes the preview, with its bar, as big as the three panes. The same button, a double-click or Esc goes back.
+
 ## 0.29 alpha — 2026-10-31
 
 - A click on a frame in the chunk map also selects that frame in the Output list and scrolls the list to it (in the middle), besides showing it in the preview.
