@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.32 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.33 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.32 alpha"
+APP_VERSION = "0.33 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3238,21 +3238,27 @@ class MainWindow(QtWidgets.QMainWindow):
         left = QtWidgets.QVBoxLayout()
         bar = QtWidgets.QHBoxLayout()
         for text, fn in (("Check again", self._movie_check), ("Open folder", self._open_folder),
-                         ("Delete movie", self._delete_all)):
+                         ("Delete video", lambda: self._delete_all())):
             b = QtWidgets.QPushButton(text)
-            b.clicked.connect(fn)
+            b.clicked.connect(lambda _=False, fn=fn: fn())  # clicked(checked) must not reach fn
             bar.addWidget(b)
         self.b_delete_movie = b
-        self.b_delete_movie.setToolTip("Delete the rendered movie file from disk")
+        self.b_delete_movie.setToolTip("Delete the rendered video file from disk")
         bar.addStretch(1)
         left.addLayout(bar)
         self.movie_view = QtWidgets.QTextBrowser()
         left.addWidget(self.movie_view, 1)
         lay.addLayout(left, 3)
         right = QtWidgets.QVBoxLayout()
+        self.movie_box = QtWidgets.QWidget()  # preview, bar and frame number: moves to the big view and back
+        mbox = QtWidgets.QVBoxLayout(self.movie_box)
+        mbox.setContentsMargins(0, 0, 0, 0)
+        mbox.setSpacing(6)
+        right.addWidget(self.movie_box, 1)
+        self._movie_home = right
         self.movie_preview = ZoomView()
         self.movie_preview.setToolTip("Mouse wheel zooms, drag moves, double-click fits the frame again")
-        right.addWidget(self.movie_preview, 1)
+        mbox.addWidget(self.movie_preview, 1)
         nav = QtWidgets.QHBoxLayout()
         self.b_play = QtWidgets.QToolButton()
         self.b_play.setFixedSize(34, 30)
@@ -3274,10 +3280,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._movie_index = 0
         self._play_timer = QtCore.QTimer(self)
         self._play_timer.timeout.connect(self._movie_next)
-        right.addLayout(nav)
+        self.b_big_movie = QtWidgets.QToolButton()
+        self.b_big_movie.setFixedSize(34, 30)
+        self.b_big_movie.setIconSize(QtCore.QSize(20, 20))
+        self.b_big_movie.setIcon(nav_icon("big"))
+        self.b_big_movie.setToolTip("Player as big as the three panes (Esc goes back)")
+        self.b_big_movie.setStyleSheet(self.b_play.styleSheet())
+        self.b_big_movie.clicked.connect(self._toggle_big)
+        nav.addWidget(self.b_big_movie)
+        mbox.addLayout(nav)
         self.movie_frame_label = QtWidgets.QLabel("")
         self.movie_frame_label.setObjectName("dim")
-        right.addWidget(self.movie_frame_label)
+        mbox.addWidget(self.movie_frame_label)
         lay.insertLayout(0, right, 2)  # preview on top, the list under it
         self._movie_size_last = None
         return w
@@ -3437,18 +3451,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pick_frame(later[0] if later else frames[0])
 
     def _toggle_big(self):
-        """The preview, with its bar, as big as the three panes; again (or Esc, or a double-click) goes back."""
+        """The preview (or the movie player), with its bar, as big as the three panes; again, Esc or a
+        double-click on a frame preview goes back."""
         self._big = not self._big
         if self._big:
-            self.big_lay.addWidget(self.preview_box, 1)
+            movie = bool(self.engine.movie)
+            self._big_parts = (self.movie_box, self._movie_home) if movie else (self.preview_box, self._preview_home)
+            self.big_lay.addWidget(self._big_parts[0], 1)
             self.main_split.hide()
             self.big_box.show()
         else:
-            self._preview_home.insertWidget(0, self.preview_box, 1)
+            box, home = self._big_parts
+            home.insertWidget(0, box, 1)
             self.big_box.hide()
             self.main_split.show()
-        self.b_big.setIcon(nav_icon("small" if self._big else "big"))
-        if self._preview_frame is not None:
+        for b in (self.b_big, self.b_big_movie):
+            b.setIcon(nav_icon("small" if self._big else "big"))
+        if self._preview_frame is not None and not self.engine.movie:
             QtCore.QTimer.singleShot(0, lambda: self._show_frame(self._preview_frame))
 
     def eventFilter(self, obj, event):

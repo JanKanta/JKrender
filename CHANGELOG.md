@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.33 alpha — 2026-10-31
+
+- Movies: the player has the Enlarge button too. It makes the player, with Play and the slider, as big as the three panes; Esc goes back.
+- Fixed: Delete movie did nothing since 0.31.
+  - The button's click came in as an empty list of frames to delete.
+  - It is now called **Delete video** and deletes the file again, after asking.
+
 ## 0.32 alpha — 2026-10-31
 
 - The coloured Check cells from 0.31 are undone: Check shows its result in coloured text as before. The narrower columns stay.
