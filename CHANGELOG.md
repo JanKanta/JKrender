@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.1 alpha — 2026-10-31
+
+- System: processes keep their place in the table (render, then W01, W02, ...). A closed one no longer moves to the bottom.
+
 ## 0.18 alpha — 2026-10-31
 
 - Settings → Nuke processes → Use GPU (off by default) starts the Nuke processes with `--gpu`.

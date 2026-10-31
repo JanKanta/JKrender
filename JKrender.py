@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.18 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.18.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.18 alpha"
+APP_VERSION = "0.18.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3481,7 +3481,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cores.set_values(per)
         t = self.worker_table
         rows = sorted(((x, w) for x in shown for w in x.workers.values()),
-                      key=lambda xw: (xw[1].state == "gone", xw[0].number, xw[1].id))
+                      key=lambda xw: (xw[0].number, xw[1].id))  # fixed order: a closed one keeps its row
         t.setRowCount(len(rows))
         self._worker_rows = rows
         gpus = self._gpu_procs or {}
