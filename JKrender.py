@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.31 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.32 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.31 alpha"
+APP_VERSION = "0.32 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -704,6 +704,7 @@ class RenderEngine:
         self.chunks = []
         self.workers = {}
         self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
+        self.scope = None  # set of frames: only these render (Render this frame / batch); None = everything
         self.next_wid = 1
         self.next_cid = 1
         self.last_spawn = 0.0
@@ -817,6 +818,7 @@ class RenderEngine:
         """everything=True renders the whole range again, including frames already on disk."""
         if self.state in ("rendering", "starting", "finishing"):
             return
+        self.scope = None  # Render renders everything still to render
         if everything:
             self.rebuild_plan()
         elif self.state in ("done", "failed", "stopped"):
@@ -973,6 +975,7 @@ class RenderEngine:
         return sum(max(0.0, min(b, p1) - max(a, p0)) for p0, p1 in spans)
 
     def stop(self, reason="Stopped by user"):
+        self.scope = None
         self._end_pause()
         for w in list(self.workers.values()):
             self._kill(w, requeue=True, note="stopped")
@@ -986,10 +989,18 @@ class RenderEngine:
         if self.state in ("rendering", "paused"):
             self._balance_workers()
 
-    def rerender(self, frames):
+    def in_scope(self, chunk):
+        return self.scope is None or any(f in self.scope for f in chunk.frames)
+
+    def rerender(self, frames, only=False):
+        """Render these frames again. only=True on a render that is not running renders just these frames
+        (Render this frame / batch); the other frames still to render wait for Render."""
         frames = sorted(set(frames) & set(self.frames))
         if not frames:
             return
+        idle = self.state in ("ready", "done", "failed", "stopped")
+        if only and idle:
+            self.scope = set(frames)
         for c in self.chunks:
             if c.state == "queued":
                 c.frames = [f for f in c.frames if f not in frames]
@@ -998,8 +1009,13 @@ class RenderEngine:
             fr.state, fr.secs, fr.checks, fr.small, fr.worker = "queued", None, {}, False, None
         self.chunks = [c for c in self.chunks if c.state != "queued" or c.frames]
         made = self._chunk(frames)
-        self.note("Queued %d frame(s) again in %d chunk(s)" % (len(frames), len(made)))
+        self.note("Queued %d frame(s) again in %d chunk(s)%s" % (len(frames), len(made),
+                                                                 ": only these render" if self.scope else ""))
         if self.state in ("ready", "done", "failed", "stopped", "finishing"):
+            if idle:  # a new run: its own clock
+                self.started, self.paused_secs, self.paused_at, self.pauses = time.time(), 0.0, None, []
+                self.done_times.clear()
+                self.notice = None
             self.state = "rendering"
             self.started = self.started or time.time()
             self.ended = None
@@ -1170,11 +1186,11 @@ class RenderEngine:
         if self.state != "rendering":
             return 0
         busy = sum(1 for w in self._live() if w.state == "busy")
-        return busy + sum(1 for c in self.chunks if c.state == "queued")
+        return busy + sum(1 for c in self.chunks if c.state == "queued" and self.in_scope(c))
 
     def is_tail(self):
         """Rendering its last chunks: nothing left to hand out, so the next render may start loading."""
-        return self.state == "rendering" and not any(c.state == "queued" for c in self.chunks)
+        return self.state == "rendering" and not any(c.state == "queued" and self.in_scope(c) for c in self.chunks)
 
     def _may_spawn(self):
         return self.manager is None or self.manager.free_slots() > 0
@@ -1494,7 +1510,7 @@ class RenderEngine:
                     pass
         if self.state == "rendering":
             # Chunks go out in frame order; a retried one goes first, so a problem shows up again quickly.
-            queued = sorted((c for c in self.chunks if c.state == "queued"),
+            queued = sorted((c for c in self.chunks if c.state == "queued" and self.in_scope(c)),
                             key=lambda c: (c.attempts == 0, min(c.frames)))
             for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
                 if not queued:
@@ -1503,7 +1519,7 @@ class RenderEngine:
             live = self._live()
             busy = sum(1 for w in live if w.state == "busy")
             loading = sum(1 for w in live if w.state in ("loading", "idle"))
-            queued_left = sum(1 for c in self.chunks if c.state == "queued")
+            queued_left = sum(1 for c in self.chunks if c.state == "queued" and self.in_scope(c))
             want = min(self.workers_target - len(getattr(self, "held", ())), busy + queued_left)
             if (len(live) < want and now - self.last_spawn >= SPAWN_GAP and loading < queued_left + 1
                     and self._may_spawn()):
@@ -1513,7 +1529,8 @@ class RenderEngine:
             if not queued_left:
                 for w in [w for w in self.workers.values() if w.state == "idle"]:
                     self._quit(w, "no chunks left")
-        if self.state == "rendering" and not any(c.state in ("queued", "rendering") for c in self.chunks):
+        if self.state == "rendering" and not any(c.state == "rendering" or (c.state == "queued" and self.in_scope(c))
+                                                 for c in self.chunks):
             self.state = "finishing"
             for w in list(self.workers.values()):
                 if w.state in ("idle", "loading"):
@@ -1576,9 +1593,13 @@ class RenderEngine:
                     fr.state = "bad"
         failed = [c for c in self.chunks if c.state == "failed"]
         bad = [f for f, fr in self.frames.items() if fr.state == "bad"]
+        only = self.scope
+        self.scope = None
         if failed:
             self.state = "failed"
             self.error = "%d chunk(s) failed: %s" % (len(failed), failed[0].error)
+        elif only and any(fr.state == "queued" for fr in self.frames.values()):
+            self.state = "ready"  # just the picked frames were rendered; Render does the rest
         else:
             self.state = "done"
         self.note("Render %s in %s. %d frames, %d bad on disk." % (
@@ -2598,13 +2619,6 @@ class FramesModel(QtCore.QAbstractTableModel):
                 if bad:
                     return "%s %s" % (bad[0][0], bad[0][2])
                 return "small (check it)" if fr.small else "ok"
-        if col == 6 and fr.checks and role in (QtCore.Qt.BackgroundRole, QtCore.Qt.ForegroundRole):
-            # the whole Check cell in the colour of what the check found
-            if role == QtCore.Qt.ForegroundRole:
-                return QtGui.QColor("#111111")
-            if any(c[0] != "ok" for c in fr.checks.values()):
-                return QtGui.QColor(C["failed"])
-            return QtGui.QColor(C["small"] if fr.small else C["done"])
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
             if fr.state in ("bad", "failed"):
                 return QtGui.QColor(C["failed"])
@@ -3926,10 +3940,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not frames:
             return
         menu = QtWidgets.QMenu(self)
-        again = menu.addAction("Render %d frame(s) again" % len(frames))
+        again = menu.addAction("Render this frame" if len(frames) == 1 else "Render this batch (%d frames)" % len(frames))
+        e = self.engine
+        again.setEnabled(e.state not in ("finishing", "waiting"))
         act = menu.exec(self.frames_view.viewport().mapToGlobal(pos))
         if act == again:
-            self.engine.rerender(frames)
+            # only these frames, unless the whole render is running anyway: then they just join it
+            e.rerender(frames, only=True)
             self._after_requeue()
 
     def _after_requeue(self):
