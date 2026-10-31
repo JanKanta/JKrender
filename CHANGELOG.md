@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.34 alpha — 2026-10-31
+
+- Output, right-click on frames: **Delete this frame**, or **Delete this batch (N frames)** with several selected.
+  - Asks first, with the number of files and their size.
+  - The deleted frames go back to the queue.
+  - Greyed out while the render runs.
+
 ## 0.33 alpha — 2026-10-31
 
 - Movies: the player has the Enlarge button too. It makes the player, with Play and the slider, as big as the three panes; Esc goes back.
