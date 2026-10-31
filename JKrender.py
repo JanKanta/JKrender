@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.16 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.17 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.16 alpha"
+APP_VERSION = "0.17 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -613,6 +613,7 @@ class Worker:
         self.rss = 0.0
         self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
         self.user_paused = False  # frozen from its right-click menu
+        self.pinned = False  # started again by hand: the RAM guard closes the others first
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -905,8 +906,14 @@ class RenderEngine:
         self.held.discard(wid)
         if wid not in self.restart_ids:
             self.restart_ids.append(wid)
-        waits = self.manager is not None and self.manager.free_slots() <= 0
-        self.note("W%02d starts again%s" % (wid, " as soon as the RAM limit allows" if waits else ""))
+        m = self.manager
+        if m is not None and m.free_slots() <= 0 and m.ram_cap is not None:
+            # Your call: the RAM limit lets one more process run for it, right now.
+            cap = m.live_count() + 1
+            m.ram_cap = None if cap >= m.total else cap
+            self.note("W%02d starts again; the RAM limit lets one more process run for it" % wid, "warn")
+        else:
+            self.note("W%02d starts again" % wid)
 
     def user_pause(self, w, on):
         if not w.ps or w.state == "gone" or w.user_paused == on:
@@ -983,7 +990,8 @@ class RenderEngine:
         gone = restart or sorted(i for i, x in self.workers.items()
                                  if x.state == "gone" and i not in getattr(self, "held", ()))
         old = self.workers[gone[0]] if gone else None
-        if old and old.id in getattr(self, "restart_ids", []):
+        by_hand = bool(old and old.id in getattr(self, "restart_ids", []))
+        if by_hand:
             self.restart_ids.remove(old.id)
         if old:
             wid = old.id
@@ -1010,6 +1018,7 @@ class RenderEngine:
         w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
         if old:
             w.segments, w.frames_done, w.frame_secs = old.segments, old.frames_done, old.frame_secs
+        w.pinned = by_hand
         self.workers[wid] = w
         self.last_spawn = time.time()
         threading.Thread(target=self._reader, args=(w,), daemon=True).start()
@@ -1128,11 +1137,16 @@ class RenderEngine:
         if extra > 0:
             # Idle and still-loading ones go first; busy ones finish their chunk.
             # the last one started first within each state: it has rendered the shortest time
-            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state], -w.spawned))[:extra]:
+            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state], w.pinned,
+                                                 -w.spawned))[:extra]:
                 if w.state == "busy":
                     w.retire = True
                 else:
                     self._quit(w, "not needed")
+        elif extra < 0:
+            # Room again (the RAM limit went up): busy ones still waiting to close after their chunk stay.
+            for w in [w for w in self.workers.values() if w.state == "busy" and w.retire][:-extra]:
+                w.retire = False
 
     def _quit(self, w, why):
         w.retire = True
@@ -1756,7 +1770,8 @@ class RenderManager:
                 # Nearly out of memory: one process gives up its chunk now instead of after it.
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
                 if busy:
-                    e, w = max(busy, key=lambda ew: ew[1].spawned)  # the last one started
+                    # the last one started, but one you started again by hand only when nothing else is left
+                    e, w = max(busy, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
