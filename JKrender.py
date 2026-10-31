@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.30 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.30.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.30 alpha"
+APP_VERSION = "0.30.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3270,8 +3270,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_filter.addItems(["All", "Rendered", "Problems"])
         self.out_filter.currentTextChanged.connect(self._out_filter)
         bar.addWidget(self.out_filter)
-        for text, fn in (("Check all again", self._verify), ("Render problem frames again", self._rerender_bad),
-                         ("Open folder", self._open_folder), ("Delete all", self._delete_all)):
+        for text, fn in (("Check all again", self._verify), ("Open folder", self._open_folder),
+                         ("Delete all", self._delete_all)):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
@@ -3638,7 +3638,7 @@ class MainWindow(QtWidgets.QMainWindow):
             bad = sum(1 for fr in e.frames.values() if fr.state == "bad")
             small = sum(1 for fr in e.frames.values() if fr.small)
             if bad:
-                self._banner("Done in %s, but %d frame(s) are broken on disk. Output tab → Render problem frames again."
+                self._banner("Done in %s, but %d frame(s) are broken on disk. Output: Problems, select them, right-click → Render again."
                              % (fmt_secs(e.elapsed()), bad), C["failed"])
             else:
                 extra = (" %d frame(s) are much smaller than the rest; worth a look." % small) if small else ""
@@ -3926,14 +3926,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_model.refilter()
         self._sync_controls()
         self._slow_tick()
-
-    def _rerender_bad(self):
-        frames = [f for f, fr in self.engine.frames.items() if fr.state in ("bad", "failed")]
-        if not frames:
-            QtWidgets.QMessageBox.information(self, "JKrender", "No broken or failed frames.")
-            return
-        self.engine.rerender(frames)
-        self._after_requeue()
 
     def _verify(self):
         self.engine.verify_all()
