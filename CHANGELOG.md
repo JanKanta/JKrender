@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.30.1 alpha — 2026-10-31
+
+- Output: the Render problem frames again button is gone.
+  - Broken frames: filter Problems, select them, right-click → Render again.
+  - The banner after a render with broken frames says so.
+
 ## 0.30 alpha — 2026-10-31
 
 - A frame bar under the preview in Output:
