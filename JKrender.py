@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.35 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.36 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.35 alpha"
+APP_VERSION = "0.36 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -644,6 +644,7 @@ class Worker:
         self.user_paused = False  # frozen from its right-click menu
         self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
         self.pinned = False  # started again by hand: the RAM guard closes the others first
+        self.handover = False  # its place goes to another render: it still renders one chunk, then closes
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -1177,7 +1178,8 @@ class RenderEngine:
             chunk.state = "queued"
 
     def _live(self):
-        return [w for w in self.workers.values() if w.state in ("loading", "idle", "busy") and not w.retire]
+        return [w for w in self.workers.values()
+                if w.state in ("loading", "idle", "busy") and not w.retire and not w.handover]
 
     def need(self):
         """Nuke processes this render could use right now."""
@@ -1199,18 +1201,22 @@ class RenderEngine:
         live = self._live()
         extra = len(live) - self.workers_target
         if extra > 0:
-            # Idle and still-loading ones go first; busy ones finish their chunk.
-            # the last one started first within each state: it has rendered the shortest time
-            for w in sorted(live, key=lambda w: ({"idle": 0, "loading": 1, "busy": 2}[w.state], w.pinned,
+            # Hand the places over gently, so no work is thrown away: an idle one closes now; a busy one
+            # finishes its chunk first; one still opening the script opens it, renders one chunk, then closes.
+            # Busy ones before loading ones (they are free sooner), the last one started first.
+            for w in sorted(live, key=lambda w: ({"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned,
                                                  -w.spawned))[:extra]:
                 if w.state == "busy":
                     w.retire = True
+                elif w.state == "loading":
+                    w.handover = True
                 else:
                     self._quit(w, "not needed")
         elif extra < 0:
-            # Room again (the RAM limit went up): busy ones still waiting to close after their chunk stay.
-            for w in [w for w in self.workers.values() if w.state == "busy" and w.retire][:-extra]:
-                w.retire = False
+            # Room again (another render done, the RAM limit up): ones still to close after their chunk stay.
+            for w in [w for w in self.workers.values()
+                      if w.state in ("loading", "idle", "busy") and (w.retire or w.handover)][:-extra]:
+                w.retire = w.handover = False
 
     def _quit(self, w, why):
         w.retire = True
@@ -1346,8 +1352,9 @@ class RenderEngine:
                               % (w.name, w.rss, w.ram), "warn")
             if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
                 self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
-            elif w.retire:
-                self._quit(w, "not needed")
+            elif w.retire or w.handover:
+                self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
+                           else "not needed")
         elif kind == "FAIL":
             c = w.chunk
             frame = int(rest[1]) if len(rest) > 1 else None

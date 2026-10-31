@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.36 alpha — 2026-10-31
+
+- A render started while others run now gets its share gently, without throwing work away.
+  - A busy process finishes its chunk, then hands its place over.
+  - One still opening the script opens it, renders one chunk, then hands over.
+  - Before, processes still opening the script were closed at once, and their loading was lost.
+- The log says "closing (its place goes to another render)".
+- If room comes back before then (another render done), processes waiting to hand over stay.
+
 ## 0.35 alpha — 2026-10-31
 
 - Several renders: when one is done, its processes move on to the renders still running under the same names.
