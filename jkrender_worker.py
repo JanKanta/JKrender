@@ -21,6 +21,14 @@ def say(*parts):
     sys.stdout.flush()
 
 
+def say_memory():
+    """Nuke's cache in use and its limit (-c), in bytes; Nuke 16 has nuke.memory2."""
+    try:
+        say("MEM", nuke.memory2.usage(), nuke.memory2.maxUsage())
+    except Exception:
+        pass
+
+
 def parse_frames(spec):
     frames = []
     for part in spec.split(","):
@@ -69,6 +77,7 @@ def render_frames(writes, chunk, frames):
                 sys.stdout.flush()
                 time.sleep(2 * attempt)
         say("FRAME", frame, "%.3f" % (time.time() - started))
+        say_memory()
     say("CHUNK", chunk)
 
 
@@ -78,6 +87,7 @@ def render_range(writes, chunk, first, last):
     def after_frame():
         now = time.time()
         say("FRAME", nuke.frame(), "%.3f" % (now - clock["t"]))
+        say_memory()
         clock["t"] = now
 
     for w in writes:

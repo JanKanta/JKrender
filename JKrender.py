@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.21 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.22 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.21 alpha"
+APP_VERSION = "0.22 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -59,7 +59,7 @@ MAX_ATTEMPTS = 3  # a chunk is rendered up to 3 times (each retry on a fresh Nuk
 SPAWN_GAP = 0.3  # seconds between Nuke starts, so licence checkout and script loads do not all hit at once
 NUKE_ENV_KEYS = ("NUKE_PATH", "PYTHONPATH", "OCIO")
 SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
-JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
+JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
@@ -642,6 +642,7 @@ class Worker:
         self.rss = 0.0
         self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
         self.user_paused = False  # frozen from its right-click menu
+        self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
         self.pinned = False  # started again by hand: the RAM guard closes the others first
         self.exit_code = None
         try:
@@ -1286,6 +1287,11 @@ class RenderEngine:
                 self.frames[f].state = "rendering"
                 self.frames[f].worker = w.name
                 self.frames[f].started = now
+        elif kind == "MEM":
+            try:
+                w.cache = (int(rest[0]), int(rest[1]))
+            except (IndexError, ValueError):
+                pass
         elif kind == "FRAME":
             f, secs = int(rest[0]), float(rest[1])
             secs = max(0.0, secs - self.paused_between(now - secs, now))  # Nuke's clock ran on while frozen
@@ -3301,9 +3307,9 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 12)
+        self.worker_table = QtWidgets.QTableWidget(0, 13)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "GPU", "Frames", "Avg frame",
+            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
              "Script load"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
@@ -3645,6 +3651,7 @@ class MainWindow(QtWidgets.QMainWindow):
             values = ["%d  %s" % (x.number, x.name), w.name, str(w.proc.pid), x.worker_state(w),
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
+                      "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
                       "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else ""]
             for col, v in enumerate(values):
