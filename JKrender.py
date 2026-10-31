@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.18.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.19 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.18.2 alpha"
+APP_VERSION = "0.19 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -63,6 +63,7 @@ JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+                    "chunk_auto": True, "use_gpu": False, "log_cleanup": True, "log_days": 30,
                     "test_frames": True, "test_pause": False, "auto_chunk": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -161,6 +162,34 @@ class GpuPerProcess:
                 pct, used = out.get(pid, (0.0, 0))
                 out[pid] = (pct, used + value)
         return out
+
+
+def clean_render_folders(root, days, keep=()):
+    """Delete render folders (snapshot, job, logs) under root whose newest file is older than `days`.
+
+    Only folders JKrender made (they hold job.json) and none of the renders open now."""
+    cutoff = time.time() - days * 86400
+    keep = {os.path.normcase(os.path.abspath(str(k))) for k in keep}
+    deleted, freed = 0, 0
+    try:
+        folders = [d for d in Path(root).iterdir() if d.is_dir() and (d / "job.json").is_file()]
+    except OSError:
+        return 0, 0
+    for d in folders:
+        if os.path.normcase(os.path.abspath(str(d))) in keep:
+            continue
+        try:
+            files = [f for f in d.rglob("*") if f.is_file()]
+            newest = max([f.stat().st_mtime for f in files] + [d.stat().st_mtime])
+            if newest >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in files)
+            shutil.rmtree(d)
+            deleted += 1
+            freed += size
+        except OSError:
+            continue
+    return deleted, freed
 
 
 def hidden():
@@ -730,6 +759,23 @@ class RenderEngine:
                 self.frames[f].chunk = c.name
         self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))  # the table lists them in frame order
         return made
+
+    def preferred_chunk(self):
+        """Chunk size from Settings: Auto = about 4 chunks per Nuke process (at most 10 frames), or the size set."""
+        if self.movie:
+            return max(1, len(self.frames))
+        if self.settings.get("chunk_auto", True) or not self.settings.get("chunk_size"):
+            procs = self.manager.total if self.manager else (self.settings.get("processes") or 8)
+            return max(1, min(10, math.ceil(len(self.frames) / (max(1, procs) * 4))))
+        return max(1, int(self.settings["chunk_size"]))
+
+    def apply_chunk_setting(self):
+        """Renders that are not running take the chunk size from Settings."""
+        if self.movie or self.state not in ("ready", "stopped", "done", "failed"):
+            return
+        size = self.preferred_chunk()
+        if size != self.chunk_size:
+            self.set_chunk_size(size)
 
     def set_chunk_size(self, size):
         """New size for chunks nobody has started yet."""
@@ -1700,6 +1746,8 @@ class RenderManager:
     def add(self, job, job_dir):
         e = RenderEngine(job, job_dir, self.settings)
         e.manager = self
+        if not e.movie:
+            e.set_chunk_size(e.preferred_chunk())
         e.number = self.next_number
         self.next_number += 1
         e.threads, e.ram = self.threads, self.ram
@@ -2582,6 +2630,11 @@ class MainWindow(QtWidgets.QMainWindow):
         job_path = Path(job_path)
         # Before the window shows: frames the Write already rendered appear as done.
         self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
+        if self.settings.get("log_cleanup", True):
+            days = int(self.settings.get("log_days", 30))
+            deleted, freed = clean_render_folders(job_path.parent.parent, days, keep=[job_path.parent])
+            if deleted:
+                self.engine.note("Deleted %d render log folder(s) older than %d days (%s)" % (deleted, days, fmt_size(freed)))
         self._build()
         self._add_card(self.engine)
         self.select(self.engine)
@@ -2704,10 +2757,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt.selected = e
         self.title.setText(e.name)
         self.subtitle.setText("%s  ·  %s" % (e.write_names, e.job.get("script", "")))
-        for box, value in ((self.s_chunk, e.chunk_size),):
-            box.blockSignals(True)
-            box.setValue(value)
-            box.blockSignals(False)
+        if hasattr(self, "l_ram_need"):
+            self._show_chunk()
         self.range_edit.setText(e.range_text)
         self.chunk_table.setRowCount(0)
         self._chunk_cols_sized = False
@@ -2916,10 +2967,31 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # -- Nuke processes (locked while rendering; Processes, Threads and RAM are shared by every render)
         procs = column("Nuke processes")
-        for label, box, after in (("Processes", self.s_workers, ""), ("Threads", self.s_threads, ""),
-                                  ("RAM", self.s_ram, ""), ("Chunk", self.s_chunk, "(this render)")):
+        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads), ("Nuke cache", self.s_ram)):
             box.setMinimumWidth(80)
-            spin_row(procs, label, box, after, width=72)
+            spin_row(procs, label, box, width=80)
+        self.l_ram_need = QtWidgets.QLabel("")
+        self.l_ram_need.setObjectName("dim")
+        self.l_ram_need.setContentsMargins(84, 0, 0, 0)
+        procs.addWidget(self.l_ram_need)
+        chunk_row = QtWidgets.QHBoxLayout()
+        lab = QtWidgets.QLabel("Chunk")
+        lab.setFixedWidth(80)
+        self.r_chunk_auto = QtWidgets.QRadioButton("Auto")
+        self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
+                                     "46 frames with 8 processes -> 2, 96 -> 3, 320 and more -> 10.")
+        self.r_chunk_set = QtWidgets.QRadioButton("")
+        self.r_chunk_set.setToolTip("The same chunk size for every render")
+        auto = bool(self.settings.get("chunk_auto", True))
+        self.r_chunk_auto.setChecked(auto)
+        self.r_chunk_set.setChecked(not auto)
+        self.s_chunk.setMinimumWidth(80)
+        self.s_chunk.setToolTip("Frames per chunk for every render. Applies to renders that are not running.")
+        for widget in (lab, self.r_chunk_auto, self.r_chunk_set, self.s_chunk):
+            chunk_row.addWidget(widget)
+        chunk_row.addStretch(1)
+        procs.addLayout(chunk_row)
+        self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
         self.c_gpu = check(procs, "Use GPU", "use_gpu", False,
                            "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
                            "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
@@ -2959,6 +3031,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_all_workers = check(left, "Show processes of all renders", "show_all_workers", True,
                                    "On: Workers and System show the Nuke processes of every render in the window.\n"
                                    "Off: only those of the render you picked at the top.", self._all_workers_changed)
+        clean_row = QtWidgets.QHBoxLayout()
+        self.c_clean = QtWidgets.QCheckBox("Delete render logs older than")
+        self.c_clean.setChecked(bool(self.settings.get("log_cleanup", True)))
+        self.c_clean.setToolTip("When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
+                                "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.")
+        self.s_days = QtWidgets.QSpinBox()
+        self.s_days.setRange(1, 3650)
+        self.s_days.setSuffix(" days")
+        self.s_days.setValue(int(self.settings.get("log_days", 30)))
+        self.s_days.setEnabled(self.c_clean.isChecked())
+        self.c_clean.toggled.connect(lambda v: (self._save_setting("log_cleanup", v), self.s_days.setEnabled(v)))
+        self.s_days.valueChanged.connect(lambda v: self._save_setting("log_days", v))
+        clean_row.addWidget(self.c_clean)
+        clean_row.addWidget(self.s_days)
+        clean_row.addStretch(1)
+        left.addLayout(clean_row)
         left.addStretch(1)
 
         # -- speed and safety
@@ -2982,7 +3070,7 @@ class MainWindow(QtWidgets.QMainWindow):
         limit_row.addWidget(self.s_limit)
         limit_row.addStretch(1)
         right.addLayout(limit_row)
-        self.c_chunk_auto = check(right, "Auto chunk size", "auto_chunk", True,
+        self.c_chunk_auto = check(right, "Smaller chunks towards the end", "auto_chunk", True,
                                   "Chunks get smaller towards the end of a render, down to single frames,\n"
                                   "so every Nuke process finishes at about the same time.\n"
                                   "Off: every chunk keeps the size set under Chunk.")
@@ -2992,8 +3080,55 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_test_pause = check(right, "Pause after the test frames", "test_pause", False,
                                   "Wait for Resume after the test frames, so you can look at them first")
         right.addStretch(1)
+        self.b_reset = QtWidgets.QPushButton("Reset to defaults")
+        self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
+        self.b_reset.clicked.connect(self._reset_settings)
+        right.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
         outer.addStretch(1)
+        self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         return w
+
+    def _chunk_mode_changed(self, auto, save=True):
+        if save:
+            self._save_setting("chunk_auto", auto)
+            if not auto:
+                self._save_setting("chunk_size", self.s_chunk.value())
+        self._apply_chunks()
+
+    def _apply_chunks(self):
+        for e in self.manager.engines:
+            e.apply_chunk_setting()
+        self._show_chunk()
+        self.frame_map.update()
+
+    def _show_chunk(self):
+        """The chunk box shows the size of the picked render; it can only be typed into with the size set by hand."""
+        self.s_chunk.blockSignals(True)
+        self.s_chunk.setValue(self.engine.chunk_size)
+        self.s_chunk.blockSignals(False)
+        need = self.engine.ram_need()
+        self.l_ram_need.setText("this script took %.1f GB per process last time" % need if need else "")
+        self._sync_controls()
+
+    def _reset_settings(self):
+        if QtWidgets.QMessageBox.question(self, "Reset to defaults",
+                                          "Put every setting back to how JKrender comes?") != QtWidgets.QMessageBox.Yes:
+            return
+        plan = auto_plan(10 ** 6, False)
+        learned = {k: self.settings[k] for k in ("script_ram",) if k in self.settings}
+        self.settings.clear()
+        self.settings.update(DEFAULT_SETTINGS)
+        self.settings.update(learned)
+        write_settings(self.settings)
+        for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
+                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 30)):
+            box.setValue(value)
+        for box, on in ((self.c_auto, False), (self.c_slate, False), (self.c_all_workers, True), (self.c_clean, True),
+                        (self.c_gpu, False), (self.c_guard, True), (self.c_chunk_auto, True), (self.c_test, True),
+                        (self.c_test_pause, False), (self.r_chunk_auto, True)):
+            box.setChecked(on)
+        self._apply_chunks()
+        self.engine.note("Settings reset to defaults", "ok")
 
     def _guard_changed(self, on):
         self._save_setting("ram_guard", on)
@@ -3256,14 +3391,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _workers_changed(self, v):
         self.manager.set_budget(total=v)
         self._save_setting("processes", v)
+        if self.settings.get("chunk_auto", True):
+            self._apply_chunks()  # Auto chunk follows the number of processes
 
     def _budget_changed(self, key, v):
         self.manager.set_budget(**{key: v})
         self._save_setting(key, v)
 
     def _chunk_changed(self, v):
-        self.engine.set_chunk_size(v)
-        self.frame_map.update()
+        if self.r_chunk_auto.isChecked():
+            return
+        self._save_setting("chunk_size", v)
+        self._apply_chunks()
 
     def _sync_controls(self):
         s = self.engine.state
@@ -3279,7 +3418,8 @@ class MainWindow(QtWidgets.QMainWindow):
         any_running = bool(self.manager.running())
         for widget in (self.b_delete, self.b_delete_movie):
             widget.setEnabled(not running)
-        self.s_chunk.setEnabled(not running and not self.engine.movie)
+        manual = hasattr(self, "r_chunk_auto") and not self.r_chunk_auto.isChecked()
+        self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
         for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
             widget.setEnabled(not any_running)
         rendering = any(x.state == "rendering" for x in self.manager.engines)

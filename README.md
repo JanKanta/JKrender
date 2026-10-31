@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.18.2 alpha.** It works in tests; expect rough edges.
+**Version 0.19 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -71,5 +71,5 @@ The window runs in Nuke's own Python, which already has PySide6 and psutil, so n
 
 Optional: for movie details and the movie player, put `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
 
-Renders and logs go to `log/` next to `JKrender.py`. If that folder is read-only, they go to `~/.jkrender/renders/`.
+Renders and logs go to `log/` next to `JKrender.py`; folders older than 30 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.jkrender/renders/`.
 Settings are per user, in `~/.jkrender/settings.json`.
