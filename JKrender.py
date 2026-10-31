@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.22 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.23 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.22 alpha"
+APP_VERSION = "0.23 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2935,7 +2935,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """Two columns: how renders are handled, and speed / safety."""
+        """Three columns: General, Performance and Optimization, Processes and Chunks."""
         w = QtWidgets.QWidget()
         outer = QtWidgets.QHBoxLayout(w)
         outer.setContentsMargins(14, 10, 14, 10)
@@ -2971,41 +2971,8 @@ class MainWindow(QtWidgets.QMainWindow):
             row.addStretch(1)
             col.addLayout(row)
 
-        # -- Nuke processes (locked while rendering; Processes, Threads and RAM are shared by every render)
-        procs = column("Nuke processes")
-        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads), ("Nuke cache", self.s_ram)):
-            box.setMinimumWidth(80)
-            spin_row(procs, label, box, width=80)
-        self.l_ram_need = QtWidgets.QLabel("")
-        self.l_ram_need.setObjectName("dim")
-        self.l_ram_need.setContentsMargins(84, 0, 0, 0)
-        procs.addWidget(self.l_ram_need)
-        chunk_row = QtWidgets.QHBoxLayout()
-        lab = QtWidgets.QLabel("Chunk")
-        lab.setFixedWidth(80)
-        self.r_chunk_auto = QtWidgets.QRadioButton("Auto")
-        self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
-                                     "46 frames with 8 processes -> 2, 96 -> 3, 320 and more -> 10.")
-        self.r_chunk_set = QtWidgets.QRadioButton("")
-        self.r_chunk_set.setToolTip("The same chunk size for every render")
-        auto = bool(self.settings.get("chunk_auto", True))
-        self.r_chunk_auto.setChecked(auto)
-        self.r_chunk_set.setChecked(not auto)
-        self.s_chunk.setMinimumWidth(80)
-        self.s_chunk.setToolTip("Frames per chunk for every render. Applies to renders that are not running.")
-        for widget in (lab, self.r_chunk_auto, self.r_chunk_set, self.s_chunk):
-            chunk_row.addWidget(widget)
-        chunk_row.addStretch(1)
-        procs.addLayout(chunk_row)
-        self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
-        self.c_gpu = check(procs, "Use GPU", "use_gpu", False,
-                           "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
-                           "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
-                           "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
-        procs.addStretch(1)
-
-        # -- renders
-        left = column("Renders")
+        # -- general
+        left = column("General")
         self.c_auto = check(left, "Start Render on open", "auto_start", False,
                             "Render as soon as the window opens, without clicking Render")
         self.s_max = QtWidgets.QSpinBox()
@@ -3054,9 +3021,17 @@ class MainWindow(QtWidgets.QMainWindow):
         clean_row.addStretch(1)
         left.addLayout(clean_row)
         left.addStretch(1)
+        self.b_reset = QtWidgets.QPushButton("Reset to defaults")
+        self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
+        self.b_reset.clicked.connect(self._reset_settings)
+        left.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
 
-        # -- speed and safety
-        right = column("Speed and safety")
+        # -- performance and optimization
+        perf = right = column("Performance and Optimization")
+        self.c_gpu = check(perf, "Use GPU", "use_gpu", False,
+                           "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
+                           "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
+                           "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
         limit_row = QtWidgets.QHBoxLayout()
         self.c_guard = QtWidgets.QCheckBox("RAM limit")
         self.c_guard.setChecked(bool(self.settings.get("ram_guard", True)))
@@ -3086,10 +3061,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_test_pause = check(right, "Pause after the test frames", "test_pause", False,
                                   "Wait for Resume after the test frames, so you can look at them first")
         right.addStretch(1)
-        self.b_reset = QtWidgets.QPushButton("Reset to defaults")
-        self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
-        self.b_reset.clicked.connect(self._reset_settings)
-        right.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
+        # -- processes and chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
+        procs = column("Processes and Chunks")
+        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads), ("Nuke cache", self.s_ram)):
+            box.setMinimumWidth(80)
+            spin_row(procs, label, box, width=80)
+        self.l_ram_need = QtWidgets.QLabel("")
+        self.l_ram_need.setObjectName("dim")
+        self.l_ram_need.setContentsMargins(84, 0, 0, 0)
+        procs.addWidget(self.l_ram_need)
+        chunk_row = QtWidgets.QHBoxLayout()
+        lab = QtWidgets.QLabel("Chunk")
+        lab.setFixedWidth(80)
+        self.r_chunk_auto = QtWidgets.QRadioButton("Auto")
+        self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
+                                     "46 frames with 8 processes -> 2, 96 -> 3, 320 and more -> 10.")
+        self.r_chunk_set = QtWidgets.QRadioButton("")
+        self.r_chunk_set.setToolTip("The same chunk size for every render")
+        auto = bool(self.settings.get("chunk_auto", True))
+        self.r_chunk_auto.setChecked(auto)
+        self.r_chunk_set.setChecked(not auto)
+        self.s_chunk.setMinimumWidth(80)
+        self.s_chunk.setToolTip("Frames per chunk for every render. Applies to renders that are not running.")
+        for widget in (lab, self.r_chunk_auto, self.r_chunk_set, self.s_chunk):
+            chunk_row.addWidget(widget)
+        chunk_row.addStretch(1)
+        procs.addLayout(chunk_row)
+        self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
+        procs.addStretch(1)
         outer.addStretch(1)
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         return w
