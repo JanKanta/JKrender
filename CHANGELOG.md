@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26 alpha — 2026-10-31
+
+- New defaults, for a first start and for Reset to defaults:
+  - Delete old render logs after 7 days (was 30).
+  - Render slate frame on, on frame 1000.
+  - Use GPU on.
+- Settings already saved keep their values.
+
 ## 0.25 alpha — 2026-10-31
 
 - Settings has a new look.
