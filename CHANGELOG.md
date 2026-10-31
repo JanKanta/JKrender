@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16 alpha — 2026-10-31
+
+- System: a GPU column per Nuke process shows GPU use and dedicated VRAM.
+  - It reads the Windows counters Task Manager uses, because nvidia-smi cannot tell processes apart on Windows.
+  - Nuke in terminal mode only uses the GPU when started with --gpu, so the column shows about 0 % for now.
+- Right-click a process, in System or on the Workers timeline:
+  - **Pause / Resume**: freezes only that process mid-frame. Pausing the whole render and resuming it leaves it paused.
+  - **Close**: its chunk goes back to the queue, and it stays closed (State: closed by you) until Start again.
+  - **Start again**: a closed process comes back under its own name, as soon as the RAM limit allows.
+  - **Show process log**.
+- State of a closed process is "closed" (or "closed by you"), without Nuke's exit code.
+
 ## 0.15 alpha — 2026-10-31
 
 - Auto-tune processes is gone, together with Forget tuned scripts.
