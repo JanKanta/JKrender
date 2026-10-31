@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.18 alpha.** It works in tests; expect rough edges.
+**Version 0.18.1 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
