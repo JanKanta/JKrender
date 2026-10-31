@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.24 alpha — 2026-10-31
+
+- Test frames are gone, together with Render test frames first and Pause after the test frames.
+  - Every frame is still checked on disk as soon as it is rendered.
+- Smaller chunks towards the end moved to Settings → Processes and Chunks, under Chunk.
+
 ## 0.23 alpha — 2026-10-31
 
 - Settings in three columns:
