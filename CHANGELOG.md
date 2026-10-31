@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19 alpha — 2026-10-31
+
+### Settings
+
+- **Chunk: Auto or a size for every render.**
+  - Auto gives about 4 chunks per Nuke process, at most 10 frames each, and now uses the Processes setting instead of a guess of 8. For example, 46 frames are chunks of 2 with 8 processes and of 3 with 4.
+  - A size typed in applies to every render that is not running.
+  - "(this render)" is gone.
+- **RAM is now "Nuke cache"**, since it is Nuke's cache limit (`-c`), not what a process takes. Under it, JKrender shows what the picked script took per process last time.
+- **Auto chunk size is now "Smaller chunks towards the end"**, which says what it does.
+- **Delete render logs older than [30] days** (on by default).
+  - When JKrender opens, it deletes render folders in `log/` (script snapshot, job, the processes' logs) whose newest file is older than that.
+  - Only folders JKrender made are deleted, never the renders open now, and never rendered frames.
+- **Reset to defaults** puts every setting back, after asking. What JKrender learned about scripts (RAM per process) is kept.
+
 ## 0.18.2 alpha — 2026-10-31
 
 - Remaining shows a time up to the last frame.
