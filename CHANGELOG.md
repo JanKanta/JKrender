@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.25 alpha — 2026-10-31
+
+- Settings has a new look.
+  - Three cards (General, Performance and Optimization, Processes and Chunks), each a grid with the setting's name on the left and its control on the right, so everything lines up.
+  - On / off switches in Nuke orange instead of checkboxes; value boxes all the same width.
+  - Short grey notes under the rows that need them.
+  - Chunk is an Auto | Fixed switch with the size next to it.
+
 ## 0.24 alpha — 2026-10-31
 
 - Test frames are gone, together with Render test frames first and Pause after the test frames.
