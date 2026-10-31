@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21 alpha — 2026-10-31
+
+- Nuke cache is a setting again, under Settings → Nuke processes, as in 0.19. The automatic cache from 0.20 is undone.
+
 ## 0.20 alpha — 2026-10-31
 
 - Nuke cache (`-c`) is no longer a setting.
