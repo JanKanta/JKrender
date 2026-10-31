@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17 alpha — 2026-10-31
+
+- Start again also works on a process the RAM limit closed. It starts right away, and the RAM limit lets one more process run for it.
+  - Before, it waited until RAM dropped, so it looked as if only processes you closed yourself could start again.
+- A process you started again by hand is the last one the RAM limit closes; the others go first.
+- When the RAM limit goes up again, processes still marked to close after their chunk stay instead.
+  - Before, one was closed and started again straight away.
+
 ## 0.16 alpha — 2026-10-31
 
 - System: a GPU column per Nuke process shows GPU use and dedicated VRAM.
