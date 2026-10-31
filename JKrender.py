@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.30.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.31 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.30.1 alpha"
+APP_VERSION = "0.31 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1924,7 +1924,8 @@ QPushButton#primary { background: %(accent)s; color: #111; font-weight: 600; bor
 QPushButton#primary:disabled { background: #5c4426; color: #2a2a2a; }
 QSpinBox, QLineEdit, QComboBox { background: %(panel2)s; border: 1px solid %(line)s; padding: 3px 5px; border-radius: 3px; }
 QSpinBox:disabled, QLineEdit:disabled, QComboBox:disabled { background: %(bg)s; color: #666666; border-color: #2e2e2e; }
-QCheckBox:disabled, QLabel:disabled { color: #666666; }
+QRadioButton { color: %(text)s; }
+QCheckBox:disabled, QLabel:disabled, QRadioButton:disabled { color: #666666; }
 QTableWidget, QTableView, QPlainTextEdit, QTextBrowser { background: %(panel)s; border: none; gridline-color: %(line)s;
     selection-background-color: #6b4a22; alternate-background-color: #2d2d2d; }
 QHeaderView::section { background: %(panel2)s; border: none; border-right: 1px solid %(line)s; padding: 4px 6px; color: %(dim)s; }
@@ -2597,6 +2598,13 @@ class FramesModel(QtCore.QAbstractTableModel):
                 if bad:
                     return "%s %s" % (bad[0][0], bad[0][2])
                 return "small (check it)" if fr.small else "ok"
+        if col == 6 and fr.checks and role in (QtCore.Qt.BackgroundRole, QtCore.Qt.ForegroundRole):
+            # the whole Check cell in the colour of what the check found
+            if role == QtCore.Qt.ForegroundRole:
+                return QtGui.QColor("#111111")
+            if any(c[0] != "ok" for c in fr.checks.values()):
+                return QtGui.QColor(C["failed"])
+            return QtGui.QColor(C["small"] if fr.small else C["done"])
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
             if fr.state in ("bad", "failed"):
                 return QtGui.QColor(C["failed"])
@@ -3271,12 +3279,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_filter.currentTextChanged.connect(self._out_filter)
         bar.addWidget(self.out_filter)
         for text, fn in (("Check all again", self._verify), ("Open folder", self._open_folder),
-                         ("Delete all", self._delete_all)):
+                         ("Delete", self._delete_dialog)):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
         self.b_delete = b
-        self.b_delete.setToolTip("Delete every rendered frame of this render from disk")
+        self.b_delete.setToolTip("Delete rendered frames of this render from disk: a frame range, or all of them")
         bar.addStretch(1)
         left.addLayout(bar)
         self.out_summary = QtWidgets.QLabel("")
@@ -3290,6 +3298,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_view.setAlternatingRowColors(True)
         self.frames_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.frames_view.horizontalHeader().setStretchLastSection(True)
+        for col, width in enumerate((60, 66, 54, 64, 64, 70)):  # narrow, so Check (last) fits in the pane
+            self.frames_view.setColumnWidth(col, width)
         self.frames_view.selectionModel().currentRowChanged.connect(
             lambda cur, prev: self._show_frame(self.frames_model.rows[cur.row()]) if cur.isValid() else None)
         self.frames_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -4214,21 +4224,59 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.engine.outputs:
             self._open_path(Path(frame_path(self.engine.outputs[0][1], 0)).parent)
 
-    def _delete_all(self):
-        """Delete every output file of this render's frame range, after asking."""
+    def _delete_dialog(self):
+        """Delete: a frame range (the frames selected in the list to start with) or all frames."""
         e = self.engine
         if e.state in ("rendering", "paused", "finishing"):
             return
-        files = sorted({p for f in e.frame_list() for p in e.output_files(f) if os.path.isfile(p)})
+        picked = sorted({self.frames_model.rows[i.row()] for i in self.frames_view.selectedIndexes()})
+        d = QtWidgets.QDialog(self)
+        d.setWindowTitle("Delete rendered frames")
+        lay = QtWidgets.QVBoxLayout(d)
+        r_range = QtWidgets.QRadioButton("Frames")
+        r_all = QtWidgets.QRadioButton("All frames  (%s)" % e.range_text)
+        edit = QtWidgets.QLineEdit(frames_to_spec(picked) if picked else "")
+        edit.setPlaceholderText("e.g. 1001-1010, 1050")
+        edit.textEdited.connect(lambda _: r_range.setChecked(True))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(r_range)
+        row.addWidget(edit, 1)
+        lay.addLayout(row)
+        lay.addWidget(r_all)
+        (r_range if picked else r_all).setChecked(True)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Delete…")
+        buttons.accepted.connect(d.accept)
+        buttons.rejected.connect(d.reject)
+        lay.addWidget(buttons)
+        d.resize(380, d.sizeHint().height())
+        if d.exec() != QtWidgets.QDialog.Accepted:
+            return
+        if r_all.isChecked():
+            self._delete_all()
+            return
+        frames = sorted(set(parse_frames(edit.text())) & set(e.frames))
+        if not frames:
+            QtWidgets.QMessageBox.information(self, "JKrender", "None of those frames is in this render (%s)." % e.range_text)
+            return
+        self._delete_all(frames)
+
+    def _delete_all(self, frames=None):
+        """Delete the output files of these frames (all of the render's when None), after asking."""
+        e = self.engine
+        if e.state in ("rendering", "paused", "finishing"):
+            return
+        frames = e.frame_list() if frames is None else frames
+        files = sorted({p for f in frames for p in e.output_files(f) if os.path.isfile(p)})
         if not files:
             QtWidgets.QMessageBox.information(self, "JKrender", "There are no rendered frames on disk.")
             return
         size = sum(os.path.getsize(p) for p in files)
         folders = sorted({os.path.dirname(p) for p in files})
         ask = QtWidgets.QMessageBox.warning(
-            self, "Delete all rendered frames",
+            self, "Delete rendered frames",
             "Delete %d file(s), %s, from disk?\n\n%s\n\nFrames %s. This cannot be undone."
-            % (len(files), fmt_size(size), "\n".join(folders), e.range_text),
+            % (len(files), fmt_size(size), "\n".join(folders), frames_to_spec(frames)),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel, QtWidgets.QMessageBox.Cancel)
         if ask != QtWidgets.QMessageBox.Yes:
             return

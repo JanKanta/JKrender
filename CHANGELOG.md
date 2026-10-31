@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.31 alpha — 2026-10-31
+
+- Output: the whole Check cell takes the colour of what the check found: green ok, yellow suspiciously small, red broken.
+- The list's columns are narrower, so Check fits in the pane without scrolling.
+- Delete (was Delete all) asks first what to delete:
+  - **Frames**: a range typed in, e.g. 1001-1010, 1050, which starts as the frames selected in the list;
+  - **All frames**.
+  - Then it asks once more, with the number of files and their size. Deleted frames go back to the queue.
+
 ## 0.30.1 alpha — 2026-10-31
 
 - Output: the Render problem frames again button is gone.
