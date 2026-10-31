@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18 alpha — 2026-10-31
+
+- Settings → Nuke processes → Use GPU (off by default) starts the Nuke processes with `--gpu`.
+  - Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, Denoise, ...) on the CPU without it.
+  - On 48 frames of 1.nk (4K, 2x Kronos) with 8 processes, the render took 15.3 s against 48.7 s, and the frames were identical to the CPU ones.
+  - Each process takes its own VRAM, about 2.3 GB there: 18 of 24 GB with 8 processes. System → GPU shows it per process.
+
 ## 0.17 alpha — 2026-10-31
 
 - Start again also works on a process the RAM limit closed. It starts right away, and the RAM limit lets one more process run for it.

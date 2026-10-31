@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.17 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.18 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.17 alpha"
+APP_VERSION = "0.18 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -977,9 +977,11 @@ class RenderEngine:
         script = self.job.get("snapshot") or self.job.get("script")
         original = self.job.get("script") if self.job.get("snapshot") else ""
         threads, ram = self._process_size()
+        # Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, ...) on the CPU unless told --gpu
+        gpu = ["--gpu", "0"] if self.settings.get("use_gpu") else []
         return [
             self.job.get("nuke_exe") or "Nuke",
-            "-i", "-m", str(threads), "-c", "%dG" % ram,
+            "-i", "-m", str(threads), "-c", "%dG" % ram] + gpu + [
             "-t", str(WORKER_SCRIPT), script, original, names,
         ]
 
@@ -2905,6 +2907,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                   ("RAM", self.s_ram, ""), ("Chunk", self.s_chunk, "(this render)")):
             box.setMinimumWidth(80)
             spin_row(procs, label, box, after, width=72)
+        self.c_gpu = check(procs, "Use GPU", "use_gpu", False,
+                           "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
+                           "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
+                           "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
         procs.addStretch(1)
 
         # -- renders
@@ -3261,7 +3267,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in (self.b_delete, self.b_delete_movie):
             widget.setEnabled(not running)
         self.s_chunk.setEnabled(not running and not self.engine.movie)
-        for widget in (self.s_workers, self.s_threads, self.s_ram):
+        for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
             widget.setEnabled(not any_running)
         rendering = any(x.state == "rendering" for x in self.manager.engines)
         paused = any(x.state == "paused" for x in self.manager.engines)
