@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.28.2 alpha — 2026-10-31
+
+- Movies (MOV, MP4, ...): the one Nuke process still gets every thread, but its cache is now the Nuke cache setting.
+  - It was 70 % of the RAM, about 64 GB, for every movie render, so two movies or a movie next to other renders could run RAM out.
+
 ## 0.28.1 alpha — 2026-10-31
 
 - The result of a render ("Done in ...") now runs from the controls to the right edge of the window.

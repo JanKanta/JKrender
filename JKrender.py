@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.28.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.28.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.28.1 alpha"
+APP_VERSION = "0.28.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1011,10 +1011,11 @@ class RenderEngine:
 
     # ---- workers ------------------------------------------------------------
     def _process_size(self):
-        """Threads and RAM of one Nuke process. A movie cannot be split, so its one process gets the whole PC."""
+        """Threads and Nuke cache of one Nuke process. A movie cannot be split, so its one process gets every
+        thread; its cache is the Nuke cache setting like any other process, so several renders never ask for
+        most of the RAM each."""
         if self.movie:
-            plan = auto_plan(1, True)
-            return plan["threads"], plan["ram"]
+            return auto_plan(1, True)["threads"], self.ram
         return self.threads, self.ram
 
     def _command(self):
