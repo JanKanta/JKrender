@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.29 alpha — 2026-10-31
+
+- A click on a frame in the chunk map also selects that frame in the Output list and scrolls the list to it (in the middle), besides showing it in the preview.
+  - The left pane switches to Output if Chunks or Details was open.
+
 ## 0.28.2 alpha — 2026-10-31
 
 - Movies (MOV, MP4, ...): the one Nuke process still gets every thread, but its cache is now the Nuke cache setting.
