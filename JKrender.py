@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.28 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.28.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.28 alpha"
+APP_VERSION = "0.28.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2847,8 +2847,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addSpacing(14)
         self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
         self.banner.hide()
-        ctl.addWidget(self.banner)
-        ctl.addStretch(1)
+        ctl.addWidget(self.banner, 1)  # runs to the right edge of the window
+        ctl.addStretch(0)  # keeps the buttons on the left while there is no result to show
         head.addLayout(ctl)
         self.s_workers.valueChanged.connect(self._workers_changed)
         self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))

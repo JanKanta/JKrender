@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.28.1 alpha — 2026-10-31
+
+- The result of a render ("Done in ...") now runs from the controls to the right edge of the window.
+
 ## 0.28 alpha — 2026-10-31
 
 - More room for the panels.
