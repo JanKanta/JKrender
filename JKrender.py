@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.24 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.25 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.24 alpha"
+APP_VERSION = "0.25 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2322,6 +2322,35 @@ class CoreGrid(QtWidgets.QWidget):
         p.end()
 
 
+class Toggle(QtWidgets.QCheckBox):
+    """On / off switch in Nuke orange; a QCheckBox underneath, so isChecked / toggled work as usual."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(36, 20)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        on, enabled = self.isChecked(), self.isEnabled()
+        track = QtGui.QColor(C["accent"] if on else "#555555")
+        if not enabled:
+            track = QtGui.QColor("#6b5434" if on else "#444444")
+        r = QtCore.QRectF(1, 3, self.width() - 2, self.height() - 6)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        d = self.height() - 4
+        x = self.width() - d - 2 if on else 2
+        p.setBrush(QtGui.QColor("#f2f2f2" if enabled else "#9a9a9a"))
+        p.drawEllipse(QtCore.QRectF(x, 2, d, d))
+        p.end()
+
+
 class Tile(QtWidgets.QFrame):
     def __init__(self, title):
         super().__init__()
@@ -2872,156 +2901,184 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """Three columns: General, Performance and Optimization, Processes and Chunks."""
+        """Three cards: General, Performance and Optimization, Processes and Chunks.
+
+        Every card is a grid: the name of a setting on the left, its switch or value on the right,
+        so everything lines up; a short grey note sits under the row it explains."""
         w = QtWidgets.QWidget()
         outer = QtWidgets.QHBoxLayout(w)
-        outer.setContentsMargins(14, 10, 14, 10)
-        outer.setSpacing(40)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(12)
+        FIELD = 96  # every value box the same width
 
-        def column(title):
-            col = QtWidgets.QVBoxLayout()
-            col.setSpacing(7)
+        def card(title):
+            frame = QtWidgets.QFrame()
+            frame.setObjectName("card")
+            frame.setStyleSheet("#card { background: %s; border: 1px solid %s; border-radius: 6px; }"
+                                % (C["panel"], C["line"]))
+            v = QtWidgets.QVBoxLayout(frame)
+            v.setContentsMargins(16, 12, 16, 14)
+            v.setSpacing(12)
             head = QtWidgets.QLabel(title)
-            head.setStyleSheet("color: %s; font-weight: 600; font-size: 10pt;" % C["accent"])
-            col.addWidget(head)
-            outer.addLayout(col)
-            return col
+            head.setStyleSheet("color: %s; font-weight: 600; font-size: 10pt; background: transparent;" % C["accent"])
+            v.addWidget(head)
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(16)
+            grid.setVerticalSpacing(10)
+            grid.setColumnMinimumWidth(0, 150)
+            grid.setColumnStretch(2, 1)
+            v.addLayout(grid)
+            v.addStretch(1)
+            outer.addWidget(frame, 1)
+            frame.grid, frame.box = grid, v
+            return frame
 
-        def check(col, text, key, default, tip, slot=None):
-            box = QtWidgets.QCheckBox(text)
-            box.setChecked(bool(self.settings.get(key, default)))
-            box.setToolTip(tip)
-            box.toggled.connect(slot or (lambda v, key=key: self._save_setting(key, v)))
-            col.addWidget(box)
-            return box
+        def row(c, label, widgets, tip=""):
+            r = c.grid.rowCount()
+            lab = QtWidgets.QLabel(label)
+            lab.setStyleSheet("background: transparent;")
+            lab.setToolTip(tip)
+            c.grid.addWidget(lab, r, 0, QtCore.Qt.AlignVCenter)
+            h = QtWidgets.QHBoxLayout()
+            h.setSpacing(10)
+            for x in widgets:
+                if isinstance(x, QtWidgets.QAbstractSpinBox):
+                    x.setFixedWidth(FIELD)
+                if tip and not x.toolTip():
+                    x.setToolTip(tip)
+                h.addWidget(x)
+            h.addStretch(1)
+            c.grid.addLayout(h, r, 1, 1, 2)
+            return lab
 
-        def spin_row(col, label, widget, after="", width=0):
-            row = QtWidgets.QHBoxLayout()
-            if label:
-                lab = QtWidgets.QLabel(label)
-                if width:
-                    lab.setFixedWidth(width)
-                row.addWidget(lab)
-            row.addWidget(widget)
-            if after:
-                row.addWidget(QtWidgets.QLabel(after))
-            row.addStretch(1)
-            col.addLayout(row)
+        def note(c, widget_or_text):
+            lab = widget_or_text if isinstance(widget_or_text, QtWidgets.QLabel) else QtWidgets.QLabel(widget_or_text)
+            lab.setStyleSheet("color: %s; font-size: 8pt; background: transparent;" % C["dim"])
+            lab.setWordWrap(True)
+            r = c.grid.rowCount()
+            c.grid.addWidget(lab, r, 1, 1, 2)
+            c.grid.setRowMinimumHeight(r, 0)
+            return lab
 
-        # -- general
-        left = column("General")
-        self.c_auto = check(left, "Start Render on open", "auto_start", False,
-                            "Render as soon as the window opens, without clicking Render")
+        def toggle(key, default, slot=None):
+            t = Toggle()
+            t.setChecked(bool(self.settings.get(key, default)))
+            t.toggled.connect(slot or (lambda v, key=key: self._save_setting(key, v)))
+            return t
+
+        # -- General
+        gen = card("General")
+        self.c_auto = toggle("auto_start", False)
+        row(gen, "Start render on open", [self.c_auto], "Render as soon as the window opens, without clicking Render")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
-        self.s_max.setToolTip(
+        self.s_max.valueChanged.connect(lambda v: self._save_setting("max_renders", v))
+        row(gen, "Max renders at once", [self.s_max],
             "1: renders go one after another; the next one starts loading while the last chunks\n"
             "of the current one finish, so the PC never sits idle. That gets the first shot done soonest.\n"
             "2-3: renders run side by side and share the Nuke processes. Not faster in total,\n"
             "but you see frames of every shot early.")
-        self.s_max.valueChanged.connect(lambda v: self._save_setting("max_renders", v))
-        spin_row(left, "Max renders at once", self.s_max)
-        slate_row = QtWidgets.QHBoxLayout()
-        self.c_slate = QtWidgets.QCheckBox("Render slate frame")
+        self.c_slate = Toggle()
         self.c_slate.setChecked(bool(self.settings.get("slate")))
-        self.c_slate.setToolTip("The project range starts after the slate (e.g. 1001 with the slate on 1000).\n"
-                                "With this on, every render also renders the slate frame.")
         self.s_slate = QtWidgets.QSpinBox()
         self.s_slate.setRange(-100000, 1000000)
         self.s_slate.setValue(int(self.settings.get("slate_frame", 1000)))
-        self.s_slate.setToolTip("Frame number of the slate")
-        self.c_slate.toggled.connect(lambda v: self._slate_changed("slate", v))
+        self.s_slate.setEnabled(self.c_slate.isChecked())
+        self.c_slate.toggled.connect(lambda v: (self._slate_changed("slate", v), self.s_slate.setEnabled(v)))
         self.s_slate.valueChanged.connect(lambda v: self._slate_changed("slate_frame", v))
-        slate_row.addWidget(self.c_slate)
-        slate_row.addWidget(QtWidgets.QLabel("on frame"))
-        slate_row.addWidget(self.s_slate)
-        slate_row.addStretch(1)
-        left.addLayout(slate_row)
-        self.c_all_workers = check(left, "Show processes of all renders", "show_all_workers", True,
-                                   "On: Workers and System show the Nuke processes of every render in the window.\n"
-                                   "Off: only those of the render you picked at the top.", self._all_workers_changed)
-        clean_row = QtWidgets.QHBoxLayout()
-        self.c_clean = QtWidgets.QCheckBox("Delete render logs older than")
-        self.c_clean.setChecked(bool(self.settings.get("log_cleanup", True)))
-        self.c_clean.setToolTip("When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
-                                "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.")
+        row(gen, "Render slate frame", [self.c_slate, self.s_slate],
+            "The project range starts after the slate (e.g. 1001 with the slate on 1000).\n"
+            "With this on, every render also renders the slate frame on this frame.")
+        self.c_all_workers = toggle("show_all_workers", True, self._all_workers_changed)
+        row(gen, "Show processes of all renders", [self.c_all_workers],
+            "On: Workers and System show the Nuke processes of every render in the window.\n"
+            "Off: only those of the render you picked at the top.")
+        self.c_clean = toggle("log_cleanup", True, lambda v: (self._save_setting("log_cleanup", v),
+                                                               self.s_days.setEnabled(v)))
         self.s_days = QtWidgets.QSpinBox()
         self.s_days.setRange(1, 3650)
         self.s_days.setSuffix(" days")
         self.s_days.setValue(int(self.settings.get("log_days", 30)))
         self.s_days.setEnabled(self.c_clean.isChecked())
-        self.c_clean.toggled.connect(lambda v: (self._save_setting("log_cleanup", v), self.s_days.setEnabled(v)))
         self.s_days.valueChanged.connect(lambda v: self._save_setting("log_days", v))
-        clean_row.addWidget(self.c_clean)
-        clean_row.addWidget(self.s_days)
-        clean_row.addStretch(1)
-        left.addLayout(clean_row)
-        left.addStretch(1)
+        row(gen, "Delete old render logs", [self.c_clean, self.s_days],
+            "When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
+            "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.")
+        note(gen, "Snapshots and logs in the log folder; rendered frames are never touched.")
         self.b_reset = QtWidgets.QPushButton("Reset to defaults")
         self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
         self.b_reset.clicked.connect(self._reset_settings)
-        left.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
+        gen.box.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
 
-        # -- performance and optimization
-        perf = right = column("Performance and Optimization")
-        self.c_gpu = check(perf, "Use GPU", "use_gpu", False,
-                           "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
-                           "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
-                           "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
-        limit_row = QtWidgets.QHBoxLayout()
-        self.c_guard = QtWidgets.QCheckBox("RAM limit")
-        self.c_guard.setChecked(bool(self.settings.get("ram_guard", True)))
-        self.c_guard.setToolTip("When RAM goes over the limit, fewer Nuke processes run:\n"
-                                "the one started last closes first, so the least work is lost (close to full at once,\n"
-                                "otherwise after its chunk). They come back when they fit again.\n"
-                                "Off: nothing watches RAM; Windows starts swapping when it runs out.")
-        self.c_guard.toggled.connect(self._guard_changed)
+        # -- Performance and Optimization
+        perf = card("Performance and Optimization")
+        self.c_gpu = toggle("use_gpu", False)
+        row(perf, "Use GPU", [self.c_gpu],
+            "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
+            "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
+            "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
+        note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card. Each process takes its own VRAM.")
+        self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
         self.s_limit.setSuffix(" %")
         self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
-        self.s_limit.setToolTip("RAM use of the whole PC to stay under")
         self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
         self.s_limit.setEnabled(self.c_guard.isChecked())
-        limit_row.addWidget(self.c_guard)
-        limit_row.addWidget(self.s_limit)
-        limit_row.addStretch(1)
-        right.addLayout(limit_row)
-        right.addStretch(1)
-        # -- processes and chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
-        procs = column("Processes and Chunks")
-        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads), ("Nuke cache", self.s_ram)):
-            box.setMinimumWidth(80)
-            spin_row(procs, label, box, width=80)
-        self.l_ram_need = QtWidgets.QLabel("")
-        self.l_ram_need.setObjectName("dim")
-        self.l_ram_need.setContentsMargins(84, 0, 0, 0)
-        procs.addWidget(self.l_ram_need)
-        chunk_row = QtWidgets.QHBoxLayout()
-        lab = QtWidgets.QLabel("Chunk")
-        lab.setFixedWidth(80)
-        self.r_chunk_auto = QtWidgets.QRadioButton("Auto")
+        row(perf, "RAM limit", [self.c_guard, self.s_limit],
+            "When RAM goes over the limit, fewer Nuke processes run:\n"
+            "the one started last closes first, so the least work is lost (close to full at once,\n"
+            "otherwise after its chunk). They come back when they fit again.\n"
+            "Off: nothing watches RAM; Windows starts swapping when it runs out.")
+        note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
+
+        # -- Processes and Chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
+        procs = card("Processes and Chunks")
+        row(procs, "Processes", [self.s_workers])
+        row(procs, "Threads", [self.s_threads])
+        row(procs, "Nuke cache", [self.s_ram])
+        self.l_ram_need = note(procs, QtWidgets.QLabel(""))
+        # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
+        self.r_chunk_auto = QtWidgets.QPushButton("Auto")
         self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
                                      "46 frames with 8 processes -> 2, 96 -> 3, 320 and more -> 10.")
-        self.r_chunk_set = QtWidgets.QRadioButton("")
-        self.r_chunk_set.setToolTip("The same chunk size for every render")
+        self.r_chunk_set = QtWidgets.QPushButton("Fixed")
+        self.r_chunk_set.setToolTip("The same chunk size for every render, set on the right")
+        group = QtWidgets.QButtonGroup(w)
+        group.setExclusive(True)
+        for i, b in enumerate((self.r_chunk_auto, self.r_chunk_set)):
+            b.setCheckable(True)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            group.addButton(b)
+            near, far = ("left", "right") if i == 0 else ("right", "left")
+            b.setStyleSheet(
+                "QPushButton { background: %s; border: 1px solid %s; padding: 3px 12px; min-width: 34px;"
+                " border-top-%s-radius: 3px; border-bottom-%s-radius: 3px;"
+                " border-top-%s-radius: 0px; border-bottom-%s-radius: 0px; }"
+                "QPushButton:checked { background: %s; color: #111111; }"
+                "QPushButton:disabled { color: #666666; }"
+                % (C["panel2"], C["line"], near, near, far, far, C["accent"]))
+        self._chunk_group = group
         auto = bool(self.settings.get("chunk_auto", True))
         self.r_chunk_auto.setChecked(auto)
         self.r_chunk_set.setChecked(not auto)
-        self.s_chunk.setMinimumWidth(80)
         self.s_chunk.setToolTip("Frames per chunk for every render. Applies to renders that are not running.")
-        for widget in (lab, self.r_chunk_auto, self.r_chunk_set, self.s_chunk):
-            chunk_row.addWidget(widget)
-        chunk_row.addStretch(1)
-        procs.addLayout(chunk_row)
+        seg_w = QtWidgets.QWidget()
+        seg_w.setStyleSheet("background: transparent;")
+        seg = QtWidgets.QHBoxLayout(seg_w)
+        seg.setContentsMargins(0, 0, 0, 0)
+        seg.setSpacing(0)
+        seg.addWidget(self.r_chunk_auto)
+        seg.addWidget(self.r_chunk_set)
+        row(procs, "Chunk", [seg_w, self.s_chunk])
         self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
-        self.c_chunk_auto = check(procs, "Smaller chunks towards the end", "auto_chunk", True,
-                                  "Chunks get smaller towards the end of a render, down to single frames,\n"
-                                  "so every Nuke process finishes at about the same time.\n"
-                                  "Off: every chunk keeps the size set under Chunk.")
-        procs.addStretch(1)
-        outer.addStretch(1)
+        self.c_chunk_auto = toggle("auto_chunk", True)
+        row(procs, "Smaller chunks at the end", [self.c_chunk_auto],
+            "Chunks get smaller towards the end of a render, down to single frames,\n"
+            "so every Nuke process finishes at about the same time.\n"
+            "Off: every chunk keeps the size set under Chunk.")
+        note(procs, "Every process finishes at about the same time.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         return w
 
