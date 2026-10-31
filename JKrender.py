@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.28.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.29 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.28.2 alpha"
+APP_VERSION = "0.29 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2784,7 +2784,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(stats)
 
         self.frame_map = FrameMap(self.engine)
-        self.frame_map.frameClicked.connect(self._show_frame)
+        self.frame_map.frameClicked.connect(self._pick_frame)
         lay.addWidget(self.frame_map)
         legend = QtWidgets.QLabel(
             " ".join('<span style="color:%s">■</span> %s&nbsp;&nbsp;' % (C[k], t) for k, t in (
@@ -3783,6 +3783,19 @@ class MainWindow(QtWidgets.QMainWindow):
     def _out_filter(self, text):
         self.frames_model.mode = text
         self.frames_model.refilter()
+
+    def _pick_frame(self, frame):
+        """A click on the chunk map: the frame is selected in the Output list, which scrolls to it, and previewed."""
+        rows = self.frames_model.rows
+        if frame in rows:
+            idx = self.frames_model.index(rows.index(frame), 0)
+            self.frames_view.selectionModel().setCurrentIndex(
+                idx, QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
+            self.frames_view.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+            if self._preview_frame != frame:  # setCurrentIndex shows it, unless it was the current row already
+                self._show_frame(frame)
+        else:  # not in the list with the filter set now
+            self._show_frame(frame)
 
     def _show_frame(self, frame):
         e = self.engine
