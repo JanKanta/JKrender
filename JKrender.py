@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.29 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.30 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.29 alpha"
+APP_VERSION = "0.30 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2494,6 +2494,36 @@ def play_icon(playing):
     return QtGui.QIcon(pix)
 
 
+def nav_icon(kind):
+    """Small orange icons for the frame bar: "prev", "next", "big" (enlarge) and "small" (back)."""
+    pix = QtGui.QPixmap(32, 32)
+    pix.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pix)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    col = QtGui.QColor(C["accent"])
+    if kind in ("prev", "next"):
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(col)
+        if kind == "prev":
+            p.drawRect(QtCore.QRectF(8, 8, 3, 16))
+            p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(24, 8), QtCore.QPointF(12, 16), QtCore.QPointF(24, 24)]))
+        else:
+            p.drawRect(QtCore.QRectF(21, 8, 3, 16))
+            p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(8, 8), QtCore.QPointF(20, 16), QtCore.QPointF(8, 24)]))
+    else:
+        pen = QtGui.QPen(col, 3)
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen)
+        out = kind == "big"  # corners pointing out to enlarge, in to go back
+        for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+            cx, cy = (16 - sx * 10, 16 - sy * 10) if out else (16 - sx * 4, 16 - sy * 4)
+            d = 7 if out else -7
+            p.drawLine(QtCore.QPointF(cx, cy), QtCore.QPointF(cx + sx * d, cy))
+            p.drawLine(QtCore.QPointF(cx, cy), QtCore.QPointF(cx, cy + sy * d))
+    p.end()
+    return QtGui.QIcon(pix)
+
+
 class FramesModel(QtCore.QAbstractTableModel):
     COLS = ["Frame", "State", "Chunk", "Worker", "Time", "Size", "Check"]
 
@@ -2738,6 +2768,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview.setPixmap(QtGui.QPixmap())
         self.preview.setText("Click a frame to see it")
         self.preview_info.setText("")
+        self._frame_play_stop()
+        self._sync_frame_bar(None)  # the slider covers this render's frames before any frame is shown
         self.out_pages.setCurrentIndex(1 if e.movie else 0)
         if e.movie:
             self._movie_size_last = None
@@ -2895,6 +2927,12 @@ class MainWindow(QtWidgets.QMainWindow):
         main.setStretchFactor(1, 3)
         main.setSizes([560, 840])
         lay.addWidget(main, 1)
+        self.main_split = main
+        self.big_box = QtWidgets.QWidget()  # the big preview, in place of the three panes
+        self.big_lay = QtWidgets.QVBoxLayout(self.big_box)
+        self.big_lay.setContentsMargins(0, 0, 0, 0)
+        self.big_box.hide()
+        lay.addWidget(self.big_box, 1)
         self.tabs.currentChanged.connect(self._page_changed)
 
     def _details_shown(self):
@@ -3270,10 +3308,130 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_info.setObjectName("dim")
         self.preview_info.setWordWrap(True)
         self.preview_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        right.addWidget(self.preview, 1)
-        right.addWidget(self.preview_info)
+        self.preview.installEventFilter(self)  # double-click: big preview
+        self.preview.setToolTip("Double-click to make the preview as big as the three panes (Esc goes back)")
+        # the preview, its frame bar and the frame info in one box, so the box can move to the big view and back
+        self.preview_box = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(self.preview_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
+        box.addWidget(self.preview, 1)
+        box.addLayout(self._frame_bar())
+        box.addWidget(self.preview_info)
+        right.addWidget(self.preview_box, 1)
+        self._preview_home = right
         lay.insertLayout(0, right, 2)  # preview on top, the list under it
         return w
+
+    def _frame_bar(self):
+        """Previous / Play / next, a slider over every frame of the render, the frame number, and Enlarge."""
+        bar = QtWidgets.QHBoxLayout()
+        bar.setSpacing(4)
+
+        def tool(icon, tip, slot):
+            b = QtWidgets.QToolButton()
+            b.setFixedSize(30, 26)
+            b.setIconSize(QtCore.QSize(18, 18))
+            b.setIcon(icon)
+            b.setToolTip(tip)
+            b.setStyleSheet("QToolButton { background: %s; border: 1px solid %s; border-radius: 3px; }"
+                            "QToolButton:hover { border-color: %s; }" % (C["panel2"], C["line"], C["accent"]))
+            b.clicked.connect(slot)
+            bar.addWidget(b)
+            return b
+
+        tool(nav_icon("prev"), "Previous frame", lambda: self._step_frame(-1))
+        self.b_frame_play = tool(play_icon(False), "Play / Pause the rendered frames (loops)", self._frame_play_toggle)
+        tool(nav_icon("next"), "Next frame", lambda: self._step_frame(1))
+        self.frame_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.frame_slider.setRange(0, 0)
+        self.frame_slider.valueChanged.connect(self._frame_slider_moved)
+        self.frame_slider.sliderPressed.connect(self._frame_play_stop)
+        bar.addWidget(self.frame_slider, 1)
+        self.frame_label = QtWidgets.QLabel("")
+        self.frame_label.setMinimumWidth(56)
+        self.frame_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        bar.addWidget(self.frame_label)
+        self.b_big = tool(nav_icon("big"), "Preview as big as the three panes (Esc goes back)", self._toggle_big)
+        self._frame_timer = QtCore.QTimer(self)
+        self._frame_timer.timeout.connect(self._frame_play_step)
+        self._pix_cache = collections.OrderedDict()  # (frame, size, mtime) -> QPixmap: a second loop plays smoothly
+        self._big = False
+        esc = QtGui.QShortcut(QtGui.QKeySequence("Esc"), self)
+        esc.activated.connect(lambda: self._big and self._toggle_big())
+        return bar
+
+    def _frame_order(self):
+        return self.engine.frame_list()
+
+    def _sync_frame_bar(self, frame):
+        frames = self._frame_order()
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setRange(0, max(0, len(frames) - 1))
+        if frame in frames:
+            self.frame_slider.setValue(frames.index(frame))
+        self.frame_slider.blockSignals(False)
+        self.frame_label.setText(str(frame) if frame is not None else "")
+
+    def _frame_slider_moved(self, i):
+        frames = self._frame_order()
+        if 0 <= i < len(frames):
+            self._pick_frame(frames[i])
+
+    def _step_frame(self, step):
+        self._frame_play_stop()
+        frames = self._frame_order()
+        if not frames:
+            return
+        cur = frames.index(self._preview_frame) if self._preview_frame in frames else -step
+        self._pick_frame(frames[max(0, min(len(frames) - 1, cur + step))])
+
+    def _frame_playable(self, f):
+        fr = self.engine.frames.get(f)
+        return fr is not None and fr.state in ("done", "skipped", "bad")
+
+    def _frame_play_toggle(self):
+        if self._frame_timer.isActive():
+            self._frame_play_stop()
+            return
+        fps = float(self.engine.job.get("fps") or 24) or 24.0
+        self._frame_timer.start(max(15, int(1000 / fps)))
+        self.b_frame_play.setIcon(play_icon(True))
+
+    def _frame_play_stop(self):
+        if self._frame_timer.isActive():
+            self._frame_timer.stop()
+            self.b_frame_play.setIcon(play_icon(False))
+
+    def _frame_play_step(self):
+        """Next rendered frame, looping; frames not on disk yet are skipped."""
+        frames = [f for f in self._frame_order() if self._frame_playable(f)]
+        if not frames:
+            self._frame_play_stop()
+            return
+        later = [f for f in frames if self._preview_frame is None or f > self._preview_frame]
+        self._pick_frame(later[0] if later else frames[0])
+
+    def _toggle_big(self):
+        """The preview, with its bar, as big as the three panes; again (or Esc, or a double-click) goes back."""
+        self._big = not self._big
+        if self._big:
+            self.big_lay.addWidget(self.preview_box, 1)
+            self.main_split.hide()
+            self.big_box.show()
+        else:
+            self._preview_home.insertWidget(0, self.preview_box, 1)
+            self.big_box.hide()
+            self.main_split.show()
+        self.b_big.setIcon(nav_icon("small" if self._big else "big"))
+        if self._preview_frame is not None:
+            QtCore.QTimer.singleShot(0, lambda: self._show_frame(self._preview_frame))
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "preview", None) and event.type() == QtCore.QEvent.MouseButtonDblClick:
+            self._toggle_big()
+            return True
+        return super().eventFilter(obj, event)
 
     def _system_tab(self):
         w = QtWidgets.QWidget()
@@ -3803,6 +3961,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if fr is None:
             return
         self._preview_frame = frame
+        self._sync_frame_bar(frame)
         files = e.output_files(frame)
         info = ["<b>Frame %d</b> — %s, chunk %s, %s" % (frame, fr.state, fr.chunk or "—", fr.worker or "no process yet")]
         if fr.secs is not None:
@@ -3819,9 +3978,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.preview.setText("Still rendering" if fr.state == "rendering" else "No file on disk yet")
             return
         try:
-            img = preview_image(target, max(200, self.preview.width()), max(150, self.preview.height()))
-            self.preview.setPixmap(QtGui.QPixmap.fromImage(img).scaled(
-                self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            size = (max(200, self.preview.width()), max(150, self.preview.height()))
+            key = (frame, size, os.path.getmtime(target))
+            pix = self._pix_cache.get(key)
+            if pix is None:
+                img = preview_image(target, *size)
+                pix = QtGui.QPixmap.fromImage(img).scaled(
+                    self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                self._pix_cache[key] = pix
+                # about 300 MB of preview pictures at most
+                while len(self._pix_cache) > max(20, int(300e6 / max(1, size[0] * size[1] * 4))):
+                    self._pix_cache.popitem(last=False)
+            self.preview.setPixmap(pix)
         except Exception as exc:
             self.preview.setPixmap(QtGui.QPixmap())
             self.preview.setText("No preview: %s" % exc)
