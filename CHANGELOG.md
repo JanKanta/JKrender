@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.23 alpha — 2026-10-31
+
+- Settings in three columns:
+  - **General**: Start Render on open, Max renders at once, slate frame, Show processes of all renders, Delete render logs, and Reset to defaults at the bottom.
+  - **Performance and Optimization**: Use GPU, RAM limit, Smaller chunks towards the end, test frames.
+  - **Processes and Chunks**: Processes, Threads, Nuke cache (with what the script took last time), Chunk.
+
 ## 0.22 alpha — 2026-10-31
 
 - System: a Cache column after RAM shows how much of its cache each Nuke process uses, against the Nuke cache limit, e.g. "3.4 / 8 GB".
