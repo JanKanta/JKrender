@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.25 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.26 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.25 alpha"
+APP_VERSION = "0.26 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -63,7 +63,8 @@ JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
-                    "chunk_auto": True, "use_gpu": False, "log_cleanup": True, "log_days": 30,
+                    "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
+                    "slate": True, "slate_frame": 1000,
                     "auto_chunk": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -2603,7 +2604,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Before the window shows: frames the Write already rendered appear as done.
         self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
         if self.settings.get("log_cleanup", True):
-            days = int(self.settings.get("log_days", 30))
+            days = int(self.settings.get("log_days", 7))
             deleted, freed = clean_render_folders(job_path.parent.parent, days, keep=[job_path.parent])
             if deleted:
                 self.engine.note("Deleted %d render log folder(s) older than %d days (%s)" % (deleted, days, fmt_size(freed)))
@@ -2980,7 +2981,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "2-3: renders run side by side and share the Nuke processes. Not faster in total,\n"
             "but you see frames of every shot early.")
         self.c_slate = Toggle()
-        self.c_slate.setChecked(bool(self.settings.get("slate")))
+        self.c_slate.setChecked(bool(self.settings.get("slate", True)))
         self.s_slate = QtWidgets.QSpinBox()
         self.s_slate.setRange(-100000, 1000000)
         self.s_slate.setValue(int(self.settings.get("slate_frame", 1000)))
@@ -2999,7 +3000,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_days = QtWidgets.QSpinBox()
         self.s_days.setRange(1, 3650)
         self.s_days.setSuffix(" days")
-        self.s_days.setValue(int(self.settings.get("log_days", 30)))
+        self.s_days.setValue(int(self.settings.get("log_days", 7)))
         self.s_days.setEnabled(self.c_clean.isChecked())
         self.s_days.valueChanged.connect(lambda v: self._save_setting("log_days", v))
         row(gen, "Delete old render logs", [self.c_clean, self.s_days],
@@ -3013,7 +3014,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # -- Performance and Optimization
         perf = card("Performance and Optimization")
-        self.c_gpu = toggle("use_gpu", False)
+        self.c_gpu = toggle("use_gpu", True)
         row(perf, "Use GPU", [self.c_gpu],
             "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
             "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
@@ -3115,10 +3116,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 30)):
+                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_slate, False), (self.c_all_workers, True), (self.c_clean, True),
-                        (self.c_gpu, False), (self.c_guard, True), (self.c_chunk_auto, True),
+        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_clean, True),
+                        (self.c_gpu, True), (self.c_guard, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
         self._apply_chunks()

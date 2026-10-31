@@ -17,5 +17,5 @@ Made for Nuke 16 on Windows.
 
 Optional: for MOV details and the MOV player, install ffmpeg:  winget install ffmpeg
 
-Each render's logs, script copy and job file are in the JKrender\log folder.
+Each render's logs, script copy and job file are in the JKrender\log folder (deleted after 7 days).
 Uninstall: delete the line from init.py and the JKrender folder.

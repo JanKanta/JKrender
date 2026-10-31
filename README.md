@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.25 alpha.** It works in tests; expect rough edges.
+**Version 0.26 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -22,8 +22,8 @@ on disk.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close or start it again.
-- **Slate frame**: optional, for projects that start at 1001 with the slate on 1000.
-- **Use GPU** (Settings): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
+- **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
+- **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
   graphics card. 1.nk rendered 3x faster with identical frames; every process takes its own VRAM.
 - **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, the one started last closing first,
   so Windows never swaps. The Nuke cache setting is Nuke's cache limit per process (`-c`); a heavy script takes more than that.
@@ -70,5 +70,5 @@ The window runs in Nuke's own Python, which already has PySide6 and psutil, so n
 
 Optional: for movie details and the movie player, put `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
 
-Renders and logs go to `log/` next to `JKrender.py`; folders older than 30 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.jkrender/renders/`.
+Renders and logs go to `log/` next to `JKrender.py`; folders older than 7 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.jkrender/renders/`.
 Settings are per user, in `~/.jkrender/settings.json`.
