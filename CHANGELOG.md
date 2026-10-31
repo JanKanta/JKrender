@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.2 alpha — 2026-10-31
+
+- Remaining shows a time up to the last frame.
+  - It now also counts how long the frames being rendered still need, from the average frame time.
+  - Before, it went by the speed of the last minute only, and on the last frames it showed 0 or nothing.
+
 ## 0.18.1 alpha — 2026-10-31
 
 - System: processes keep their place in the table (render, then W01, W02, ...). A closed one no longer moves to the bottom.
