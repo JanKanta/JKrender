@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.18.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.18.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.18.1 alpha"
+APP_VERSION = "0.18.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1618,10 +1618,23 @@ class RenderEngine:
         return (len(self.done_times) / el) if el > 0 and self.done_times else 0.0
 
     def eta(self):
+        """Seconds left: the frames still to go at the current speed, but never less than the frames being rendered
+        still need, so the last frames, when fewer processes work, do not show 0 or nothing."""
         c = self.counts()
         left = c["queued"] + c["rendering"]
+        if not left:
+            return 0.0
         r = self.rate()
-        return left / r if r > 0 and left else (0.0 if not left else None)
+        by_rate = left / r if r > 0 else None
+        secs = self.frame_secs()[-40:]
+        avg = sum(secs) / len(secs) if secs else None
+        now = time.time()
+        running = [fr for fr in self.frames.values() if fr.state == "rendering" and fr.started]
+        in_flight = None
+        if avg and running:
+            in_flight = max(max(0.0, avg - (now - fr.started - self.paused_between(fr.started, now))) for fr in running)
+        known = [x for x in (by_rate, in_flight) if x is not None]
+        return max(1.0, max(known)) if known else None  # still rendering: never 0
 
     def frame_secs(self):
         return [fr.secs for fr in self.frames.values() if fr.secs is not None]
