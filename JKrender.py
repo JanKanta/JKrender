@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.26 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.27 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.26 alpha"
+APP_VERSION = "0.27 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2872,33 +2872,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.banner.hide()
         lay.addWidget(self.banner)
 
-        # Top half: Workers (process timeline) / Chunks / Log / Details. Bottom half: Output and System.
+        # Three panes: on the left, full height, Output / Chunks; on the right, Workers (process timeline) / Log /
+        # Details on top and System / Settings below.
+        main = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.side_tabs = QtWidgets.QTabWidget()
+        self.output_page = self._output_tab()
+        self.side_tabs.addTab(self.output_page, "Output")
+        self.side_tabs.addTab(self._chunks_table(), "Chunks")
+        main.addWidget(self.side_tabs)
+        right = QtWidgets.QWidget()
+        rlay = QtWidgets.QVBoxLayout(right)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.setSpacing(0)
         self.tabs = QtWidgets.QTabBar()
         self.tabs.setDrawBase(False)
         self.tabs.setExpanding(False)
-        for name in ("Workers", "Chunks", "Log", "Details"):
+        for name in ("Workers", "Log", "Details"):
             self.tabs.addTab(name)
-        lay.addWidget(self.tabs)
+        rlay.addWidget(self.tabs)
         split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.gantt = Gantt(self.manager)
         self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
         self.pages = QtWidgets.QStackedWidget()
-        for page in (self.gantt, self._chunks_table(), self._log_tab(), self._details_tab()):
+        for page in (self.gantt, self._log_tab(), self._details_tab()):
             self.pages.addWidget(page)
         split.addWidget(self.pages)
         self.sub_tabs = QtWidgets.QTabWidget()
-        self.sub_tabs.addTab(self._output_tab(), "Output")
         self.sub_tabs.addTab(self._system_tab(), "System")
         self.sub_tabs.addTab(self._settings_tab(), "Settings")
         split.addWidget(self.sub_tabs)
         split.setSizes([360, 400])
-        lay.addWidget(split, 1)
+        rlay.addWidget(split, 1)
+        main.addWidget(right)
+        main.setStretchFactor(0, 2)
+        main.setStretchFactor(1, 3)
+        main.setSizes([560, 840])
+        lay.addWidget(main, 1)
         self.tabs.currentChanged.connect(self._page_changed)
+
+    def _details_shown(self):
+        return self.pages.currentWidget() is self.details
 
     def _page_changed(self, index):
         self.pages.setCurrentIndex(index)
-        if index == 3:
+        if self._details_shown():
             self._update_details()
 
     def _settings_tab(self):
@@ -3169,7 +3187,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _movie_page(self):
         w = QtWidgets.QWidget()
-        lay = QtWidgets.QHBoxLayout(w)
+        lay = QtWidgets.QVBoxLayout(w)  # list above, preview below
         lay.setContentsMargins(8, 8, 8, 8)
         left = QtWidgets.QVBoxLayout()
         bar = QtWidgets.QHBoxLayout()
@@ -3214,13 +3232,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.movie_frame_label = QtWidgets.QLabel("")
         self.movie_frame_label.setObjectName("dim")
         right.addWidget(self.movie_frame_label)
-        lay.addLayout(right, 2)
+        lay.insertLayout(0, right, 2)  # preview on top, the list under it
         self._movie_size_last = None
         return w
 
     def _frames_page(self):
         w = QtWidgets.QWidget()
-        lay = QtWidgets.QHBoxLayout(w)
+        lay = QtWidgets.QVBoxLayout(w)  # list above, preview below
         lay.setContentsMargins(8, 8, 8, 8)
         left = QtWidgets.QVBoxLayout()
         bar = QtWidgets.QHBoxLayout()
@@ -3268,7 +3286,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         right.addWidget(self.preview, 1)
         right.addWidget(self.preview_info)
-        lay.addLayout(right, 2)
+        lay.insertLayout(0, right, 2)  # preview on top, the list under it
         return w
 
     def _system_tab(self):
@@ -3552,7 +3570,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small · %s on disk"
                                  % (len(e.frames), len(checked), missing, broken, small, fmt_size(total_size)))
         self.gantt.update()
-        if self.tabs.currentIndex() == 3:
+        if self._details_shown():
             self._update_details()
 
     def _update_chunks(self):
@@ -3814,8 +3832,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self.preview.setPixmap(QtGui.QPixmap())
             self.preview.setText("No preview: %s" % exc)
-        if self.sub_tabs.currentIndex() != 0:
-            self.sub_tabs.setCurrentIndex(0)
+        if self.side_tabs.currentWidget() is not self.output_page:
+            self.side_tabs.setCurrentWidget(self.output_page)
 
     # ---- movie output -------------------------------------------------------
     def _movie_check(self):

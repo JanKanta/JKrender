@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.27 alpha — 2026-10-31
+
+Experiment, to be kept or undone (0.26 has the old layout).
+
+- The window has three panes:
+  - On the left, full height: Output and Chunks.
+  - On the right, top: Workers, Log and Details.
+  - On the right, bottom: System and Settings.
+- In Output, the preview sits above the list of frames (and above the movie details).
+
 ## 0.26 alpha — 2026-10-31
 
 - New defaults, for a first start and for Reset to defaults:
