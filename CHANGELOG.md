@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.32 alpha — 2026-10-31
+
+- The coloured Check cells from 0.31 are undone: Check shows its result in coloured text as before. The narrower columns stay.
+- Output, right-click on frames: **Render this frame**, or **Render this batch (N frames)** with several selected.
+  - Only those frames render. Before, every frame still to render rendered with them.
+  - Other frames that are not rendered yet wait for Render.
+  - While the whole render is running, the frames just join it.
+
 ## 0.31 alpha — 2026-10-31
 
 - Output: the whole Check cell takes the colour of what the check found: green ok, yellow suspiciously small, red broken.
