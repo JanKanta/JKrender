@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20 alpha — 2026-10-31
+
+- Nuke cache (`-c`) is no longer a setting.
+  - It is set automatically to 70 % of the PC's RAM shared by the processes: 8 GB with 8 processes on 94 GB, 16 GB with 4.
+  - It follows Processes when you change it.
+- The log says "8 GB cache" and, after the first chunk, how much RAM one process of the script takes.
+
 ## 0.19 alpha — 2026-10-31
 
 ### Settings

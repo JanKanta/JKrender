@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.19 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.20 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.19 alpha"
+APP_VERSION = "0.20 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -851,7 +851,7 @@ class RenderEngine:
         if self.manager:
             self.threads = self.manager.threads
         self._make_test_chunks()
-        self.note("Render started: %d frames in %d chunks, %d threads and %d GB per Nuke process"
+        self.note("Render started: %d frames in %d chunks, %d threads and %d GB cache per Nuke process"
                   % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
                      sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
         self._ram_seen = 0.0
@@ -1070,7 +1070,7 @@ class RenderEngine:
         self.workers[wid] = w
         self.last_spawn = time.time()
         threading.Thread(target=self._reader, args=(w,), daemon=True).start()
-        self.note("%s %s (pid %d, %d threads, %d GB)"
+        self.note("%s %s (pid %d, %d threads, %d GB cache)"
                   % (w.name, "started again" if old else "started", proc.pid, w.threads, w.ram))
         return w
 
@@ -1319,11 +1319,9 @@ class RenderEngine:
             if w.rss_base is None:
                 w.rss_base = w.rss
                 self._remember_ram(w.rss)
-                if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
+                if not getattr(self, "_ram_noted", False):
                     self._ram_noted = True
-                    self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB set under RAM. "
-                              "That is fine; set RAM higher to match, or use fewer processes if the PC runs short."
-                              % (w.name, w.rss, w.ram), "warn")
+                    self.note("%s takes %.1f GB RAM per Nuke process for this script" % (w.name, w.rss))
             if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
                 self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
             elif w.retire:
@@ -1730,7 +1728,7 @@ class RenderManager:
         plan = auto_plan(10 ** 6, False)
         self.total = int(settings.get("processes") or plan["workers"])
         self.threads = int(settings.get("threads") or plan["threads"])
-        self.ram = int(settings.get("ram") or plan["ram"])
+        self.ram = self.cache_for(self.total)
         self.next_number = 1
         self.pauses = []  # times when every render was paused: the timeline leaves them out
         self.paused_at = None
@@ -1863,13 +1861,20 @@ class RenderManager:
         self._next_wid = wid + 1
         return wid
 
-    def set_budget(self, total=None, threads=None, ram=None):
+    @staticmethod
+    def cache_for(processes):
+        """Nuke's cache limit per process (-c): 70 % of the PC's RAM shared by the processes, at least 2 GB.
+
+        It is a ceiling for cached images, not what a process takes; heavy scripts take more on top."""
+        ram = psutil.virtual_memory().total / 1024 ** 3 if psutil else 32.0
+        return max(2, int(ram * 0.7 / max(1, processes)))
+
+    def set_budget(self, total=None, threads=None):
         if total is not None:
             self.total = max(1, int(total))
+            self.ram = self.cache_for(self.total)
         if threads is not None:
             self.threads = int(threads)
-        if ram is not None:
-            self.ram = int(ram)
         for e in self.engines:
             e.threads, e.ram = self.threads, self.ram
 
@@ -2866,16 +2871,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return box
 
         cpu = os.cpu_count() or 8
-        ram = int(psutil.virtual_memory().total / 1024 ** 3) if psutil else 64
         e, m = self.engine, self.manager
         self.s_workers = spin("Processes", 1, max(1, cpu // 2), m.total, "",
                               "Nuke processes for all renders together. One render gets them all;\n"
                               "renders side by side share them (8 -> 4 + 4 -> 3 + 3 + 2).")
         self.s_threads = spin("Threads", 1, cpu, m.threads, "",
                               "Threads per Nuke process (-m).")
-        self.s_ram = spin("RAM", 1, ram, m.ram, " GB",
-                          "Nuke's cache limit per process (-c). A heavy script takes more than this;\n"
-                          "System > RAM shows what each process really takes.")
         self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
                             "Frames per chunk. Applies to chunks that have not started yet.\n"
                             "With Settings > Auto chunk size this is the largest chunk; towards the end they get smaller.")
@@ -2891,7 +2892,6 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(ctl)
         self.s_workers.valueChanged.connect(self._workers_changed)
         self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))
-        self.s_ram.valueChanged.connect(lambda v: self._budget_changed("ram", v))
         self.s_chunk.valueChanged.connect(self._chunk_changed)
 
         self.banner = QtWidgets.QLabel("")
@@ -2967,7 +2967,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # -- Nuke processes (locked while rendering; Processes, Threads and RAM are shared by every render)
         procs = column("Nuke processes")
-        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads), ("Nuke cache", self.s_ram)):
+        for label, box in (("Processes", self.s_workers), ("Threads", self.s_threads)):
             box.setMinimumWidth(80)
             spin_row(procs, label, box, width=80)
         self.l_ram_need = QtWidgets.QLabel("")
@@ -3120,7 +3120,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(DEFAULT_SETTINGS)
         self.settings.update(learned)
         write_settings(self.settings)
-        for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
+        for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]),
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 30)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_slate, False), (self.c_all_workers, True), (self.c_clean, True),
@@ -3420,7 +3420,7 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setEnabled(not running)
         manual = hasattr(self, "r_chunk_auto") and not self.r_chunk_auto.isChecked()
         self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
-        for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
+        for widget in (self.s_workers, self.s_threads, self.c_gpu):
             widget.setEnabled(not any_running)
         rendering = any(x.state == "rendering" for x in self.manager.engines)
         paused = any(x.state == "paused" for x in self.manager.engines)
