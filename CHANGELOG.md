@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15 alpha — 2026-10-31
+
+- Auto-tune processes is gone, together with Forget tuned scripts.
+  - The split comparison gained little: on 1.nk, 8 x 4 at 1.04 fr/s against 4 x 8 at 0.97.
+  - Starting fewer processes from the remembered RAM is gone too.
+- Processes and Threads are set by hand under Settings → Nuke processes, and exactly that many start.
+- The RAM limit (on by default) is the only thing that closes processes, the one started last first, when RAM runs over.
+
 ## 0.14 alpha — 2026-10-30
 
 - Settings → RAM limit is its own checkbox again, separate from Auto-tune processes, and works with Auto-tune on or off.
