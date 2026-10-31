@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.35 alpha — 2026-10-31
+
+- Several renders: when one is done, its processes move on to the renders still running under the same names.
+  - E.g. W01 of render A goes on in render C, so the names stay W01-W08 instead of W09, W10...
+  - The free slots already went to the other renders; a Nuke process cannot switch scripts, so a new one starts there under the free name.
+- Render cards show the time left next to the frame count, e.g. "41 / 96 · 0:13 left".
+
 ## 0.34 alpha — 2026-10-31
 
 - Output, right-click on frames: **Delete this frame**, or **Delete this batch (N frames)** with several selected.

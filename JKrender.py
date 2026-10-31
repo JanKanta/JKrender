@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.34 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.35 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.34 alpha"
+APP_VERSION = "0.35 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1060,7 +1060,7 @@ class RenderEngine:
         if old:
             wid = old.id
         else:
-            wid = self.manager.take_wid() if self.manager else self.next_wid
+            wid = self.manager.take_wid(self) if self.manager else self.next_wid
             self.next_wid = max(self.next_wid, wid) + 1
         cmd = self._command()
         kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1820,13 +1820,15 @@ class RenderManager:
         else:
             self._ram_ok_since = None
 
-    def take_wid(self):
-        """Process numbers run on across renders (W01-W08, then W09...), so every process has its own name.
-        They start again at W01 once no render has any process on its timeline."""
-        if not any(e.workers for e in self.engines):
-            self._next_wid = 1
-        wid = getattr(self, "_next_wid", 1)
-        self._next_wid = wid + 1
+    def take_wid(self, engine=None):
+        """The lowest process number no running process has. When a render is done, the process a render
+        still running starts next takes over the free name (W01 goes on in render C), so the names stay
+        W01-W08. A render never gets a number twice (its closed ones are started again under their own)."""
+        running = {wid for e in self.engines for wid, w in e.workers.items() if w.state != "gone"}
+        own = set(engine.workers) if engine is not None else set()
+        wid = 1
+        while wid in running or wid in own:
+            wid += 1
         return wid
 
     def set_budget(self, total=None, threads=None, ram=None):
@@ -2251,8 +2253,10 @@ class RenderCard(QtWidgets.QFrame):
         self.bar.setValue(finished)
         color = {"rendering": C["rendering"], "finishing": C["rendering"], "done": C["done"], "failed": C["failed"],
                  "paused": C["accent"], "stopped": C["accent"], "waiting": C["dim"]}.get(e.state, C["dim"])
-        self.status.setText('<span style="color:%s">%s</span>&nbsp;&nbsp;<span style="color:%s">%d / %d</span>'
-                            % (color, STATE_LABELS.get(e.state, e.state), C["dim"], finished, total))
+        eta = e.eta() if e.state in ("rendering", "paused") else None
+        left = ("&nbsp;&nbsp;·&nbsp;&nbsp;%s left" % fmt_secs(eta)) if eta else ""
+        self.status.setText('<span style="color:%s">%s</span>&nbsp;&nbsp;<span style="color:%s">%d / %d%s</span>'
+                            % (color, STATE_LABELS.get(e.state, e.state), C["dim"], finished, total, left))
         self.badge.setStyleSheet("background: %s; color: %s; border-radius: 3px; font-weight: 600;"
                                  % (C["accent"] if selected else C["line"], "#111" if selected else C["text"]))
         self.setStyleSheet("RenderCard { background: %s; border: 1px solid %s; border-radius: 5px; }"
