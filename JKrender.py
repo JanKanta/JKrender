@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.33 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.34 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.33 alpha"
+APP_VERSION = "0.34 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3959,14 +3959,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not frames:
             return
         menu = QtWidgets.QMenu(self)
-        again = menu.addAction("Render this frame" if len(frames) == 1 else "Render this batch (%d frames)" % len(frames))
+        one = len(frames) == 1
+        again = menu.addAction("Render this frame" if one else "Render this batch (%d frames)" % len(frames))
+        delete = menu.addAction("Delete this frame" if one else "Delete this batch (%d frames)" % len(frames))
         e = self.engine
         again.setEnabled(e.state not in ("finishing", "waiting"))
+        delete.setEnabled(e.state not in ("rendering", "paused", "finishing", "waiting"))
         act = menu.exec(self.frames_view.viewport().mapToGlobal(pos))
         if act == again:
             # only these frames, unless the whole render is running anyway: then they just join it
             e.rerender(frames, only=True)
             self._after_requeue()
+        elif act == delete:
+            self._delete_all(frames)  # asks first
 
     def _after_requeue(self):
         self.frames_model.refilter()
