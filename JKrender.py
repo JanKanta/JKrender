@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.15 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.16 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.15 alpha"
+APP_VERSION = "0.16 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -100,6 +100,67 @@ def nuke_render_env(job_env):
             env.pop(name)
     env.update({k: v for k, v in (job_env or {}).items() if v})
     return env
+
+
+class GpuPerProcess:
+    """GPU use and dedicated VRAM of every process, from the Windows counters Task Manager shows.
+
+    nvidia-smi cannot tell processes apart on Windows (WDDM), so this reads the "GPU Engine" and
+    "GPU Process Memory" counters through pdh.dll. sample() -> {pid: (percent, bytes)}."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.ct, self.wt = ctypes, wintypes
+        self.pdh = ctypes.WinDLL("pdh")
+
+        class Fmt(ctypes.Structure):
+            _fields_ = [("status", wintypes.DWORD), ("value", ctypes.c_double)]
+
+        class Item(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR), ("fmt", Fmt)]
+
+        self.Item = Item
+        self.query = wintypes.HANDLE()
+        self.engine = wintypes.HANDLE()
+        self.memory = wintypes.HANDLE()
+        if self.pdh.PdhOpenQueryW(None, None, ctypes.byref(self.query)) & 0xFFFFFFFF:
+            raise OSError("PdhOpenQuery failed")
+        for path, handle in ((r"\GPU Engine(*)\Utilization Percentage", self.engine),
+                             (r"\GPU Process Memory(*)\Dedicated Usage", self.memory)):
+            if self.pdh.PdhAddEnglishCounterW(self.query, path, None, ctypes.byref(handle)) & 0xFFFFFFFF:
+                raise OSError("no GPU counters")
+        self.pdh.PdhCollectQueryData(self.query)
+
+    def _read(self, counter):
+        ct, wt = self.ct, self.wt
+        size, count = wt.DWORD(0), wt.DWORD(0)
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), None) & 0xFFFFFFFF \
+                != 0x800007D2:  # PDH_MORE_DATA: tells the size
+            return []
+        buf = (ct.c_byte * size.value)()
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), buf) & 0xFFFFFFFF:
+            return []
+        items = ct.cast(buf, ct.POINTER(self.Item))
+        return [(items[i].name, items[i].fmt.value) for i in range(count.value)]
+
+    def sample(self):
+        self.pdh.PdhCollectQueryData(self.query)
+        engines, out = {}, {}
+        for name, value in self._read(self.engine):  # pid_123_luid_..._eng_0_engtype_3D
+            m = re.match(r"pid_(\d+)_.*engtype_(.*)$", name or "")
+            if m:
+                key = (int(m.group(1)), m.group(2))
+                engines[key] = engines.get(key, 0.0) + value
+        for (pid, _), value in engines.items():  # like Task Manager: the busiest engine type
+            out[pid] = (max(out.get(pid, (0.0, 0))[0], min(100.0, value)), 0)
+        for name, value in self._read(self.memory):
+            m = re.match(r"pid_(\d+)_", name or "")
+            if m:
+                pid = int(m.group(1))
+                pct, used = out.get(pid, (0.0, 0))
+                out[pid] = (pct, used + value)
+        return out
 
 
 def hidden():
@@ -551,6 +612,7 @@ class Worker:
         self.cpu = 0.0
         self.rss = 0.0
         self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
+        self.user_paused = False  # frozen from its right-click menu
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -610,6 +672,7 @@ class RenderEngine:
         self.frames = {}
         self.chunks = []
         self.workers = {}
+        self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
         self.next_wid = 1
         self.next_cid = 1
         self.last_spawn = 0.0
@@ -728,6 +791,7 @@ class RenderEngine:
             # Stop closed every Nuke; the new run starts its own processes from W01 on a fresh timeline.
             self.workers = {}
             self.next_wid = 1
+        self.held, self.restart_ids = set(), []
         self.error = ""
         self.state = "rendering"
         self.started = time.time()
@@ -802,19 +866,54 @@ class RenderEngine:
     def _freeze(self, on):
         n = 0
         for w in self.workers.values():
-            if w.state == "gone" or not w.ps:
+            if w.state == "gone" or not w.ps or (not on and w.user_paused):  # one paused by hand stays paused
                 continue
-            try:
-                procs = [w.ps] + w.ps.children(recursive=True)
-            except Exception:
-                procs = [w.ps]
-            for proc in procs:
-                try:
-                    proc.suspend() if on else proc.resume()
-                except Exception:
-                    pass
+            self._suspend(w, on)
             n += 1
         return n
+
+    @staticmethod
+    def _suspend(w, on):
+        try:
+            procs = [w.ps] + w.ps.children(recursive=True)
+        except Exception:
+            procs = [w.ps]
+        for proc in procs:
+            try:
+                proc.suspend() if on else proc.resume()
+            except Exception:
+                pass
+
+    def worker_state(self, w):
+        if w.state == "gone":
+            return "closed by you" if w.id in self.held else "closed"
+        return "paused" if w.user_paused else w.state
+
+    def user_close(self, w):
+        """Close one process from its menu. Its chunk goes back to the queue; it stays closed until Start again."""
+        if w.state == "gone":
+            return
+        self.held.add(w.id)
+        if w.user_paused:
+            self._suspend(w, False)
+            w.user_paused = False
+        self._kill(w, requeue=True, note="stopped")
+        self.note("%s closed by you; its chunk goes back to the queue" % w.name)
+
+    def user_start(self, wid):
+        """Start a closed process again, under its own name."""
+        self.held.discard(wid)
+        if wid not in self.restart_ids:
+            self.restart_ids.append(wid)
+        waits = self.manager is not None and self.manager.free_slots() <= 0
+        self.note("W%02d starts again%s" % (wid, " as soon as the RAM limit allows" if waits else ""))
+
+    def user_pause(self, w, on):
+        if not w.ps or w.state == "gone" or w.user_paused == on:
+            return
+        self._suspend(w, on)
+        w.user_paused = on
+        self.note("%s %s by you" % (w.name, "paused" if on else "resumed"))
 
     def paused_between(self, a, b):
         """Seconds of [a, b] the render spent paused."""
@@ -880,8 +979,12 @@ class RenderEngine:
     def _spawn(self):
         # A process that had to close (RAM guard, recycled) is replaced under its own number and on its
         # own timeline row, so the render keeps the same W01-W08 instead of W09, W10...
-        gone = sorted(i for i, x in self.workers.items() if x.state == "gone")
+        restart = [i for i in getattr(self, "restart_ids", []) if i in self.workers and self.workers[i].state == "gone"]
+        gone = restart or sorted(i for i, x in self.workers.items()
+                                 if x.state == "gone" and i not in getattr(self, "held", ()))
         old = self.workers[gone[0]] if gone else None
+        if old and old.id in getattr(self, "restart_ids", []):
+            self.restart_ids.remove(old.id)
         if old:
             wid = old.id
         else:
@@ -1394,7 +1497,7 @@ class RenderEngine:
             busy = sum(1 for w in live if w.state == "busy")
             loading = sum(1 for w in live if w.state in ("loading", "idle"))
             queued_left = sum(1 for c in self.chunks if c.state == "queued")
-            want = min(self.workers_target, busy + queued_left)
+            want = min(self.workers_target - len(getattr(self, "held", ())), busy + queued_left)
             if (len(live) < want and now - self.last_spawn >= SPAWN_GAP and loading < queued_left + 1
                     and self._may_spawn()):
                 self._spawn()
@@ -1914,7 +2017,9 @@ class FrameMap(QtWidgets.QWidget):
 class Gantt(QtWidgets.QWidget):
     """One row per Nuke process of every render, grouped by render; the picked render is bright.
 
-    Script load in grey, each chunk as a block."""
+    Script load in grey, each chunk as a block. Right-click a row for that process's menu."""
+
+    workerMenu = QtCore.Signal(object, object, object)  # engine, worker, global position
 
     def __init__(self, manager):
         super().__init__()
@@ -2028,6 +2133,13 @@ class Gantt(QtWidgets.QWidget):
             p.drawText(QtCore.QRectF(x - 30, axis_y + 2, 60, 14), QtCore.Qt.AlignCenter, fmt_secs(t))
             t += step
         p.end()
+
+    def contextMenuEvent(self, event):
+        y = event.pos().y()
+        for rect, e, w, kind, label, a, b, state in self._blocks:
+            if rect.top() - 2 <= y <= rect.bottom() + 2:
+                self.workerMenu.emit(e, w, event.globalPos())
+                return
 
     def mouseMoveEvent(self, event):
         pos = event.position()
@@ -2431,6 +2543,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log_filter = "All"
         self._preview_frame = None
         self._gpu = None
+        self._gpu_procs = {}  # pid -> (GPU %, VRAM bytes)
         self._io_last = None
         self._net_last = None
         self.server = None
@@ -2444,7 +2557,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select(self.engine)
         if psutil:
             psutil.cpu_percent(percpu=True)
-        if shutil.which("nvidia-smi"):
+        if shutil.which("nvidia-smi") or sys.platform.startswith("win"):
             threading.Thread(target=self._gpu_loop, daemon=True).start()
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -2714,6 +2827,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addWidget(self.tabs)
         split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self.gantt = Gantt(self.manager)
+        self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
         self.pages = QtWidgets.QStackedWidget()
         for page in (self.gantt, self._chunks_table(), self._log_tab(), self._details_tab()):
@@ -3018,10 +3132,13 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 11)
+        self.worker_table = QtWidgets.QTableWidget(0, 12)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Frames", "Avg frame",
+            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "GPU", "Frames", "Avg frame",
              "Script load"])
+        self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
+        self._worker_rows = []
         self.worker_table.verticalHeader().hide()
         self.worker_table.setAlternatingRowColors(True)
         self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -3345,12 +3462,16 @@ class MainWindow(QtWidgets.QMainWindow):
         rows = sorted(((x, w) for x in shown for w in x.workers.values()),
                       key=lambda xw: (xw[1].state == "gone", xw[0].number, xw[1].id))
         t.setRowCount(len(rows))
+        self._worker_rows = rows
+        gpus = self._gpu_procs or {}
         for row, (x, w) in enumerate(rows):
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
-            values = ["%d  %s" % (x.number, x.name), w.name, str(w.proc.pid), w.state if not gone else "closed (%s)" % w.exit_code,
+            gpu = gpus.get(w.proc.pid)
+            values = ["%d  %s" % (x.number, x.name), w.name, str(w.proc.pid), x.worker_state(w),
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
+                      "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else ""]
             for col, v in enumerate(values):
                 item = t.item(row, col)
@@ -3360,16 +3481,59 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
 
+    # ---- one process: right-click in System or on the Workers timeline -------------------
+    def _worker_table_menu(self, pos):
+        row = self.worker_table.rowAt(pos.y())
+        if 0 <= row < len(self._worker_rows):
+            e, w = self._worker_rows[row]
+            self._worker_menu(e, w, self.worker_table.viewport().mapToGlobal(pos))
+
+    def _worker_menu(self, e, w, global_pos):
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("%s  (%s)" % (w.name, e.name))
+        actions = {}
+        if w.state == "gone":
+            act = menu.addAction("Start again")
+            act.setEnabled(e.state in ("rendering", "paused"))
+            actions[act] = lambda: e.user_start(w.id)
+        else:
+            if w.user_paused:
+                actions[menu.addAction("Resume")] = lambda: e.user_pause(w, False)
+            else:
+                act = menu.addAction("Pause")
+                act.setEnabled(w.state in ("loading", "idle", "busy") and e.state == "rendering")
+                actions[act] = lambda: e.user_pause(w, True)
+            actions[menu.addAction("Close")] = lambda: e.user_close(w)
+        menu.addSeparator()
+        actions[menu.addAction("Show process log")] = lambda: self._open_path(w.log_path)
+        act = menu.exec(global_pos)
+        if act in actions:
+            actions[act]()
+            self._update_system()
+            self.gantt.update()
+
     def _gpu_loop(self):
-        while True:
+        per_process = None
+        if sys.platform.startswith("win"):
             try:
-                out = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=5, **hidden()).stdout
-                vals = [float(x) for x in out.strip().splitlines()[0].split(",")]
-                self._gpu = vals
+                per_process = GpuPerProcess()
             except Exception:
-                self._gpu = None
+                per_process = None
+        while True:
+            if shutil.which("nvidia-smi"):
+                try:
+                    out = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=5, **hidden()).stdout
+                    vals = [float(x) for x in out.strip().splitlines()[0].split(",")]
+                    self._gpu = vals
+                except Exception:
+                    self._gpu = None
+            if per_process:
+                try:
+                    self._gpu_procs = per_process.sample()
+                except Exception:
+                    self._gpu_procs = {}
             time.sleep(2)
 
     # ---- log ----------------------------------------------------------------
