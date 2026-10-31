@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.28 alpha — 2026-10-31
+
+- More room for the panels.
+  - The script name, its path and the state badge on the right are gone; the render card at the top already shows them.
+  - Render, Pause, Stop and FrameRanges sit in their place, and the result of the render follows right after them, e.g. "Done in 0:25. All 96 frames are on disk and pass the check."
+- Details moved to the left pane, next to Output and Chunks. On the right, top: Workers and Log.
+
 ## 0.27 alpha — 2026-10-31
 
 Experiment, to be kept or undone (0.26 has the old layout).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.27 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.28 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.27 alpha"
+APP_VERSION = "0.28 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2728,8 +2728,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_model.engine = e
         self.frames_model.refilter()
         self.gantt.selected = e
-        self.title.setText(e.name)
-        self.subtitle.setText("%s  ·  %s" % (e.write_names, e.job.get("script", "")))
         if hasattr(self, "l_ram_need"):
             self._show_chunk()
         self.range_edit.setText(e.range_text)
@@ -2766,22 +2764,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cards_row.addStretch(1)
         lay.addLayout(self.cards_row)
 
-        # header
+        # controls (Render, Pause, Stop, frame range, and the render's result right after them) go here
         head = QtWidgets.QHBoxLayout()
-        titles = QtWidgets.QVBoxLayout()
-        titles.setSpacing(0)
-        self.title = QtWidgets.QLabel("")
-        self.title.setObjectName("big")
-        self.subtitle = QtWidgets.QLabel("")
-        self.subtitle.setObjectName("dim")
-        self.subtitle.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        titles.addWidget(self.title)
-        titles.addWidget(self.subtitle)
-        head.addLayout(titles, 1)
-        self.state_chip = QtWidgets.QLabel("Ready")
-        self.state_chip.setAlignment(QtCore.Qt.AlignCenter)
-        self.state_chip.setMinimumWidth(140)
-        head.addWidget(self.state_chip)
         lay.addLayout(head)
 
         # numbers
@@ -2860,25 +2844,26 @@ class MainWindow(QtWidgets.QMainWindow):
         lab.setObjectName("dim")
         ctl.addWidget(lab)
         ctl.addWidget(self.range_edit)
+        ctl.addSpacing(14)
+        self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
+        self.banner.hide()
+        ctl.addWidget(self.banner)
         ctl.addStretch(1)
-        lay.addLayout(ctl)
+        head.addLayout(ctl)
         self.s_workers.valueChanged.connect(self._workers_changed)
         self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))
         self.s_ram.valueChanged.connect(lambda v: self._budget_changed("ram", v))
         self.s_chunk.valueChanged.connect(self._chunk_changed)
 
-        self.banner = QtWidgets.QLabel("")
-        self.banner.setWordWrap(True)
-        self.banner.hide()
-        lay.addWidget(self.banner)
-
-        # Three panes: on the left, full height, Output / Chunks; on the right, Workers (process timeline) / Log /
-        # Details on top and System / Settings below.
+        # Three panes: on the left, full height, Output / Chunks / Details; on the right, Workers (process
+        # timeline) / Log on top and System / Settings below.
         main = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.side_tabs = QtWidgets.QTabWidget()
         self.output_page = self._output_tab()
         self.side_tabs.addTab(self.output_page, "Output")
         self.side_tabs.addTab(self._chunks_table(), "Chunks")
+        self.side_tabs.addTab(self._details_tab(), "Details")
+        self.side_tabs.currentChanged.connect(lambda i: self._details_shown() and self._update_details())
         main.addWidget(self.side_tabs)
         right = QtWidgets.QWidget()
         rlay = QtWidgets.QVBoxLayout(right)
@@ -2887,7 +2872,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabBar()
         self.tabs.setDrawBase(False)
         self.tabs.setExpanding(False)
-        for name in ("Workers", "Log", "Details"):
+        for name in ("Workers", "Log"):
             self.tabs.addTab(name)
         rlay.addWidget(self.tabs)
         split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -2895,7 +2880,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
         self.pages = QtWidgets.QStackedWidget()
-        for page in (self.gantt, self._log_tab(), self._details_tab()):
+        for page in (self.gantt, self._log_tab()):
             self.pages.addWidget(page)
         split.addWidget(self.pages)
         self.sub_tabs = QtWidgets.QTabWidget()
@@ -2912,7 +2897,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.currentChanged.connect(self._page_changed)
 
     def _details_shown(self):
-        return self.pages.currentWidget() is self.details
+        return self.side_tabs.currentWidget() is self.details
 
     def _page_changed(self, index):
         self.pages.setCurrentIndex(index)
@@ -3473,12 +3458,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _state_changed(self):
         e = self.engine
         self._sync_controls()
-        colors = {"rendering": C["rendering"], "done": C["done"], "failed": C["failed"], "paused": C["accent"],
-                  "stopped": C["accent"], "finishing": C["rendering"]}
-        col = colors.get(e.state, C["queued"])
-        self.state_chip.setText(STATE_LABELS.get(e.state, e.state))
-        self.state_chip.setStyleSheet(
-            "background: %s; color: #0e0f11; font-weight: 600; padding: 6px 12px; border-radius: 4px;" % col)
         if e.movie:
             self._update_movie()
             self._movie_show(0.5)  # while it renders this says the preview comes when the movie is finished
@@ -3516,7 +3495,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _banner(self, text, color):
         self.banner.setText(text)
-        self.banner.setStyleSheet("background: %s; color: #0e0f11; padding: 8px 10px; border-radius: 4px; font-weight: 600;" % color)
+        self.banner.setStyleSheet("background: %s; color: #0e0f11; padding: 3px 10px; border-radius: 3px; font-weight: 600;" % color)
         self.banner.show()
 
     def _slow_tick(self):
