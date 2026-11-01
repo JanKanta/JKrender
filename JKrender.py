@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.47 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.48 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.47 alpha"
+APP_VERSION = "0.48 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -651,6 +651,8 @@ class Worker:
         self.leave = False  # Work on another render: this one hands its place over first
         self.off_gpu = False  # VRAM over the limit: closes after its chunk, a process without --gpu takes over
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
+        self.why_leaving = None  # "RAM limit" while it closes after its chunk because RAM is over the limit
+        self.closed_why = None  # why it closed, shown in State: "RAM limit", "VRAM limit"
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -951,13 +953,15 @@ class RenderEngine:
 
     def worker_state(self, w):
         if w.state == "gone":
-            return "closed"
+            return "closed (%s)" % w.closed_why if w.closed_why else "closed"
         state = "paused" if w.user_paused else w.state
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → %d %s" % (state, w.leave_to.number, w.leave_to.name)
         if w.off_gpu:
             return "%s → CPU" % state
+        if w.why_leaving and (w.handover or (w.retire and state == "busy")):
+            return "%s → closes (%s)" % (state, w.why_leaving)
         if w.handover or (w.retire and state == "busy"):
             return "%s → another render" % state if self.manager and len(self.manager.engines) > 1 else "%s → closes" % state
         return state
@@ -1261,6 +1265,10 @@ class RenderEngine:
             # Busy ones before loading ones (they are free sooner), the last one started first.
             for w in sorted(live, key=lambda w: (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state],
                                                  w.pinned, -w.spawned))[:extra]:
+                ram = self.manager is not None and self.manager.ram_cap is not None and not w.leave
+                w.why_leaving = "RAM limit" if ram else None
+                if ram:
+                    w.closed_why = "RAM limit"
                 if w.state == "busy":
                     w.retire = True
                 elif w.state == "loading":
@@ -1272,6 +1280,7 @@ class RenderEngine:
             for w in [w for w in self.workers.values()
                       if w.state in ("loading", "idle", "busy") and (w.retire or w.handover)][:-extra]:
                 w.retire = w.handover = False
+                w.why_leaving = w.closed_why = None
 
     def _quit(self, w, why):
         w.retire = True
@@ -1884,6 +1893,7 @@ class RenderManager:
                     # the last one started, but one you started again by hand only when nothing else is left
                     e, w = max(busy, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
                     e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
+                    w.closed_why = "RAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
         elif self.ram_cap is not None and self._more_fit(pct, limit) > 0:
@@ -1952,6 +1962,7 @@ class RenderManager:
                 if busy:
                     e, w = max(busy, key=lambda ew: ew[1].spawned)
                     e.note("!! VRAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
+                    w.closed_why = "VRAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._last_vram_kill = now
                     left = sum(1 for x in self.engines for y in x.workers.values()
@@ -2847,6 +2858,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if deleted:
                 self.engine.note("Deleted %d render log folder(s) older than %d days (%s)" % (deleted, days, fmt_size(freed)))
         self._build()
+        self._restore_headers()
         self._add_card(self.engine)
         self.select(self.engine)
         if psutil:
@@ -2999,8 +3011,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "l_ram_need"):
             self._show_chunk()
         self.range_edit.setText(e.range_text)
-        self.chunk_table.setRowCount(0)
-        self._chunk_cols_sized = False
+        self.chunk_table.setRowCount(0)  # columns keep their widths: fitted once, or as you left them
         self._preview_frame = None
         self.preview.setPixmap(QtGui.QPixmap())
         self.preview.setText("Click a frame to see it")
@@ -3416,9 +3427,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.l_ram_need.setText("this script took %.1f GB per process last time" % need if need else "")
         self._sync_controls()
 
+    def _tables(self):
+        return {"system": self.worker_table, "chunks": self.chunk_table, "frames": self.frames_view}
+
+    def _restore_headers(self):
+        """Column widths and order of every table as they were when the window last closed."""
+        for name, table in self._tables().items():
+            head = table.horizontalHeader()
+            self._header_defaults.setdefault(name, head.saveState())
+            saved = self.settings.get("headers", {}).get(name)
+            if saved:
+                head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
+                if name == "chunks":
+                    self._chunk_cols_sized = True  # keep the saved widths instead of fitting them to the first chunks
+
+    def _save_headers(self):
+        self._save_setting("headers", {name: bytes(t.horizontalHeader().saveState().toBase64()).decode("ascii")
+                                       for name, t in self._tables().items()})
+
+    def _reset_headers(self):
+        for name, table in self._tables().items():
+            table.horizontalHeader().restoreState(self._header_defaults[name])
+        self._chunk_cols_sized = False
+        for col in range(1, self.worker_table.columnCount()):
+            self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in SYSTEM_HIDDEN)
+
     def _reset_settings(self):
-        if QtWidgets.QMessageBox.question(self, "Reset to defaults",
-                                          "Put every setting back to how JKrender comes?") != QtWidgets.QMessageBox.Yes:
+        if (QtWidgets.QMessageBox.question(self, "Reset to defaults",
+                                          "Put every setting back to how JKrender comes?\n"
+                                          "The columns of every table go back to their widths and order too.")
+                != QtWidgets.QMessageBox.Yes):
             return
         plan = auto_plan(10 ** 6, False)
         learned = {k: self.settings[k] for k in ("script_ram",) if k in self.settings}
@@ -3435,6 +3473,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
         self._apply_chunks()
+        self._reset_headers()
+        self.settings.pop("system_hidden", None)
+        self.settings.pop("system_order", None)
+        write_settings(self.settings)
         self.engine.note("Settings reset to defaults", "ok")
 
     def _guard_changed(self, on):
@@ -3787,6 +3829,7 @@ class MainWindow(QtWidgets.QMainWindow):
         head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
         head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
+        self._header_defaults = {"system": head.saveState()}
         hidden = set(self.settings.get("system_hidden", SYSTEM_HIDDEN))
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in hidden)
@@ -4830,6 +4873,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 e.stop("Stopped: window closed")
         for e in self.manager.engines:
             e.write_report()
+        self._save_headers()  # every table's column widths and order, for the next window
         self.manager.shutdown()
         event.accept()
 

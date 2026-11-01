@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.48 alpha — 2026-11-01
+
+- The column widths and order of every table (Output frames, Chunks, System) are saved when the window closes and come back next time. Settings > Reset to defaults puts them back too.
+- Chunks: the columns are fitted once, no longer again each time you pick another render.
+- System, State: a process closing because of the RAM limit says so: "busy → closes (RAM limit)" while it finishes its chunk, then "closed (RAM limit)". One closed at once by the RAM or VRAM limit shows "closed (RAM limit)" or "closed (VRAM limit)".
+
 ## 0.47 alpha — 2026-11-01
 
 - System: change the order of the columns. In the header menu each column has ▲ ▼ arrows (the menu stays open), or drag a column by its header. The order is remembered.
