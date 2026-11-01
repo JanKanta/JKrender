@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.45 alpha — 2026-11-01
+
+- System: five new columns, off until ticked in the header menu: Mode (CPU, GPU, or GPU → CPU when the VRAM limit moved it), Uptime, Peak RAM (the most the process took), Chunks (done, and how many went back to the queue) and Last frame.
+
 ## 0.44 alpha — 2026-11-01
 
 - System: click (or right-click) the table header for a list of columns with tick boxes; untick to hide one. The menu stays open while ticking, and the choice is remembered. Process always shows.

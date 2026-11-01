@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.44 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.45 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.44 alpha"
+APP_VERSION = "0.45 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -68,6 +68,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "r
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
+SYSTEM_HIDDEN = ["Mode", "Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
 
@@ -641,6 +642,7 @@ class Worker:
         self.log_path = log_path
         self.cpu = 0.0
         self.rss = 0.0
+        self.rss_peak = 0.0  # the most RAM it took
         self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
         self.user_paused = False  # frozen from its right-click menu
         self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
@@ -1312,6 +1314,7 @@ class RenderEngine:
             if w.state != "gone" and w.ps:
                 try:
                     w.rss = w.ps.memory_info().rss / 1024 ** 3
+                    w.rss_peak = max(w.rss_peak, w.rss)
                 except Exception:
                     pass
         return changed
@@ -3757,10 +3760,10 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 13)
+        self.worker_table = QtWidgets.QTableWidget(0, 18)
         self.worker_table.setHorizontalHeaderLabels(
             ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
-             "Script load"])
+             "Script load", "Mode", "Uptime", "Peak RAM", "Chunks", "Last frame"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
         self._worker_rows = []
@@ -3773,7 +3776,7 @@ class MainWindow(QtWidgets.QMainWindow):
         head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
         head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
-        hidden = set(self.settings.get("system_hidden", []))
+        hidden = set(self.settings.get("system_hidden", SYSTEM_HIDDEN))
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in hidden)
         lay.addWidget(self.worker_table, 1)
@@ -4149,7 +4152,9 @@ class MainWindow(QtWidgets.QMainWindow):
                       "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
                       "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
-                      str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else ""]
+                      str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
+                      self._worker_mode(w), fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
+                      self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else ""]
             for col, v in enumerate(values):
                 item = t.item(row, col)
                 if item is None:
@@ -4157,6 +4162,26 @@ class MainWindow(QtWidgets.QMainWindow):
                     t.setItem(row, col, item)
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
+
+    @staticmethod
+    def _worker_mode(w):
+        if not w.gpu:
+            return "CPU"
+        return "GPU → CPU" if w.off_gpu else "GPU"
+
+    @staticmethod
+    def _worker_uptime(w):
+        if w.state != "gone":
+            return time.time() - w.spawned
+        ends = [seg[3] for seg in w.segments if seg[3]]
+        return (max(ends) if ends else w.spawned) - w.spawned
+
+    @staticmethod
+    def _worker_chunks(w):
+        """Chunks done, and how many it did not finish (failed, stopped, handed back)."""
+        ended = [seg[4] for seg in w.segments if seg[0] == "chunk" and seg[3]]
+        done = ended.count("done")
+        return "%d" % done + ("  ·  %d back" % (len(ended) - done) if len(ended) > done else "")
 
     # ---- one process: right-click in System or on the Workers timeline -------------------
     def _worker_table_menu(self, pos):
