@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.55 alpha — 2026-11-01
+
+- One frame per Nuke when the VRAM keeps processes out: a script whose Nuke takes more VRAM with every frame (sh0070: 3 GB after one frame, 9 GB after six) switches to one-frame chunks, each process making way for a fresh Nuke after its frame. A fresh Nuke stays small, so more of them fit on the card; a script load per frame (3-5 s) is the price. 1.nk and sh0050, whose VRAM stays flat, never switch.
+- A script not seen yet in the run starts three GPU processes, the rest once one has finished a chunk (all eight at once on sh0070 meant five closed mid-chunk).
+
+Tested, sh0070 alone with 8 processes: 10:58 → 7:27 (3 → 4 processes on average, frames 34 s → 28 s since a fresh Nuke does not slow down). All three renders at once: 16:06 → 11:29, one process closed mid-chunk instead of three.
+
 ## 0.54 alpha — 2026-11-01
 
 Tested on three real renders (1.nk, sh0050, sh0070) all at once, one after another, and with processes moved between them.

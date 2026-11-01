@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.54 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.55 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.54 alpha"
+APP_VERSION = "0.55 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -676,6 +676,10 @@ class Worker:
             self.segments[-1][4] = state
 
 
+def queued_left_for(engine):
+    return any(c.state == "queued" and engine.in_scope(c) for c in engine.chunks)
+
+
 class RenderEngine:
     def __init__(self, job, job_dir, settings):
         self.job = job
@@ -837,6 +841,8 @@ class RenderEngine:
         """everything=True renders the whole range again, including frames already on disk."""
         if self.state in ("rendering", "starting", "finishing"):
             return
+        self.lean = False  # one frame per fresh Nuke, while VRAM keeps processes out (see _on_line, CHUNK)
+        self._vram_grows = False  # this script's Nuke takes more VRAM with every frame
         self.scope = None  # Render renders everything still to render
         if everything:
             self.rebuild_plan()
@@ -1452,8 +1458,23 @@ class RenderEngine:
                 w.vram_base = vram_now
                 self._vram_seen = max(getattr(self, "_vram_seen", 0.0), vram_now)
             share = m.vram_share() if m is not None and w.vram_base and self.settings.get("vram_guard", True) else None
+            if w.vram_base and vram_now > w.vram_base * 1.3:
+                self._vram_grows = True
+            if (w.gpu and share and self._vram_grows and not getattr(self, "lean", False) and m.vram_short()):
+                # This script's Nuke takes ~1.5 GB more VRAM with every frame and the card keeps more processes out
+                # (sh0070: 3 GB after one frame, 9 GB after six; three of them fill the card). A Nuke that renders
+                # one frame and makes way for a fresh one stays small, so twice as many fit; the price is a
+                # script load per frame.
+                self.lean = True
+                self.lean_since = time.time()
+                self.note("VRAM keeps more Nuke processes out and this script's Nuke takes more VRAM with every "
+                          "frame: from now on each process renders one frame, then a fresh Nuke takes over, so more "
+                          "of them fit on the card", "warn")
             if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
                 self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
+            elif w.gpu and getattr(self, "lean", False) and queued_left_for(self):
+                w.closed_why = "fresh Nuke, VRAM"
+                self._quit(w, "one frame per Nuke: %.1f GB VRAM, a fresh one takes over" % (vram_now / 1024))
             elif getattr(w, "recycle_vram", False) or (share and vram_now > max(share, w.vram_base * 1.5)):
                 # Some scripts make Nuke keep VRAM it no longer needs, frame after frame (sh0070: 5 GB after its
                 # first chunk, 16 GB later, its frames 3-6 x slower). A fresh Nuke costs only a script load.
@@ -1667,7 +1688,15 @@ class RenderEngine:
         Early on that is the whole chunk; towards the end chunks shrink down to single frames,
         so every process finishes at about the same time instead of one working through a long
         last chunk while the others wait. The rest of a split chunk goes back to the queue."""
-        if self.movie or chunk.attempts or not self.settings.get("auto_chunk", True):
+        if self.movie or chunk.attempts:
+            return chunk
+        if getattr(self, "lean", False):
+            size = 1
+            if len(chunk.frames) <= size:
+                return chunk
+            head, tail = chunk.frames[:size], chunk.frames[size:]
+            return self._split_chunk(chunk, head, tail)
+        if not self.settings.get("auto_chunk", True):
             return chunk
         remaining = sum(len(c.frames) for c in self.chunks if c.state == "queued")
         procs = max(1, sum(1 for w in self.workers.values() if w.state in ("loading", "idle", "busy") and not w.retire))
@@ -1675,6 +1704,9 @@ class RenderEngine:
         if len(chunk.frames) <= size:
             return chunk
         head, tail = chunk.frames[:size], chunk.frames[size:]
+        return self._split_chunk(chunk, head, tail)
+
+    def _split_chunk(self, chunk, head, tail):
         rest = Chunk(self.next_cid, tail)
         self.next_cid += 1
         chunk.frames = head
@@ -1915,6 +1947,17 @@ class RenderManager:
         if self.vram and self.live_count() == 0:
             self.vram_idle = float(self.vram[1])
 
+    def wanted_count(self):
+        """Nuke processes the renders would run now: their places, as far as they have work for them."""
+        want = sum(min(e.workers_target, e.need()) for e in self.engines if e.state == "rendering")
+        return max(self.live_count(), min(self.budget(), want))
+
+    def vram_short(self):
+        """Renders want more processes than run, and the VRAM is what keeps them out."""
+        if self.wanted_count() <= self.live_count() or not self.vram:
+            return False
+        return self.no_room().startswith("VRAM")
+
     def vram_share(self):
         """MB of the graphics card one Nuke process may take: the VRAM limit minus what other programs hold,
         split between the processes running now."""
@@ -1930,6 +1973,11 @@ class RenderManager:
         if not self.vram or not self.vram[2]:
             return None
         total = float(self.vram[2])
+        if engine is not None and getattr(engine, "lean", False):
+            # one frame per Nuke: the size after one frame, from the processes started since
+            bases = [w.vram_base for w in engine.workers.values() if w.vram_base and w.spawned >= engine.lean_since]
+            if bases:
+                return max(bases) / total * 100
         for engines in ([engine] if engine is not None else [], self.engines):
             bases = [w.vram_base for e in engines for w in e.workers.values() if w.vram_base]
             bases += [e._vram_seen for e in engines if getattr(e, "_vram_seen", 0)]
@@ -1959,12 +2007,12 @@ class RenderManager:
         gpu_guard = self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)
         if gpu_guard and engine is not None:
             # A script whose processes have not finished a first chunk yet: how much VRAM one takes is unknown
-            # (1.nk 2 GB, sh0070 5 GB growing to 14), so on a card already half full they start one at a time.
+            # (1.nk 2 GB, sh0070 5 GB growing to 14). Three start; the rest once one has finished a chunk, or
+            # one at a time on a card already half full. All eight at once on sh0070 meant five closed mid-chunk.
             mine = [w for w in engine.workers.values() if w.gpu and w.state != "gone"]
             pct = float(self.vram[1]) / float(self.vram[2]) * 100
-            if mine and not any(w.vram_base for w in engine.workers.values()) and pct >= 50:
-                if any(w.vram_base is None for w in mine):
-                    return "VRAM %.0f %%: waiting to see how much one process of this script takes" % pct
+            if mine and not any(w.vram_base for w in engine.workers.values()) and (pct >= 50 or len(mine) >= 3):
+                return "VRAM %.0f %%: waiting to see how much one process of this script takes" % pct
         one = self.vram_one(engine)
         if one and gpu_guard:
             total = float(self.vram[2])
