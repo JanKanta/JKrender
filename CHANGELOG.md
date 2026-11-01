@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.44 alpha — 2026-11-01
+
+- System: click (or right-click) the table header for a list of columns with tick boxes; untick to hide one. The menu stays open while ticking, and the choice is remembered. Process always shows.
+
 ## 0.43 alpha — 2026-11-01
 
 - Settings > General: Hide done chunks when rendering again (on by default). When a render is rendered again, the Workers timeline shows only the new run, without the earlier run's done chunks and their script loading. Turn it off to keep them.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.43 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.44 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.43 alpha"
+APP_VERSION = "0.44 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3769,8 +3769,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.worker_table.horizontalHeader().setStretchLastSection(True)
         self.worker_table.setColumnWidth(1, 240)  # Render: wide enough for the script name
+        head = self.worker_table.horizontalHeader()
+        head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
+        head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
+        hidden = set(self.settings.get("system_hidden", []))
+        for col in range(1, self.worker_table.columnCount()):
+            self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in hidden)
         lay.addWidget(self.worker_table, 1)
         return w
+
+    def _columns_menu(self, global_pos):
+        """A click on the System table's header: tick the columns to show. Process always shows."""
+        t = self.worker_table
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("Columns")
+        for col in range(1, t.columnCount()):
+            box = QtWidgets.QCheckBox(t.horizontalHeaderItem(col).text())
+            box.setChecked(not t.isColumnHidden(col))
+            box.setStyleSheet("QCheckBox { padding: 4px 14px; }")
+            box.toggled.connect(lambda on, c=col: self._column_toggled(c, on))
+            act = QtWidgets.QWidgetAction(menu)  # a checkbox, so the menu stays open while ticking
+            act.setDefaultWidget(box)
+            menu.addAction(act)
+        menu.addSeparator()
+        menu.addAction("Show all columns", lambda: [self._column_toggled(c, True) for c in range(1, t.columnCount())])
+        menu.exec(global_pos)
+
+    def _column_toggled(self, col, on):
+        t = self.worker_table
+        t.setColumnHidden(col, not on)
+        self._save_setting("system_hidden", [t.horizontalHeaderItem(c).text() for c in range(1, t.columnCount())
+                                             if t.isColumnHidden(c)])
 
     def _log_tab(self):
         w = QtWidgets.QWidget()
