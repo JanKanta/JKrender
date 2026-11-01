@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.53 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.53.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.53 alpha"
+APP_VERSION = "0.53.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1247,7 +1247,19 @@ class RenderEngine:
         return self.state == "rendering" and not any(c.state == "queued" and self.in_scope(c) for c in self.chunks)
 
     def _may_spawn(self):
-        return self.manager is None or self.manager.free_slots() > 0
+        m = self.manager
+        if m is None:
+            return True
+        if m.free_slots() <= 0:
+            return False
+        if self.restart_ids:
+            return True
+        why = m.no_room()
+        if why and time.time() - getattr(self, "_no_room_noted", 0) > 60:
+            self._no_room_noted = time.time()
+            self.note("One more Nuke process would not fit (%s): %d run, more start when there is room"
+                      % (why, m.live_count()), "warn")
+        return not why
 
     def _balance_workers(self):
         live = self._live()
@@ -1862,6 +1874,32 @@ class RenderManager:
             return 8.0
         return max(sizes) / total * 100
 
+    def no_room(self):
+        """Why one more Nuke process does not fit, or "". It has to fit in the RAM (counting what the ones still opening the script will take, from
+        what the script took last time) and in the graphics card's memory. Starting one that does not fit would
+        only push the PC over a limit, and a process would be closed again. The first one always starts."""
+        if self.live_count() == 0:
+            return ""
+        if psutil and self.settings.get("ram_guard", True):
+            limit = float(self.settings.get("ram_limit", 90))
+            pct = self.ram_percent()
+            if self._more_fit(pct, limit) < 1:
+                return "RAM %.0f %%, limit %.0f %%" % (pct, limit)
+        if self.vram and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
+            used, total = float(self.vram[1]), float(self.vram[2] or 1)
+            mine = [w for e in self.engines for w in e.workers.values() if w.gpu and w.state != "gone"]
+            sizes = [self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 for w in mine]
+            if sizes and max(sizes):
+                one = max(sizes) / total * 100
+                pct = used / total * 100
+                others = (used - sum(sizes)) / total * 100
+                limit = float(self.settings.get("vram_limit", 95))
+                # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
+                # never into the last few % where Windows starts moving VRAM into the RAM
+                if pct + one >= 97.0 or (pct + one >= limit and others + one < limit):
+                    return "VRAM %.0f %%, limit %.0f %%" % (pct, limit)
+        return ""
+
     def _note_running(self, text, level="ev"):
         for e in self.engines:
             if e.state in ("rendering", "paused", "finishing"):
@@ -1888,7 +1926,7 @@ class RenderManager:
                 self._note_running("!! RAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                    % (pct, limit, cap), "warn")
             self._ram_ok_since = None
-            if pct >= min(98.0, limit + 6) and now - self._last_kill > 5:
+            if pct >= min(98.0, limit + 6) and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
                 # Nearly out of memory: one process gives up its chunk now instead of after it.
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
                 if busy:
@@ -1973,7 +2011,7 @@ class RenderManager:
                     self._vram_lowered_at = pct
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
-            if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8:
+            if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state == "busy"]
                 if busy:
                     e, w = max(busy, key=lambda ew: vram_of(ew[1]))
@@ -2074,8 +2112,9 @@ class RenderManager:
                 busy.append(e)
 
     def _allocate(self):
+        # a render with a process you started by hand first, so the place made for it is not dealt to another
         active = sorted((e for e in self.engines if e.state in ("rendering", "paused")),
-                        key=lambda e: (e.started or 0, e.number))
+                        key=lambda e: (not e.restart_ids, e.started or 0, e.number))
         needs = {e: e.need() for e in active}
         share = {e: 0 for e in active}
         left = self.budget()

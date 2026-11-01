@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.53.1 alpha — 2026-11-01
+
+- A new Nuke process starts only when it fits: in the RAM, counting what the ones still opening the script will take (from what the script took last time), and in the graphics card's memory. Before, all of them started at once and a heavy script pushed the RAM to 100 %, so one was killed mid-chunk straight away (measured: 8 × 12 GB on a 94 GB PC). The log says once a minute when one more does not fit.
+- Start on a closed process now gets the place in its own render; before, the extra place could go to another render first.
+- The RAM and VRAM emergency closes never fire in the same few seconds, so one shortage does not close two processes.
+
 ## 0.53 alpha — 2026-11-01
 
 - Fix: 0.52.1 and 0.52.2 did not open once column widths had been saved (the Frames table check failed).
