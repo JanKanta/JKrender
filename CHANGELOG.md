@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.52.1 alpha — 2026-11-01
+
+- System: the Mode column is gone (every process uses the GPU when Use GPU is on). Column widths saved with a different number of columns are dropped instead of breaking the header; hidden columns and their order stay.
+- Delete in Output: "All frames" is always picked first; frames selected in the list are still filled in under "Frames".
+
 ## 0.52 alpha — 2026-11-01
 
 - No more CPU mode: with Use GPU on, every Nuke process uses the GPU. The VRAM limit works like the RAM limit again: over it, one process fewer at a time, the one taking the most VRAM finishing its chunk and closing ("busy → closes (VRAM limit)"); places come back when one more fits. Only about to spill into the RAM (97 %) does a process close at once.

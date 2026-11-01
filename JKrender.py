@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.52 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.52.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.52 alpha"
+APP_VERSION = "0.52.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -68,7 +68,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "r
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
-SYSTEM_HIDDEN = ["Mode", "Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
+SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
 
@@ -3493,7 +3493,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._header_defaults.setdefault(name, head.saveState())
             saved = self.settings.get("headers", {}).get(name)
             if saved:
+                built = head.saveState()
                 head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
+                if head.count() != table.columnCount():  # saved before a column was added or removed
+                    head.restoreState(built)
+                    continue
                 if name == "chunks":
                     self._chunk_cols_sized = True  # keep the saved widths instead of fitting them to the first chunks
 
@@ -3869,10 +3873,10 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 18)
+        self.worker_table = QtWidgets.QTableWidget(0, 17)
         self.worker_table.setHorizontalHeaderLabels(
             ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
-             "Script load", "Mode", "Uptime", "Peak RAM", "Chunks", "Last frame"])
+             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
         self._worker_rows = []
@@ -4307,7 +4311,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
                       "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
-                      self._worker_mode(w), fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
+                      fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
                       self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else ""]
             for col, v in enumerate(values):
                 item = t.item(row, col)
@@ -4316,10 +4320,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     t.setItem(row, col, item)
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
-
-    @staticmethod
-    def _worker_mode(w):
-        return "GPU" if w.gpu else "CPU"
 
     @staticmethod
     def _worker_uptime(w):
@@ -4773,7 +4773,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._open_path(Path(frame_path(self.engine.outputs[0][1], 0)).parent)
 
     def _delete_dialog(self):
-        """Delete: a frame range (the frames selected in the list to start with) or all frames."""
+        """Delete: all frames to start with, or a frame range (the frames selected in the list filled in)."""
         e = self.engine
         if e.state in ("rendering", "paused", "finishing"):
             return
@@ -4791,7 +4791,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(edit, 1)
         lay.addLayout(row)
         lay.addWidget(r_all)
-        (r_range if picked else r_all).setChecked(True)
+        r_all.setChecked(True)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Delete…")
         buttons.accepted.connect(d.accept)
