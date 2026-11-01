@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.39.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.40 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.39.1 alpha"
+APP_VERSION = "0.40 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2235,6 +2235,7 @@ class Gantt(QtWidgets.QWidget):
         self.manager = manager
         self.selected = None
         self.show_all = True  # False: only the picked render's processes
+        self.dim_others = True  # False: every render's chunks equally bright
         self.setMouseTracking(True)
         self.setMinimumHeight(120)
         self._blocks = []
@@ -2284,7 +2285,8 @@ class Gantt(QtWidgets.QWidget):
                 p.drawText(QtCore.QRectF(0, y, left - 6, row_h), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
                            w_now.name)
             for e, w in ews:
-                p.setOpacity(0.35 if many and self.selected is not None and e is not self.selected else 1.0)
+                p.setOpacity(0.35 if many and self.dim_others and self.selected is not None and e is not self.selected
+                             else 1.0)
                 for kind, label, a, b, state in w.segments:
                     if a > now:
                         continue
@@ -3094,6 +3096,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt = Gantt(self.manager)
         self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
+        self.gantt.dim_others = bool(self.settings.get("dim_others", True))
         self.pages = QtWidgets.QStackedWidget()
         for page in (self.gantt, self._log_tab()):
             self.pages.addWidget(page)
@@ -3219,6 +3222,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Show processes of all renders", [self.c_all_workers],
             "On: Workers and System show the Nuke processes of every render in the window.\n"
             "Off: only those of the render you picked at the top.")
+        self.c_dim = toggle("dim_others", True, self._dim_changed)
+        row(gen, "Dim other renders in Workers", [self.c_dim],
+            "On: in the Workers timeline the chunks of the render you picked are bright, the others dimmed.\n"
+            "Off: every render's chunks are equally bright.")
         self.c_clean = toggle("log_cleanup", True, lambda v: (self._save_setting("log_cleanup", v),
                                                                self.s_days.setEnabled(v)))
         self.s_days = QtWidgets.QSpinBox()
@@ -3359,7 +3366,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 90)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -3369,6 +3376,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _guard_changed(self, on):
         self._save_setting("ram_guard", on)
         self.s_limit.setEnabled(on)
+
+    def _dim_changed(self, on):
+        self._save_setting("dim_others", on)
+        self.gantt.dim_others = on
+        self.gantt.update()
 
     def _all_workers_changed(self, on):
         self._save_setting("show_all_workers", on)

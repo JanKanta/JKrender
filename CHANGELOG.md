@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.40 alpha — 2026-11-01
+
+- Settings → General → **Dim other renders in Workers** (on), under Show processes of all renders.
+  - On: in the Workers timeline, the render you picked is bright and the others are dimmed.
+  - Off: every render's chunks are equally bright.
+
 ## 0.39.1 alpha — 2026-11-01
 
 - System → State says "closed" for a process you closed too (was "closed by you").
