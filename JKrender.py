@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.45.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.46 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.45.1 alpha"
+APP_VERSION = "0.46 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -822,6 +822,13 @@ class RenderEngine:
     # ---- control ------------------------------------------------------------
     def nothing_to_render(self):
         return not any(fr.state in ("queued", "failed", "bad") for fr in self.frames.values())
+
+    def done_if_on_disk(self):
+        """A render whose whole range is already on disk and passes the check shows as done (green card)
+        without rendering anything; Render again renders it all anew."""
+        if self.state == "ready" and self.frames and self.nothing_to_render():
+            self.state = "done"
+            self.note("The whole range is already rendered and passes the check: nothing to render", "ok")
 
     def start(self, everything=False):
         """everything=True renders the whole range again, including frames already on disk."""
@@ -1793,6 +1800,7 @@ class RenderManager:
         e.threads, e.ram = self.threads, self.ram
         e.workers_target = 0
         e.scan_disk()  # frames the Write already rendered show as done straight away
+        e.done_if_on_disk()
         self.engines.append(e)
         return e
 
@@ -3455,6 +3463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for e in self.manager.engines:
             if e.state in ("ready", "stopped", "done", "failed") and e.set_range(e.default_range()):
                 e.scan_disk()
+                e.done_if_on_disk()
         self.range_edit.setText(self.engine.range_text)
         self.frames_model.refilter()
         self._sync_controls()
@@ -3961,6 +3970,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _state_changed(self):
         e = self.engine
+        done_in = ("Done in %s" % fmt_secs(e.elapsed())) if e.started else "Already rendered"
         self._sync_controls()
         if e.movie:
             self._update_movie()
@@ -3972,23 +3982,23 @@ class MainWindow(QtWidgets.QMainWindow):
             bad = [t for _, st, t in checks if st == "bad"]
             warn = ["%s %s" % (what, t) for what, st, t in checks if st == "warn"]
             if bad:
-                self._banner("Done in %s, but the movie is not usable: %s" % (fmt_secs(e.elapsed()), "; ".join(bad)),
+                self._banner("%s, but the movie is not usable: %s" % (done_in, "; ".join(bad)),
                              C["failed"])
             else:
                 extra = ("  Check: %s." % "; ".join(warn)) if warn else ""
-                self._banner("Done in %s. %s is complete: %d frames.%s" % (
-                    fmt_secs(e.elapsed()), os.path.basename(e.movie_path()), len(e.frames), extra),
+                self._banner("%s. %s is complete: %d frames.%s" % (
+                    done_in, os.path.basename(e.movie_path()), len(e.frames), extra),
                     C["small"] if warn else C["done"])
         elif e.state == "done":
             bad = sum(1 for fr in e.frames.values() if fr.state == "bad")
             small = sum(1 for fr in e.frames.values() if fr.small)
             if bad:
-                self._banner("Done in %s, but %d frame(s) are broken on disk. Output: Problems, select them, right-click → Render again."
-                             % (fmt_secs(e.elapsed()), bad), C["failed"])
+                self._banner("%s, but %d frame(s) are broken on disk. Output: Problems, select them, right-click → Render again."
+                             % (done_in, bad), C["failed"])
             else:
                 extra = (" %d frame(s) are much smaller than the rest; worth a look." % small) if small else ""
-                self._banner("Done in %s. All %d frames are on disk and pass the check.%s"
-                             % (fmt_secs(e.elapsed()), len(e.frames), extra), C["done"])
+                self._banner("%s. All %d frames are on disk and pass the check.%s"
+                             % (done_in, len(e.frames), extra), C["done"])
         elif e.notice and e.state in ("rendering", "paused"):
             self._banner(e.notice[0], {"ok": C["done"], "warn": C["small"], "bad": C["failed"]}[e.notice[1]])
         elif e.state == "waiting":
@@ -4691,6 +4701,7 @@ class MainWindow(QtWidgets.QMainWindow):
         e.state = "ready"
         e.movie_info = None
         e.scan_disk()  # anything that could not be deleted still counts as rendered
+        e.done_if_on_disk()
         if e.movie:
             self._update_movie()
             self._movie_show(0.5)

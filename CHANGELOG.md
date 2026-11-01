@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.46 alpha — 2026-11-01
+
+- A render whose whole frame range is already on disk and passes the check opens as Done: green card, Render again on the button, and the banner says Already rendered. The same after changing the slate or deleting frames. Frames are checked when the render is added, as before.
+
 ## 0.45.1 alpha — 2026-11-01
 
 - Fix: two renders could run a process under the same number at once (two W03s on one Workers row). When a render restarts a closed process (after the VRAM or RAM limit closed it), it no longer reuses a number another render has started meanwhile; it takes a free one.
