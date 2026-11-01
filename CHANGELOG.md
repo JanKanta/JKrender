@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.39.1 alpha — 2026-11-01
+
+- System → State says "closed" for a process you closed too (was "closed by you").
+
 ## 0.39 alpha — 2026-11-01
 
 - **VRAM limit** (Settings → Performance and Optimization, on, 90 %) replaces GPU processes and works like the RAM limit.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.39 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.39.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.39 alpha"
+APP_VERSION = "0.39.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -940,7 +940,7 @@ class RenderEngine:
 
     def worker_state(self, w):
         if w.state == "gone":
-            return "closed by you" if w.id in self.held else "closed"
+            return "closed"
         state = "paused" if w.user_paused else w.state
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
