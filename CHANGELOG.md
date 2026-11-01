@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.39 alpha — 2026-11-01
+
+- **VRAM limit** (Settings → Performance and Optimization, on, 90 %) replaces GPU processes and works like the RAM limit.
+  - Every new process uses the GPU while VRAM allows.
+  - Over the limit, the GPU process started last finishes its chunk, closes, and one without the GPU takes its place, so the number of processes stays.
+  - Close to full (limit + 5 %), one GPU process closes at once and its chunk goes back to the queue.
+  - One GPU process fewer at a time, and only once the last one has gone, because VRAM is freed only then.
+  - GPU places come back when one more fits.
+  - In tests, a full card made Windows push VRAM into RAM, and RAM ran to 100 %: the same as GPU 100 % / CPU 2 % before.
+- A process told to quit that is still there after 8 s is ended. Nuke can take long to let go of the GPU and held the place meanwhile.
+- System → State shows where a process goes after its chunk: "busy → 2 shotB" (Work on), "busy → CPU" (VRAM limit), "busy → another render".
+- Output: when nothing is picked, the first frame rendered shows in the preview at once.
+
 ## 0.38 alpha — 2026-11-01
 
 - Settings → GPU processes (default 2): only that many Nuke processes of all renders together use the graphics card (`--gpu`).
