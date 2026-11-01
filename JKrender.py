@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.37 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.37.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.37 alpha"
+APP_VERSION = "0.37.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -636,7 +636,7 @@ class Worker:
         self.frame_secs = []
         self.segments = []  # [kind, label, t0, t1 or None, state]
         self.tail = collections.deque(maxlen=200)
-        self.log = open(log_path, "a", encoding="utf-8", errors="replace")
+        self.log = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)  # line by line: readable while it runs
         self.log_path = log_path
         self.cpu = 0.0
         self.rss = 0.0

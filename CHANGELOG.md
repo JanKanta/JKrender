@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.37.1 alpha — 2026-11-01
+
+- The processes' logs (log/<render>/logs/worker_NN.log) are written line by line.
+  - Before, Nuke's output stayed in memory until the process ended, so the log of a process that hung was empty.
+
 ## 0.37 alpha — 2026-11-01
 
 - Workers timeline: one row per process (W01, W02 ...).
