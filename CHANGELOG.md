@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.37 alpha — 2026-11-01
+
+- Workers timeline: one row per process (W01, W02 ...).
+  - A process that moves on to another render keeps its row.
+  - With several renders, each chunk says which render it was for, e.g. "1 · C33", "3 · C35".
+- System: the first column is Process, the second Render. There is one row per process, and Render changes as the process moves.
+- Stop also clears the stopped render's processes from the timeline and the System table. Their logs stay on disk.
+
 ## 0.36 alpha — 2026-10-31
 
 - A render started while others run now gets its share gently, without throwing work away.

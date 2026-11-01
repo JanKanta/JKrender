@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.36 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.37 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.36 alpha"
+APP_VERSION = "0.37 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -975,6 +975,13 @@ class RenderEngine:
         spans = list(self.pauses) + ([(self.paused_at, time.time())] if self.paused_at else [])
         return sum(max(0.0, min(b, p1) - max(a, p0)) for p0, p1 in spans)
 
+    def forget_workers(self):
+        """Stop by hand: the stopped processes leave the Workers timeline and the System table.
+        Their logs stay on disk."""
+        if all(w.state == "gone" for w in self.workers.values()):
+            self.workers = {}
+            self.held, self.restart_ids = set(), []
+
     def stop(self, reason="Stopped by user"):
         self.scope = None
         self._end_pause()
@@ -1827,6 +1834,17 @@ class RenderManager:
         else:
             self._ram_ok_since = None
 
+    def process_rows(self, engines=None):
+        """One entry per process number (W01, W02 ...), across renders: [(wid, [(engine, worker), ...]), ...].
+
+        A number moves from render to render (W01 of a finished render goes on in another), so a row
+        holds every process that had that number, oldest first; the last one is the current one."""
+        rows = {}
+        for e in (self.engines if engines is None else engines):
+            for wid, w in e.workers.items():
+                rows.setdefault(wid, []).append((e, w))
+        return [(wid, sorted(rows[wid], key=lambda ew: ew[1].spawned)) for wid in sorted(rows)]
+
     def take_wid(self, engine=None):
         """The lowest process number no running process has. When a render is done, the process a render
         still running starts next takes over the free name (W01 goes on in render C), so the names stay
@@ -2069,7 +2087,8 @@ class FrameMap(QtWidgets.QWidget):
 
 
 class Gantt(QtWidgets.QWidget):
-    """One row per Nuke process of every render, grouped by render; the picked render is bright.
+    """One row per Nuke process (W01, W02 ...). A process that moves to another render keeps its row;
+    with several renders each chunk says which render it was for, and the picked render is bright.
 
     Script load in grey, each chunk as a block. Right-click a row for that process's menu."""
 
@@ -2090,10 +2109,10 @@ class Gantt(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         p.fillRect(self.rect(), QtGui.QColor(C["panel"]))
         engines = m.engines if self.show_all or self.selected is None else [self.selected]
-        groups = [(e, sorted(e.workers.values(), key=lambda w: w.id)) for e in engines]
-        groups = [(e, ws) for e, ws in groups if ws]
+        rows = m.process_rows(engines)  # W01, W02 ...: a process keeps its row when it moves to another render
         self._blocks = []
-        if not groups:
+        self._rows = []
+        if not rows:
             p.setPen(QtGui.QColor(C["dim"]))
             p.drawText(self.rect(), QtCore.Qt.AlignCenter, "Workers appear here when a render starts")
             p.end()
@@ -2107,30 +2126,29 @@ class Gantt(QtWidgets.QWidget):
             cap = e.paused_at if e.state == "paused" and e.paused_at else now
             return min(b or cap, cap)
 
-        workers = [w for _, ws in groups for w in ws]
-        running = any(e.state in ("rendering", "paused", "finishing") for e, _ in groups)
-        t0 = clock(min(w.spawned for w in workers))
-        t1 = max([clock(now) if running else 0] +
-                 [clock(end_of(e, s[3])) for e, ws in groups for w in ws for s in w.segments])
+        pairs = [ew for _, ews in rows for ew in ews]
+        running = any(e.state in ("rendering", "paused", "finishing") for e, _ in pairs)
+        t0 = clock(min(w.spawned for _, w in pairs))
+        t1 = max([clock(now) if running else 0] + [clock(end_of(e, s[3])) for e, w in pairs for s in w.segments])
         span = max(1.0, t1 - t0)
         many = len(m.engines) > 1
-        left, top, right, gap = 46, 6, 8, (6 if len(groups) > 1 else 0)
-        avail = self.height() - top - 22 - gap * (len(groups) - 1)
-        row_h = max(5.0, min(22.0, avail / float(len(workers))))
+        left, top, right = 46, 6, 8
+        avail = self.height() - top - 22
+        row_h = max(5.0, min(22.0, avail / float(len(rows))))
         width = self.width() - left - right
         font = p.font()
         font.setPointSizeF(7.5)
         p.setFont(font)
         y = top
-        for gi, (e, ws) in enumerate(groups):
-            dim = many and self.selected is not None and e is not self.selected
-            p.setOpacity(0.35 if dim else 1.0)
-            group_top = y
-            for w in ws:
-                p.setPen(QtGui.QColor(C["text"] if w.state != "gone" else C["dim"]))
-                if row_h >= 9:
-                    label = w.name
-                    p.drawText(QtCore.QRectF(0, y, left - 6, row_h), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, label)
+        for wid, ews in rows:
+            e_now, w_now = ews[-1]
+            p.setOpacity(1.0)
+            p.setPen(QtGui.QColor(C["text"] if w_now.state != "gone" else C["dim"]))
+            if row_h >= 9:
+                p.drawText(QtCore.QRectF(0, y, left - 6, row_h), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                           w_now.name)
+            for e, w in ews:
+                p.setOpacity(0.35 if many and self.selected is not None and e is not self.selected else 1.0)
                 for kind, label, a, b, state in w.segments:
                     if a > now:
                         continue
@@ -2149,33 +2167,24 @@ class Gantt(QtWidgets.QWidget):
                     p.setPen(QtCore.Qt.NoPen)
                     p.setBrush(color)
                     p.drawRoundedRect(rect, 2, 2)
-                    if kind == "chunk" and bw > 30 and row_h >= 12:
-                        p.setPen(QtGui.QColor("#0e0f11"))
-                        p.drawText(rect, QtCore.Qt.AlignCenter, label)
+                    if kind == "chunk" and row_h >= 12:
+                        text = "%d · %s" % (e.number, label) if many else label
+                        if p.fontMetrics().horizontalAdvance(text) + 6 > bw:
+                            text = label if p.fontMetrics().horizontalAdvance(label) + 6 <= bw else ""
+                        if text:
+                            p.setPen(QtGui.QColor("#0e0f11"))
+                            p.drawText(rect, QtCore.Qt.AlignCenter, text)
                     self._blocks.append((rect, e, w, kind, label, a, b, state))
-                y += row_h
-            group = QtCore.QRectF(0, group_top, self.width(), y - group_top)
             p.setOpacity(1.0)
-            if e.state == "paused":
-                # The Nuke processes of this render are frozen.
-                p.fillRect(group, QtGui.QColor(0, 0, 0, 120))
-                big = p.font()
-                big.setPointSizeF(14 if row_h * len(ws) > 40 else 9)
-                big.setBold(True)
-                p.setFont(big)
-                fm = p.fontMetrics()
-                box = QtCore.QRectF(0, 0, fm.horizontalAdvance("PAUSED") + 30, fm.height() + 10)
-                box.moveCenter(group.center())
-                p.setPen(QtCore.Qt.NoPen)
-                p.setBrush(QtGui.QColor(C["bg"]))
-                p.drawRoundedRect(box, 6, 6)
-                p.setPen(QtGui.QColor(C["accent"]))
-                p.drawText(box, QtCore.Qt.AlignCenter, "PAUSED")
-                p.setFont(font)
-            if gi < len(groups) - 1:
-                y += gap
-                p.setPen(QtGui.QColor(C["line"]))
-                p.drawLine(QtCore.QPointF(0, y - gap / 2.0), QtCore.QPointF(self.width(), y - gap / 2.0))
+            self._rows.append((y, y + row_h, e_now, w_now))
+            if e_now.state == "paused" and w_now.state != "gone":
+                # this process is frozen with its render
+                band = QtCore.QRectF(left, y, width, row_h)
+                p.fillRect(band, QtGui.QColor(0, 0, 0, 120))
+                if row_h >= 12:
+                    p.setPen(QtGui.QColor(C["accent"]))
+                    p.drawText(band, QtCore.Qt.AlignCenter, "PAUSED")
+            y += row_h
         # time axis
         p.setPen(QtGui.QColor(C["dim"]))
         axis_y = self.height() - 16
@@ -2190,8 +2199,8 @@ class Gantt(QtWidgets.QWidget):
 
     def contextMenuEvent(self, event):
         y = event.pos().y()
-        for rect, e, w, kind, label, a, b, state in self._blocks:
-            if rect.top() - 2 <= y <= rect.bottom() + 2:
+        for y0, y1, e, w in getattr(self, "_rows", []):  # the row's current process
+            if y0 <= y < y1:
                 self.workerMenu.emit(e, w, event.globalPos())
                 return
 
@@ -3514,7 +3523,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addWidget(self.cores)
         self.worker_table = QtWidgets.QTableWidget(0, 13)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Render", "Process", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
+            ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
              "Script load"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
@@ -3577,6 +3586,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.manager.cancel(e)
         elif e.state in ("rendering", "paused", "finishing"):
             e.stop()
+            e.forget_workers()  # its processes leave the timeline and the System table
+            self.gantt.update()
+            self._update_system()
         self._sync_controls()
         self._refresh_cards()
 
@@ -3838,8 +3850,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.g_io.add({"dw": dw, "dr": dr, "net": nmb})
         self.cores.set_values(per)
         t = self.worker_table
-        rows = sorted(((x, w) for x in shown for w in x.workers.values()),
-                      key=lambda xw: (xw[0].number, xw[1].id))  # fixed order: a closed one keeps its row
+        # one row per process number; a process that moved on to another render shows that render now
+        rows = [ews[-1] for _, ews in m.process_rows(shown)]
         t.setRowCount(len(rows))
         self._worker_rows = rows
         gpus = self._gpu_procs or {}
@@ -3847,7 +3859,7 @@ class MainWindow(QtWidgets.QMainWindow):
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
             gpu = gpus.get(w.proc.pid)
-            values = ["%d  %s" % (x.number, x.name), w.name, str(w.proc.pid), x.worker_state(w),
+            values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), x.worker_state(w),
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
