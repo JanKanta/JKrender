@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.52 alpha — 2026-11-01
+
+- No more CPU mode: with Use GPU on, every Nuke process uses the GPU. The VRAM limit works like the RAM limit again: over it, one process fewer at a time, the one taking the most VRAM finishing its chunk and closing ("busy → closes (VRAM limit)"); places come back when one more fits. Only about to spill into the RAM (97 %) does a process close at once.
+- VRAM limit default 95 % (was 90 %).
+
 ## 0.51 alpha — 2026-11-01
 
 - VRAM shares are shared: what one process leaves unused, another may take. A process may go over its share while the card is under the VRAM limit. At the limit, the process furthest over its share finishes its chunk and goes on without the GPU, one at a time.
