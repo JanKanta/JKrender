@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.47 alpha — 2026-11-01
+
+- System: change the order of the columns. In the header menu each column has ▲ ▼ arrows (the menu stays open), or drag a column by its header. The order is remembered.
+
 ## 0.46 alpha — 2026-11-01
 
 - A render whose whole frame range is already on disk and passes the check opens as Done: green card, Render again on the button, and the banner says Already rendered. The same after changing the slate or deleting frames. Frames are checked when the render is added, as before.

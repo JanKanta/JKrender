@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.46 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.47 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.46 alpha"
+APP_VERSION = "0.47 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3790,22 +3790,65 @@ class MainWindow(QtWidgets.QMainWindow):
         hidden = set(self.settings.get("system_hidden", SYSTEM_HIDDEN))
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in hidden)
+        names = [self.worker_table.horizontalHeaderItem(c).text() for c in range(self.worker_table.columnCount())]
+        for i, name in enumerate(n for n in self.settings.get("system_order", []) if n in names):
+            head.moveSection(head.visualIndex(names.index(name)), i)
+        head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
+        head.sectionMoved.connect(lambda *_: self._save_column_order())
         lay.addWidget(self.worker_table, 1)
         return w
 
-    def _columns_menu(self, global_pos):
-        """A click on the System table's header: tick the columns to show. Process always shows."""
+    def _save_column_order(self):
         t = self.worker_table
+        head = t.horizontalHeader()
+        self._save_setting("system_order", [t.horizontalHeaderItem(head.logicalIndex(v)).text()
+                                            for v in range(t.columnCount())])
+
+    def _columns_menu(self, global_pos):
+        """A click on the System table's header: tick the columns to show, arrows to change their order.
+        Process always shows."""
+        t = self.worker_table
+        head = t.horizontalHeader()
         menu = QtWidgets.QMenu(self)
         menu.addSection("Columns")
-        for col in range(1, t.columnCount()):
+        panel = QtWidgets.QWidget()  # one widget for every row, so the menu stays open while ticking and moving
+        rows = QtWidgets.QVBoxLayout(panel)
+        rows.setContentsMargins(6, 2, 6, 2)
+        rows.setSpacing(0)
+        order = [c for c in sorted(range(t.columnCount()), key=head.visualIndex) if c != 0]
+
+        def move(col, step):
+            i = order.index(col)
+            j = i + step
+            if not 0 <= j < len(order):
+                return
+            head.moveSection(head.visualIndex(col), head.visualIndex(order[j]))  # saves via sectionMoved
+            order[i], order[j] = order[j], order[i]
+            row = rows.itemAt(i).widget()
+            rows.removeWidget(row)
+            rows.insertWidget(j, row)
+
+        for col in order:
+            row = QtWidgets.QWidget()
+            line = QtWidgets.QHBoxLayout(row)
+            line.setContentsMargins(8, 0, 0, 0)
             box = QtWidgets.QCheckBox(t.horizontalHeaderItem(col).text())
             box.setChecked(not t.isColumnHidden(col))
-            box.setStyleSheet("QCheckBox { padding: 4px 14px; }")
+            box.setStyleSheet("QCheckBox { padding: 4px 6px; }")
             box.toggled.connect(lambda on, c=col: self._column_toggled(c, on))
-            act = QtWidgets.QWidgetAction(menu)  # a checkbox, so the menu stays open while ticking
-            act.setDefaultWidget(box)
-            menu.addAction(act)
+            line.addWidget(box, 1)
+            for arrow, step, tip in (("▲", -1, "Move left"), ("▼", 1, "Move right")):
+                b = QtWidgets.QToolButton()
+                b.setText(arrow)
+                b.setToolTip(tip)
+                b.setAutoRaise(True)
+                b.setFixedSize(22, 22)
+                b.clicked.connect(lambda _=False, c=col, s=step: move(c, s))
+                line.addWidget(b)
+            rows.addWidget(row)
+        act = QtWidgets.QWidgetAction(menu)
+        act.setDefaultWidget(panel)
+        menu.addAction(act)
         menu.addSeparator()
         menu.addAction("Show all columns", lambda: [self._column_toggled(c, True) for c in range(1, t.columnCount())])
         menu.exec(global_pos)
