@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.42 alpha — 2026-11-01
+
+- Chunks: right-click a chunk (or several) and choose Delete frames from chunk. It deletes just those frames from disk, after asking, like Delete in Output.
+
 ## 0.41.3 alpha — 2026-11-01
 
 - System: the Render column is wider (240 px), so a full script name such as shot_010_comp_v004 fits.

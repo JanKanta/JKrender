@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.41.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.42 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.41.3 alpha"
+APP_VERSION = "0.42 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -4206,11 +4206,17 @@ class MainWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         again = menu.addAction("Render again")
         log = menu.addAction("Show process log")
+        menu.addSeparator()
+        delete = menu.addAction("Delete frames from chunk" if len(chunks) == 1 else
+                                "Delete frames from %d chunks" % len(chunks))
+        delete.setEnabled(self.engine.state not in ("rendering", "paused", "finishing", "waiting"))
         act = menu.exec(self.chunk_table.viewport().mapToGlobal(pos))
         if act == again:
             for c in chunks:
                 self.engine.requeue_chunk(c)
             self._after_requeue()
+        elif act == delete:
+            self._delete_all(sorted({f for c in chunks for f in c.all_frames}))  # asks first
         elif act == log and chunks[0].worker:
             wid = int(chunks[0].worker[1:])
             w = self.engine.workers.get(wid)
