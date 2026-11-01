@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.2 alpha — 2026-11-01
+
+- Fix: a script whose path has Czech letters (D:/Práce/Žluťoučký kůň/...) did not render: Nuke reads its command line in the Windows code page, so the original script's path reached the worker broken and every Nuke stopped while opening the script. JKrender now passes it as UTF-8 too.
+- A Nuke that stops while opening the script is logged with its own error, not a guess from its log (which said "Missing file" because the script also names a missing Alembic camera).
+
 ## 0.55.1 alpha — 2026-11-01
 
 - Workers: a process started again under its name (a fresh Nuke for the VRAM, the RAM, or by hand) shows its script load as a grey block, from when the previous one finished; before, the timeline had gaps there. The tooltip says why it loaded again.

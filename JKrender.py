@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.55.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.55.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.55.1 alpha"
+APP_VERSION = "0.55.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1099,10 +1099,15 @@ class RenderEngine:
             return auto_plan(1, True)["threads"], self.ram
         return self.threads, self.ram
 
-    def _command(self, gpu=False):
+    def _worker_args(self):
+        """What the worker opens: the script (its snapshot), the original's path, the Write names."""
         names = "|".join(w["name"] for w in self.job.get("writes", []))
         script = self.job.get("snapshot") or self.job.get("script")
         original = self.job.get("script") if self.job.get("snapshot") else ""
+        return script, original, names
+
+    def _command(self, gpu=False):
+        script, original, names = self._worker_args()
         threads, ram = self._process_size()
         # Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, ...) on the CPU unless told --gpu
         gpu = ["--gpu", "0"] if gpu else []
@@ -1146,6 +1151,9 @@ class RenderEngine:
                       text=True, encoding="utf-8", errors="replace", bufsize=1)
         kwargs.update(hidden())
         kwargs["env"] = nuke_render_env(self.job.get("env"))
+        # the same, as UTF-8: Nuke reads its command line in the Windows code page, so a path such as
+        # "D:/Práce/Žluťoučký kůň/..." arrived broken and every Nuke stopped while opening the script
+        kwargs["env"]["JKRENDER_ARGS"] = json.dumps(self._worker_args())
         script_dir = Path(self.job.get("script") or "").parent
         if script_dir.is_dir():
             kwargs["cwd"] = str(script_dir)
@@ -1537,7 +1545,8 @@ class RenderEngine:
             return
         if was_loading:
             self.load_failures += 1
-            reason = classify_error(tail)
+            # the worker's own error first: Nuke's log may also name a missing file the script does not need
+            reason = getattr(w, "error", None) or classify_error(tail)
             self.note("!! %s exited while opening the script (code %s): %s" % (w.name, code, reason), "err")
             if not self.ever_ready and self.load_failures >= min(2, max(1, self.workers_target)):
                 self.error = "Nuke could not open the script: %s. See the %s log." % (reason, w.name)

@@ -7,6 +7,8 @@ It opens the script once and then renders whatever JKrender sends it on stdin, o
 Everything it reports to JKrender starts with "JKR "; all other output is Nuke's own log.
 """
 
+import json
+import os
 import sys
 import time
 import traceback
@@ -110,6 +112,10 @@ def render_range(writes, chunk, first, last):
 
 def main():
     script, original, names = (sys.argv[1:] + ["", "", ""])[:3]
+    if os.environ.get("JKRENDER_ARGS"):
+        # JKrender passes them as UTF-8 too: the command line comes in the Windows code page, which breaks
+        # paths with Czech letters
+        script, original, names = json.loads(os.environ["JKRENDER_ARGS"])
     opened = time.time()
     nuke.scriptOpen(script)
     if original:
