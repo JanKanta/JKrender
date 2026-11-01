@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.41.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.41.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.41.2 alpha"
+APP_VERSION = "0.41.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -3747,6 +3747,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker_table.setAlternatingRowColors(True)
         self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.worker_table.horizontalHeader().setStretchLastSection(True)
+        self.worker_table.setColumnWidth(1, 240)  # Render: wide enough for the script name
         lay.addWidget(self.worker_table, 1)
         return w
 

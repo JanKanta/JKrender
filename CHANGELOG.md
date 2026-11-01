@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.41.3 alpha — 2026-11-01
+
+- System: the Render column is wider (240 px), so a full script name such as shot_010_comp_v004 fits.
+
 ## 0.41.2 alpha — 2026-11-01
 
 - A click anywhere off the render cards drops the cards picked with Shift; the render shown stays.
