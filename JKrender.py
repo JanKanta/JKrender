@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.37.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.38 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.37.1 alpha"
+APP_VERSION = "0.38 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -62,7 +62,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90, "gpu_processes": 2,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True}
@@ -644,6 +644,8 @@ class Worker:
         self.user_paused = False  # frozen from its right-click menu
         self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
         self.pinned = False  # started again by hand: the RAM guard closes the others first
+        self.gpu = False  # started with --gpu
+        self.leave = False  # Work on another render: this one hands its place over first
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
         self.exit_code = None
         try:
@@ -705,6 +707,7 @@ class RenderEngine:
         self.chunks = []
         self.workers = {}
         self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
+        self.preferred_wids = []  # names moved here with Work on, taken by the next processes started
         self.scope = None  # set of frames: only these render (Render this frame / batch); None = everything
         self.next_wid = 1
         self.next_cid = 1
@@ -1042,13 +1045,22 @@ class RenderEngine:
             return auto_plan(1, True)["threads"], self.ram
         return self.threads, self.ram
 
-    def _command(self):
+    def _gpu_slot_free(self):
+        """Settings > GPU processes: only that many Nuke processes (of every render) use the graphics card;
+        the others render GPU nodes on the CPU. One card shared by many processes only makes them all wait."""
+        if not self.settings.get("use_gpu", True):
+            return False
+        engines = self.manager.engines if self.manager else [self]
+        on_gpu = sum(1 for e in engines for w in e.workers.values() if w.state != "gone" and w.gpu)
+        return on_gpu < int(self.settings.get("gpu_processes", 2))
+
+    def _command(self, gpu=False):
         names = "|".join(w["name"] for w in self.job.get("writes", []))
         script = self.job.get("snapshot") or self.job.get("script")
         original = self.job.get("script") if self.job.get("snapshot") else ""
         threads, ram = self._process_size()
         # Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, ...) on the CPU unless told --gpu
-        gpu = ["--gpu", "0"] if self.settings.get("use_gpu") else []
+        gpu = ["--gpu", "0"] if gpu else []
         return [
             self.job.get("nuke_exe") or "Nuke",
             "-i", "-m", str(threads), "-c", "%dG" % ram] + gpu + [
@@ -1058,19 +1070,28 @@ class RenderEngine:
     def _spawn(self):
         # A process that had to close (RAM guard, recycled) is replaced under its own number and on its
         # own timeline row, so the render keeps the same W01-W08 instead of W09, W10...
+        running = {i for e in (self.manager.engines if self.manager else [self])
+                   for i, x in e.workers.items() if x.state != "gone"}
+        wanted = [i for i in self.preferred_wids if i not in running]  # Work on: the name the user moved here
         restart = [i for i in getattr(self, "restart_ids", []) if i in self.workers and self.workers[i].state == "gone"]
         gone = restart or sorted(i for i, x in self.workers.items()
                                  if x.state == "gone" and i not in getattr(self, "held", ()))
         old = self.workers[gone[0]] if gone else None
+        if wanted:
+            self.preferred_wids.remove(wanted[0])
+            old = self.workers.get(wanted[0]) if wanted[0] in self.workers else None
         by_hand = bool(old and old.id in getattr(self, "restart_ids", []))
         if by_hand:
             self.restart_ids.remove(old.id)
         if old:
             wid = old.id
+        elif wanted:
+            wid = wanted[0]
         else:
             wid = self.manager.take_wid(self) if self.manager else self.next_wid
             self.next_wid = max(self.next_wid, wid) + 1
-        cmd = self._command()
+        use_gpu = self._gpu_slot_free()
+        cmd = self._command(gpu=use_gpu)
         kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                       text=True, encoding="utf-8", errors="replace", bufsize=1)
         kwargs.update(hidden())
@@ -1088,6 +1109,7 @@ class RenderEngine:
             return None
         w = Worker(wid, proc, log_path, *self._process_size())
         w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
+        w.gpu = use_gpu
         if old:
             w.segments, w.frames_done, w.frame_secs = old.segments, old.frames_done, old.frame_secs
         w.pinned = by_hand
@@ -1211,8 +1233,8 @@ class RenderEngine:
             # Hand the places over gently, so no work is thrown away: an idle one closes now; a busy one
             # finishes its chunk first; one still opening the script opens it, renders one chunk, then closes.
             # Busy ones before loading ones (they are free sooner), the last one started first.
-            for w in sorted(live, key=lambda w: ({"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned,
-                                                 -w.spawned))[:extra]:
+            for w in sorted(live, key=lambda w: (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state],
+                                                 w.pinned, -w.spawned))[:extra]:
                 if w.state == "busy":
                     w.retire = True
                 elif w.state == "loading":
@@ -1935,9 +1957,30 @@ class RenderManager:
                     gave = True
             if not gave:
                 break
+        # Work on: places moved by hand, as long as both renders run and the one moved to has work for it
+        self.moves = [(a, b) for a, b in getattr(self, "moves", []) if a in share and b in share]
+        for a, b in self.moves:
+            if share[a] > 0 and share[b] < needs[b]:
+                share[a] -= 1
+                share[b] += 1
         for e in active:
             if e.workers_target != share[e]:
                 e.set_workers(share[e])
+
+    def move_worker(self, src, w, dst):
+        """Work on: the process w of render src hands its place to render dst after its chunk; the
+        process dst starts there gets w's name."""
+        if src is dst:
+            return
+        if not hasattr(self, "moves"):
+            self.moves = []
+        if w.state != "gone" and src.state in ("rendering", "paused"):
+            w.leave = True
+            self.moves.append((src, dst))
+        dst.preferred_wids.append(w.id)
+        src.note("%s goes on to render %d (%s) after its chunk" % (w.name, dst.number, dst.name))
+        dst.note("%s comes over from render %d (%s)" % (w.name, src.number, src.name))
+        self._allocate()
 
     def shutdown(self):
         for e in self.engines:
@@ -2275,8 +2318,12 @@ class RenderCard(QtWidgets.QFrame):
                             % (color, STATE_LABELS.get(e.state, e.state), C["dim"], finished, total, left))
         self.badge.setStyleSheet("background: %s; color: %s; border-radius: 3px; font-weight: 600;"
                                  % (C["accent"] if selected else C["line"], "#111" if selected else C["text"]))
-        self.setStyleSheet("RenderCard { background: %s; border: 1px solid %s; border-radius: 5px; }"
-                           % (C["panel2"] if selected else C["panel"], C["accent"] if selected else C["line"]))
+        if e.state == "done":  # finished: the whole card goes green
+            self.setStyleSheet("RenderCard { background: #3b4a2f; border: %dpx solid %s; border-radius: 5px; }"
+                               % (2 if selected else 1, C["done"]))
+        else:
+            self.setStyleSheet("RenderCard { background: %s; border: 1px solid %s; border-radius: 5px; }"
+                               % (C["panel2"] if selected else C["panel"], C["accent"] if selected else C["line"]))
         self.close_btn.setVisible(closable)
 
     def mousePressEvent(self, event):
@@ -3103,7 +3150,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
             "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
             "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
-        note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card. Each process takes its own VRAM.")
+        self.s_gpu_n = QtWidgets.QSpinBox()
+        self.s_gpu_n.setRange(1, 32)
+        self.s_gpu_n.setValue(int(self.settings.get("gpu_processes", 2)))
+        self.s_gpu_n.valueChanged.connect(lambda v: self._save_setting("gpu_processes", v))
+        self.s_gpu_n.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_gpu_n.setEnabled)
+        row(perf, "GPU processes", [self.s_gpu_n],
+            "How many Nuke processes (of all renders together) use the graphics card. The others render GPU nodes\n"
+            "on the CPU. One card shared by many processes makes them all wait: GPU at 100 %, CPU idle.")
+        note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card, in this many processes; the rest use the CPU.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
@@ -3200,7 +3256,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7)):
+                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
+                           (self.s_gpu_n, 2)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_chunk_auto, True),
@@ -3643,7 +3700,7 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setEnabled(not running)
         manual = hasattr(self, "r_chunk_auto") and not self.r_chunk_auto.isChecked()
         self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
-        for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
+        for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu, self.s_gpu_n):
             widget.setEnabled(not any_running)
         rendering = any(x.state == "rendering" for x in self.manager.engines)
         paused = any(x.state == "paused" for x in self.manager.engines)
@@ -3896,6 +3953,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 act.setEnabled(w.state in ("loading", "idle", "busy") and e.state == "rendering")
                 actions[act] = lambda: e.user_pause(w, True)
             actions[menu.addAction("Close")] = lambda: e.user_close(w)
+        others = [x for x in self.manager.engines if x is not e and x.state in ("rendering", "paused")]
+        if others:
+            sub = menu.addMenu("Work on")
+            for x in others:
+                act = sub.addAction("%d  %s" % (x.number, x.name))
+                actions[act] = (lambda x=x: self.manager.move_worker(e, w, x))
         menu.addSeparator()
         actions[menu.addAction("Show process log")] = lambda: self._open_path(w.log_path)
         act = menu.exec(global_pos)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.38 alpha — 2026-11-01
+
+- Settings → GPU processes (default 2): only that many Nuke processes of all renders together use the graphics card (`--gpu`).
+  - The others render GPU nodes on the CPU.
+  - One card shared by many processes made them all wait: GPU at 100 %, CPU at 2 %, no frames.
+- Right-click a process → **Work on ▸ render**.
+  - It finishes its chunk, then goes on to that render under the same name.
+  - The place stays with that render while both run.
+- A finished render's card at the top turns green.
+
 ## 0.37.1 alpha — 2026-11-01
 
 - The processes' logs (log/<render>/logs/worker_NN.log) are written line by line.

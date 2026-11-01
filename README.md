@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.37.1 alpha.** It works in tests; expect rough edges.
+**Version 0.38 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -23,10 +23,11 @@ on disk.
 - **Delete** in Output removes a frame range or all rendered frames, after asking.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
-  (CPU, RAM, GPU and VRAM). Right-click a process to pause, close or start it again.
+  (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
-  graphics card. 1.nk rendered 3x faster with identical frames; every process takes its own VRAM.
+  graphics card. 1.nk rendered 3x faster with identical frames; every process takes its own VRAM,
+  so only GPU processes (default 2) of them get the card, the rest use the CPU.
 - **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, the one started last closing first,
   so Windows never swaps. The Nuke cache setting is Nuke's cache limit per process (`-c`); a heavy script takes more than that.
 
