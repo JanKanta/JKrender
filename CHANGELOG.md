@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.43 alpha — 2026-11-01
+
+- Settings > General: Hide done chunks when rendering again (on by default). When a render is rendered again, the Workers timeline shows only the new run, without the earlier run's done chunks and their script loading. Turn it off to keep them.
+
 ## 0.42 alpha — 2026-11-01
 
 - Chunks: right-click a chunk (or several) and choose Delete frames from chunk. It deletes just those frames from disk, after asking, like Delete in Output.

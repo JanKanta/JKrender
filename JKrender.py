@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.42 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.43 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.42 alpha"
+APP_VERSION = "0.43 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -66,7 +66,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "r
                     "vram_guard": True, "vram_limit": 90,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
-                    "auto_chunk": True}
+                    "auto_chunk": True, "hide_old_done": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
@@ -715,6 +715,7 @@ class RenderEngine:
         self.next_cid = 1
         self.last_spawn = 0.0
         self.started = None
+        self.rerun_at = None  # when the render was started again after an earlier run (Workers can hide that run's done chunks)
         self.ended = None
         self.paused_secs = 0.0
         self.paused_at = None
@@ -849,6 +850,7 @@ class RenderEngine:
         self.held, self.restart_ids = set(), []
         self.error = ""
         self.state = "rendering"
+        self.rerun_at = time.time() if self.started else None
         self.started = time.time()
         self.ended = None
         self.paused_secs = 0.0
@@ -1034,6 +1036,7 @@ class RenderEngine:
                                                                  ": only these render" if self.scope else ""))
         if self.state in ("ready", "done", "failed", "stopped", "finishing"):
             if idle:  # a new run: its own clock
+                self.rerun_at = time.time() if self.started else None
                 self.started, self.paused_secs, self.paused_at, self.pauses = time.time(), 0.0, None, []
                 self.done_times.clear()
                 self.notice = None
@@ -2236,6 +2239,7 @@ class Gantt(QtWidgets.QWidget):
         self.selected = None
         self.show_all = True  # False: only the picked render's processes
         self.dim_others = True  # False: every render's chunks equally bright
+        self.hide_old_done = True  # a render started again: the done chunks of its earlier run are not drawn
         self.setMouseTracking(True)
         self.setMinimumHeight(120)
         self._blocks = []
@@ -2263,10 +2267,16 @@ class Gantt(QtWidgets.QWidget):
             cap = e.paused_at if e.state == "paused" and e.paused_at else now
             return min(b or cap, cap)
 
+        def shown(e, w):  # the segments drawn: without the done chunks of an earlier run, when hidden
+            cut = e.rerun_at if self.hide_old_done else None
+            return [s for s in w.segments
+                    if not (cut and s[3] and s[3] <= cut and (s[0] == "load" or s[4] == "done"))]  # its loading too: no empty start
+
         pairs = [ew for _, ews in rows for ew in ews]
         running = any(e.state in ("rendering", "paused", "finishing") for e, _ in pairs)
-        t0 = clock(min(w.spawned for _, w in pairs))
-        t1 = max([clock(now) if running else 0] + [clock(end_of(e, s[3])) for e, w in pairs for s in w.segments])
+        starts = [s[2] for e, w in pairs for s in shown(e, w)]
+        t0 = clock(min(starts) if starts else min(w.spawned for _, w in pairs))
+        t1 = max([clock(now) if running else 0] + [clock(end_of(e, s[3])) for e, w in pairs for s in shown(e, w)])
         span = max(1.0, t1 - t0)
         many = len(m.engines) > 1
         left, top, right = 46, 6, 8
@@ -2287,7 +2297,7 @@ class Gantt(QtWidgets.QWidget):
             for e, w in ews:
                 p.setOpacity(0.35 if many and self.dim_others and self.selected is not None and e is not self.selected
                              else 1.0)
-                for kind, label, a, b, state in w.segments:
+                for kind, label, a, b, state in shown(e, w):
                     if a > now:
                         continue
                     a, b = clock(a), clock(end_of(e, b))
@@ -3132,6 +3142,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
         self.gantt.dim_others = bool(self.settings.get("dim_others", True))
+        self.gantt.hide_old_done = bool(self.settings.get("hide_old_done", True))
         self.pages = QtWidgets.QStackedWidget()
         for page in (self.gantt, self._log_tab()):
             self.pages.addWidget(page)
@@ -3261,6 +3272,11 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Dim other renders in Workers", [self.c_dim],
             "On: in the Workers timeline the chunks of the render you picked are bright, the others dimmed.\n"
             "Off: every render's chunks are equally bright.")
+        self.c_hide_done = toggle("hide_old_done", True, self._hide_done_changed)
+        row(gen, "Hide done chunks when rendering again", [self.c_hide_done],
+            "On: when you render a render again (Render again, Render this frame / batch, Render after Done),\n"
+            "the Workers timeline shows only the new run, without the chunks that were done before.\n"
+            "Off: the earlier run's done chunks stay on the timeline.")
         self.c_clean = toggle("log_cleanup", True, lambda v: (self._save_setting("log_cleanup", v),
                                                                self.s_days.setEnabled(v)))
         self.s_days = QtWidgets.QSpinBox()
@@ -3401,7 +3417,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 90)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -3415,6 +3431,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _dim_changed(self, on):
         self._save_setting("dim_others", on)
         self.gantt.dim_others = on
+        self.gantt.update()
+
+    def _hide_done_changed(self, on):
+        self._save_setting("hide_old_done", on)
+        self.gantt.hide_old_done = on
         self.gantt.update()
 
     def _all_workers_changed(self, on):
