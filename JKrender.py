@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.49.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.50 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.49.2 alpha"
+APP_VERSION = "0.50 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -649,7 +649,7 @@ class Worker:
         self.pinned = False  # started again by hand: the RAM guard closes the others first
         self.gpu = False  # started with --gpu
         self.leave = False  # Work on another render: this one hands its place over first
-        self.off_gpu = False  # VRAM over the limit: closes after its chunk, a process without --gpu takes over
+        self.off_gpu = False  # over its VRAM share: closes after its chunk, comes back without --gpu
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
         self.why_leaving = None  # "RAM limit" while it closes after its chunk because RAM is over the limit
         self.closed_why = None  # why it closed, shown in State: "RAM limit", "VRAM limit"
@@ -1071,16 +1071,12 @@ class RenderEngine:
             return auto_plan(1, True)["threads"], self.ram
         return self.threads, self.ram
 
-    def _gpu_slot_free(self):
-        """--gpu for a new process, unless the VRAM limit holds the number of GPU processes lower
-        (Settings > VRAM limit); then it renders GPU nodes on the CPU."""
+    def _gpu_slot_free(self, wid):
+        """--gpu for a new process, unless this number went over its VRAM share (Settings > VRAM limit);
+        then it renders GPU nodes on the CPU until the renders end."""
         if not self.settings.get("use_gpu", True):
             return False
-        cap = self.manager.gpu_cap if self.manager else None
-        if cap is None:
-            return True
-        on_gpu = sum(1 for e in self.manager.engines for w in e.workers.values() if w.state != "gone" and w.gpu)
-        return on_gpu < cap
+        return not (self.manager and wid in self.manager.cpu_wids)
 
     def _command(self, gpu=False):
         names = "|".join(w["name"] for w in self.job.get("writes", []))
@@ -1120,7 +1116,7 @@ class RenderEngine:
         else:
             wid = self.manager.take_wid(self) if self.manager else self.next_wid
             self.next_wid = max(self.next_wid, wid) + 1
-        use_gpu = self._gpu_slot_free()
+        use_gpu = self._gpu_slot_free(wid)
         cmd = self._command(gpu=use_gpu)
         kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                       text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -1419,7 +1415,7 @@ class RenderEngine:
             if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
                 self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
             elif w.off_gpu:
-                self._quit(w, "VRAM over the limit: a process without the GPU takes over")
+                self._quit(w, "over its VRAM share: it comes back without the GPU")
             elif w.retire or w.handover:
                 self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
                            else "not needed")
@@ -1788,11 +1784,10 @@ class RenderManager:
         self._ram_checked = 0.0
         self._ram_ok_since = None
         self._last_kill = 0.0
-        self.gpu_cap = None  # VRAM guard's number of processes allowed on the GPU while VRAM is short
+        self.cpu_wids = set()  # process numbers that went over their VRAM share: no GPU until the renders end
         self.vram = None  # [GPU %, VRAM used MB, VRAM total MB] from the window's GPU monitor
         self.gpu_mem = {}  # pid -> (GPU %, VRAM bytes)
         self._vram_checked = 0.0
-        self._vram_ok_since = None
         self._last_vram_kill = 0.0
 
     @property
@@ -1923,67 +1918,58 @@ class RenderManager:
                 rows.setdefault(wid, []).append((e, w))
         return [(wid, sorted(rows[wid], key=lambda ew: ew[1].spawned)) for wid in sorted(rows)]
 
+    def vram_share(self):
+        """VRAM each Nuke process may use, in MB: the VRAM limit split evenly between the processes running now."""
+        if not self.vram or not self.vram[2]:
+            return None
+        live = sum(1 for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy"))
+        return float(self.vram[2]) * float(self.settings.get("vram_limit", 90)) / 100.0 / max(1, live)
+
     def _vram_guard(self):
-        """Fewer Nuke processes on the GPU while VRAM is nearly full, like the RAM limit: the GPU process
-        started last closes after its chunk (at once close to full), and a process without --gpu takes its
-        place, so the number of processes stays. GPU places come back when one more fits."""
+        """Every Nuke process gets an equal share of the VRAM limit (limit / processes). A GPU process that takes
+        more than its share finishes its chunk and goes on without the GPU for the rest of the render: one move
+        each, never back and forth. Close to full (limit + 5 %) the GPU process taking the most closes at once."""
         now = time.time()
         if now - self._vram_checked < 2:
             return
         self._vram_checked = now
+        if not any(e.state in ("rendering", "paused", "finishing") for e in self.engines):
+            self.cpu_wids = set()  # a new render: every process may use the GPU again
         if not (self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)) or not self.vram:
-            self.gpu_cap = None
+            return
+        if not any(e.state == "rendering" for e in self.engines):
             return
         used, total = float(self.vram[1]), float(self.vram[2] or 1)
         pct = used / total * 100
         limit = float(self.settings.get("vram_limit", 90))
-        on = [(e, w) for e in self.engines for w in e.workers.values()
-              if w.gpu and w.state in ("loading", "idle", "busy") and not w.off_gpu]
-        rendering = any(e.state == "rendering" for e in self.engines)
-        leaving = [w for e in self.engines for w in e.workers.values() if w.gpu and w.off_gpu and w.state != "gone"]
-        if pct >= limit and on and rendering:
-            cap = len(on) - 1
-            # one GPU process fewer at a time, and only once the last one has gone: VRAM is freed only then
-            if (self.gpu_cap is None or cap < self.gpu_cap) and not leaving:
-                self.gpu_cap = cap
-                e, w = max(on, key=lambda ew: ew[1].spawned)  # the one started last
+        share = self.vram_share()
+
+        def vram_of(w):
+            return self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2
+
+        for e in self.engines:
+            for w in list(e.workers.values()):
+                if not (w.gpu and not w.off_gpu and w.state in ("idle", "busy")) or vram_of(w) <= share:
+                    continue
                 w.off_gpu = True
+                self.cpu_wids.add(w.id)
+                e.note("%s uses %.1f GB of VRAM, over its share of %.1f GB (%.0f %% of %.0f GB for %d processes): "
+                       "after this chunk it goes on without the GPU" % (
+                           w.name, vram_of(w) / 1024, share / 1024, limit, total / 1024,
+                           round(total * limit / 100 / share)), "warn")
                 if w.state != "busy":
-                    e._quit(w, "VRAM over the limit")
-                self._note_running("!! VRAM %.0f %% (limit %.0f %%): %d Nuke processes on the GPU, the others on the CPU"
-                                   % (pct, limit, cap), "warn")
-            self._vram_ok_since = None
-            if pct >= min(99.0, limit + 5) and now - self._last_vram_kill > 8:
-                # nearly full (Windows then pushes VRAM into the RAM): one GPU process closes now,
-                # one already leaving the GPU first
-                gpu_busy = [(e, w) for e in self.engines for w in e.workers.values()
-                            if w.gpu and w.state in ("busy", "quitting")]
-                busy = [(e, w) for e, w in gpu_busy if w.off_gpu] or [(e, w) for e, w in gpu_busy if w.state == "busy"]
-                if busy:
-                    e, w = max(busy, key=lambda ew: ew[1].spawned)
-                    e.note("!! VRAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
-                    w.closed_why = "VRAM limit"
-                    e._kill(w, requeue=True, note="stopped")
-                    self._last_vram_kill = now
-                    left = sum(1 for x in self.engines for y in x.workers.values()
-                               if y.gpu and y.state in ("loading", "idle", "busy") and not y.off_gpu)
-                    self.gpu_cap = left if self.gpu_cap is None else min(self.gpu_cap, left)  # its place: no GPU
-        elif self.gpu_cap is not None:
-            sizes = [self.gpu_mem.get(w.proc.pid, (0, 0))[1] for _, w in on] or [0]
-            one = max(sizes) / 1024 ** 2 / total * 100 if max(sizes) else 10.0
-            if pct + one < limit - 2:
-                if self._vram_ok_since is None:
-                    self._vram_ok_since = now
-                elif now - self._vram_ok_since >= 15:
-                    self.gpu_cap += 1
-                    self._vram_ok_since = now
-                    if self.gpu_cap >= self.total:
-                        self.gpu_cap = None
-                        self._note_running("VRAM is %.0f %% again: new processes use the GPU" % pct, "ok")
-                    else:
-                        self._note_running("VRAM is %.0f %%: up to %d Nuke processes on the GPU" % (pct, self.gpu_cap))
-            else:
-                self._vram_ok_since = None
+                    e._quit(w, "over its VRAM share")
+        if pct >= min(99.0, limit + 5) and now - self._last_vram_kill > 8:
+            # nearly full (Windows then pushes VRAM into the RAM): the GPU process taking the most closes now
+            busy = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state in ("busy", "quitting")]
+            if busy:
+                e, w = max(busy, key=lambda ew: vram_of(ew[1]))
+                e.note("!! VRAM %.0f %%: %s closed now, its chunk goes back to the queue; it comes back without the GPU"
+                       % (pct, w.name), "err")
+                w.closed_why = "VRAM limit"
+                self.cpu_wids.add(w.id)
+                e._kill(w, requeue=True, note="stopped")
+                self._last_vram_kill = now
 
     def take_wid(self, engine=None):
         """The lowest process number no running process has. When a render is done, the process a render
@@ -3406,11 +3392,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_vram.setEnabled(self.c_gpu.isChecked())
         self.c_gpu.toggled.connect(lambda v: (self.c_vram.setEnabled(v), self.s_vram.setEnabled(v and self.c_vram.isChecked())))
         row(perf, "VRAM limit", [self.c_vram, self.s_vram],
-            "When the graphics card's memory goes over the limit, fewer Nuke processes use the GPU: the GPU process\n"
-            "started last closes after its chunk (at once close to full) and one without the GPU takes its place,\n"
-            "so the number of processes stays. GPU places come back when one more fits.\n"
+            "Every Nuke process gets an equal share of the graphics card's memory: the limit split by the number\n"
+            "of processes (24 GB × 90 % / 8 = 2.7 GB each). One that takes more than its share finishes its chunk\n"
+            "and goes on without the GPU until the renders end; nothing switches back and forth.\n"
+            "Close to full (limit + 5 %) the GPU process taking the most closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
-        note(perf, "Over the limit the GPU process started last goes on without the GPU.")
+        note(perf, "Each process: limit ÷ processes. Over its share it goes on without the GPU.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
@@ -4330,11 +4317,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
 
-    @staticmethod
-    def _worker_mode(w):
+    def _worker_mode(self, w):
         if not w.gpu:
-            return "CPU"
-        return "GPU → CPU" if w.off_gpu else "GPU"
+            return "CPU (over VRAM share)" if w.state != "gone" and w.id in self.manager.cpu_wids else "CPU"
+        if w.off_gpu:
+            return "GPU → CPU"
+        share = self.manager.vram_share() if w.state != "gone" else None
+        return "GPU  ·  share %.1f GB" % (share / 1024) if share else "GPU"
 
     @staticmethod
     def _worker_uptime(w):

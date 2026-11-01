@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.50 alpha — 2026-11-01
+
+- VRAM limit, simpler: every Nuke process gets an equal share of it (24 GB × 90 % / 8 processes = 2.7 GB each). A GPU process that takes more than its share finishes its chunk and goes on without the GPU until the renders end. Nothing switches back and forth any more. Close to full (limit + 5 %) the GPU process taking the most closes at once and comes back without the GPU.
+- System, Mode: GPU shows its share ("GPU · share 2.7 GB"); one moved off it shows "CPU (over VRAM share)".
+
 ## 0.49.2 alpha — 2026-11-01
 
 - The tile right of the cards is headed All renders done in.
