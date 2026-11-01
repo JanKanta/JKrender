@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.1 alpha — 2026-11-01
+
+- Workers: a process started again under its name (a fresh Nuke for the VRAM, the RAM, or by hand) shows its script load as a grey block, from when the previous one finished; before, the timeline had gaps there. The tooltip says why it loaded again.
+- Tried and left out: `nuke.clearBlinkCache()` after every frame. sh0070's Nuke then grew 0.6 GB per frame instead of 1.5 GB, but every frame took 3 s longer, about what a fresh Nuke costs, and it still grew.
+
 ## 0.55 alpha — 2026-11-01
 
 - One frame per Nuke when the VRAM keeps processes out: a script whose Nuke takes more VRAM with every frame (sh0070: 3 GB after one frame, 9 GB after six) switches to one-frame chunks, each process making way for a fresh Nuke after its frame. A fresh Nuke stays small, so more of them fit on the card; a script load per frame (3-5 s) is the price. 1.nk and sh0050, whose VRAM stays flat, never switch.

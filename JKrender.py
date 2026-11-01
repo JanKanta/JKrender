@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.55 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.55.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.55 alpha"
+APP_VERSION = "0.55.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1161,7 +1161,13 @@ class RenderEngine:
         w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
         w.gpu = use_gpu
         if old:
-            w.segments, w.frames_done, w.frame_secs = old.segments, old.frames_done, old.frame_secs
+            # its timeline goes on, with this script load on it too (a grey block, like the first one)
+            load = w.segments[-1]
+            load[1] = "again: %s" % old.closed_why if old.closed_why else "again"
+            ended = old.segments[-1][3] if old.segments else None
+            if ended and 0 <= load[2] - ended < 30:
+                load[2] = ended  # from when the old one finished: closing it and starting this one is the reload too
+            w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
         w.pinned = by_hand
         self.workers[wid] = w
         self.last_spawn = time.time()
@@ -2598,7 +2604,9 @@ class Gantt(QtWidgets.QWidget):
             if rect.contains(pos):
                 who = "%s (%s)" % (w.name, e.name)
                 if kind == "load":
-                    text = "%s opening the script: %.1f s" % (who, b - a)
+                    why = label[len("again: "):] if label.startswith("again: ") else ""
+                    text = ("%s opening the script again%s: %.1f s" % (who, " (%s)" % why if why else "", b - a)
+                            if label.startswith("again") else "%s opening the script: %.1f s" % (who, b - a))
                 else:
                     c = next((c for c in e.chunks if c.name == label), None)
                     text = "%s on %s — %s\nframes %s\n%s" % (label, who, state, c.spec if c else "?", fmt_secs(b - a))
