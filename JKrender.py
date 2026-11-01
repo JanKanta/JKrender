@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.49 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.49.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.49 alpha"
+APP_VERSION = "0.49.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2401,7 +2401,7 @@ class TotalCard(QtWidgets.QFrame):
         lay = QtWidgets.QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 7)
         lay.setVerticalSpacing(2)
-        head = QtWidgets.QLabel("ALL RENDERS")
+        head = QtWidgets.QLabel("REMAINING FOR ALL RENDERS")
         head.setStyleSheet("color: %s; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; background: transparent;"
                            % C["dim"])
         self.when = QtWidgets.QLabel("")
@@ -2442,19 +2442,19 @@ class TotalCard(QtWidgets.QFrame):
         alone = [x for x in (e.eta() for e in running) if x is not None]
         if eta is not None and alone:
             eta = max(eta, max(alone))  # never sooner than one render on its own
+        renders = "%d render%s" % (len(active), "" if len(active) == 1 else "s")
         if not running:
             self.when.setText("Paused" if any(e.state == "paused" for e in active) else "Waiting")
-            self.left.setText("%d frames left" % left)
+            self.left.setText("%d frames  ·  %s" % (left, renders))
         elif eta is None:
-            self.when.setText("done ≈ …")
-            self.left.setText("estimating  ·  %d frames left" % left)
+            self.when.setText("Estimating…")
+            self.left.setText("%d frames  ·  %s" % (left, renders))
         else:
             end = datetime.datetime.now() + datetime.timedelta(seconds=eta)
             day = "" if end.date() == datetime.date.today() else (
                 "tomorrow " if end.date() == datetime.date.today() + datetime.timedelta(days=1) else end.strftime("%d.%m. "))
-            self.when.setText("done ≈ %s%s" % (day, end.strftime("%H:%M")))
-            self.left.setText("%s left  ·  %d frames  ·  %d render%s" % (fmt_secs(eta), left, len(active),
-                                                                          "" if len(active) == 1 else "s"))
+            self.when.setText(fmt_secs(eta))
+            self.left.setText("finishes at %s%s  ·  %d frames  ·  %s" % (day, end.strftime("%H:%M"), left, renders))
 
 
 class RenderCard(QtWidgets.QFrame):

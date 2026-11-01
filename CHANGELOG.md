@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.49.1 alpha — 2026-11-01
+
+- The tile right of the cards is now Remaining for all renders: the time left is the big number; under it the finish time, frames left and how many renders.
+
 ## 0.49 alpha — 2026-11-01
 
 - An All renders tile right of the render cards: when every render still rendering or waiting should be done ("done ≈ 14:32", or tomorrow), the time and frames left, how many renders, and a bar with the percentage. It counts the frames left at the speed all Nuke processes render together now, never sooner than a single render on its own. Hidden when nothing renders.
