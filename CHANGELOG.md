@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.54 alpha — 2026-11-01
+
+Tested on three real renders (1.nk, sh0050, sh0070) all at once, one after another, and with processes moved between them.
+
+- A GPU process whose VRAM keeps growing gets a fresh Nuke after its chunk. Nuke keeps VRAM it no longer needs: sh0070 took 5 GB after its first chunk and 16 GB later, its frames 25 s at first and 143 s at the end. Recycled when it grows past its part of the card, or from 5 % below the VRAM limit the one that grew the most. Only when none grew does the VRAM limit run fewer processes. Changing Nuke's GPU cache preference does not stop the growth (tested).
+- VRAM other programs hold is now measured while none of JKrender's processes run. Before, it was guessed from the per-process counters, which miss part of Nuke's own VRAM, so 7 GB of JKrender's own showed as "other programs" and the limit stopped working.
+- A new process is counted at the VRAM its script's processes took after their first chunk, not at what one grew to (one grown process blocked every new start, and for 15 minutes one process rendered alone). Processes still opening the script count at full size, and for a script not seen yet in this run they start one at a time once the card is half full.
+- Start again on a closed process of a finished render starts it in a render still going ("Start again in"); before, it was greyed out. A start by hand goes past the RAM and VRAM limits, and says so when all places are taken.
+- The VRAM limit message no longer blames other programs when it is JKrender's processes that grew.
+- System > Load: a VRAM curve.
+
+Test results, all three renders (minutes): all at once 20+ (sh0070 half done) → 16; one after another 24 → 19; processes closed mid-chunk 6 → 3-4 per run.
+
 ## 0.53.1 alpha — 2026-11-01
 
 - A new Nuke process starts only when it fits: in the RAM, counting what the ones still opening the script will take (from what the script took last time), and in the graphics card's memory. Before, all of them started at once and a heavy script pushed the RAM to 100 %, so one was killed mid-chunk straight away (measured: 8 × 12 GB on a 94 GB PC). The log says once a minute when one more does not fit.
