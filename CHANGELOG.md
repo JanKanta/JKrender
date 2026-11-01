@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.56 alpha — 2026-11-01
+
+- System: every place of Settings > Processes has a row (W01-W08), also the ones no process has taken. Their State says why: "not running", "waiting: VRAM 88 %, limit 95 % · NukeX (pid 39760) holds 16.5 GB of it", "not running (RAM limit)", "not needed (no chunks left)". Right-click one to start a process there by hand in a render still going (Start in).
+
 ## 0.55.3 alpha — 2026-11-01
 
 - The VRAM emergency close never closes the last GPU process. With NukeX holding 16.5 GB of the card, the one process left was closed at 97 % every minute and started again, throwing its chunk away each time.

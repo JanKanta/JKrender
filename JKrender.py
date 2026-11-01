@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.55.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.56 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.55.3 alpha"
+APP_VERSION = "0.56 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -984,12 +984,14 @@ class RenderEngine:
         self._kill(w, requeue=True, note="stopped")
         self.note("%s closed by you; its chunk goes back to the queue" % w.name)
 
-    def user_start_here(self, wid, src):
-        """Start again, in this render, a process that closed in render src (finished, stopped), under its name."""
+    def user_start_here(self, wid, src=None):
+        """Start again, in this render, a process that closed in render src (finished, stopped), under its name;
+        without src, a place no process has taken yet."""
         if wid not in self.preferred_wids:
             self.preferred_wids.append(wid)
         self.hand_wids.add(wid)
-        self.note("W%02d of render %d (%s) starts again here%s" % (wid, src.number, src.name, self._make_room_by_hand()),
+        self.note(("W%02d of render %d (%s) starts again here%s" % (wid, src.number, src.name, self._make_room_by_hand()))
+                  if src is not None else "W%02d starts here, started by you%s" % (wid, self._make_room_by_hand()),
                   "warn" if self.manager and self.manager.free_slots() <= 0 else "ev")
 
     def user_start(self, wid):
@@ -4607,11 +4609,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cores.set_values(per)
         t = self.worker_table
         # one row per process number; a process that moved on to another render shows that render now
-        rows = [ews[-1] for _, ews in m.process_rows(shown)]
+        rows = [(wid, ews[-1]) for wid, ews in m.process_rows(shown)]
+        # every place of Settings > Processes, also the ones no process has taken yet, with why not
+        taken = {wid for wid, _ in rows}
+        empty = [(wid, (None, wid)) for wid in range(1, m.total + 1) if wid not in taken]
+        rows = [r for _, r in sorted(rows + empty, key=lambda r: r[0])]
         t.setRowCount(len(rows))
         self._worker_rows = rows
         gpus = self._gpu_procs or {}
+        idle_why = self._empty_place_state() if empty else ""
         for row, (x, w) in enumerate(rows):
+            if x is None:
+                values = ["W%02d" % w, "", "", idle_why] + [""] * (t.columnCount() - 4)
+                for col, v in enumerate(values):
+                    item = t.item(row, col)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem()
+                        t.setItem(row, col, item)
+                    item.setText(v)
+                    item.setForeground(QtGui.QColor(C["dim"]))
+                    item.setToolTip(v if col == 3 else "")
+                continue
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
             gpu = gpus.get(w.proc.pid)
@@ -4630,6 +4648,25 @@ class MainWindow(QtWidgets.QMainWindow):
                     t.setItem(row, col, item)
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
+                item.setToolTip("")
+
+    def _empty_place_state(self):
+        """State of a place no process has: why nothing runs there now."""
+        m = self.manager
+        if not any(e.state in ("rendering", "paused", "finishing") for e in m.engines):
+            return "not running"
+        if m.live_count() >= m.budget():
+            if m.vram_cap is not None and m.vram_cap <= (m.ram_cap or m.total):
+                return "not running (VRAM limit)"
+            if m.ram_cap is not None:
+                return "not running (RAM limit)"
+            return "not running"
+        why = m.no_room()
+        if why:
+            return "waiting: %s" % why.replace("; ", " · ")
+        if not any(e.state == "rendering" and queued_left_for(e) for e in m.engines):
+            return "not needed (no chunks left)"
+        return "starting"
 
     @staticmethod
     def _worker_uptime(w):
@@ -4650,7 +4687,25 @@ class MainWindow(QtWidgets.QMainWindow):
         row = self.worker_table.rowAt(pos.y())
         if 0 <= row < len(self._worker_rows):
             e, w = self._worker_rows[row]
-            self._worker_menu(e, w, self.worker_table.viewport().mapToGlobal(pos))
+            if e is None:
+                self._empty_place_menu(w, self.worker_table.viewport().mapToGlobal(pos))
+            else:
+                self._worker_menu(e, w, self.worker_table.viewport().mapToGlobal(pos))
+
+    def _empty_place_menu(self, wid, global_pos):
+        """A place no process has taken: start one there by hand, in a render still going."""
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("W%02d" % wid)
+        running = [x for x in self.manager.engines if x.state in ("rendering", "paused")]
+        actions = {}
+        sub = menu.addMenu("Start in")
+        sub.setEnabled(bool(running))
+        for x in running:
+            actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: x.user_start_here(wid))
+        act = menu.exec(global_pos)
+        if act in actions:
+            actions[act]()
+            self._update_system()
 
     def _worker_menu(self, e, w, global_pos):
         menu = QtWidgets.QMenu(self)
