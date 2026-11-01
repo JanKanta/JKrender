@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.49 alpha — 2026-11-01
+
+- An All renders tile right of the render cards: when every render still rendering or waiting should be done ("done ≈ 14:32", or tomorrow), the time and frames left, how many renders, and a bar with the percentage. It counts the frames left at the speed all Nuke processes render together now, never sooner than a single render on its own. Hidden when nothing renders.
+
 ## 0.48 alpha — 2026-11-01
 
 - The column widths and order of every table (Output frames, Chunks, System) are saved when the window closes and come back next time. Settings > Reset to defaults puts them back too.

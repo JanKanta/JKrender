@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.48 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.49 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.48 alpha"
+APP_VERSION = "0.49 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2391,6 +2391,72 @@ class Gantt(QtWidgets.QWidget):
         QtWidgets.QToolTip.hideText()
 
 
+class TotalCard(QtWidgets.QFrame):
+    """Right of the render cards: when every render still to go should be done, at the speed the PC renders now."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedWidth(260)
+        self.setStyleSheet("TotalCard { background: %s; border: 1px solid %s; border-radius: 5px; }" % (C["panel"], C["line"]))
+        lay = QtWidgets.QGridLayout(self)
+        lay.setContentsMargins(10, 6, 10, 7)
+        lay.setVerticalSpacing(2)
+        head = QtWidgets.QLabel("ALL RENDERS")
+        head.setStyleSheet("color: %s; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; background: transparent;"
+                           % C["dim"])
+        self.when = QtWidgets.QLabel("")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent;")
+        self.left = QtWidgets.QLabel("")
+        self.left.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(4)
+        self.pct = QtWidgets.QLabel("")
+        self.pct.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        self.pct.setMinimumWidth(36)
+        self.pct.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        lay.addWidget(head, 0, 0, 1, 2)
+        lay.addWidget(self.when, 1, 0, 1, 2)
+        lay.addWidget(self.left, 2, 0, 1, 2)
+        lay.addWidget(self.bar, 3, 0)
+        lay.addWidget(self.pct, 3, 1)
+        lay.setColumnStretch(0, 1)
+        self.setToolTip("Every render still rendering or waiting: the frames they have left, at the speed all\n"
+                        "Nuke processes together render now. Waiting renders are counted at that speed too.")
+
+    def refresh(self, engines):
+        active = [e for e in engines if e.state in ("rendering", "paused", "finishing", "waiting")]
+        if not active:
+            self.hide()
+            return
+        self.show()
+        frames = sum(len(e.frames) for e in active)
+        left = sum(e.counts()["queued"] + e.counts()["rendering"] for e in active)
+        done = frames - left
+        self.bar.setMaximum(max(1, frames))
+        self.bar.setValue(done)
+        self.pct.setText("%.0f %%" % (100.0 * done / max(1, frames)))
+        running = [e for e in active if e.state in ("rendering", "finishing")]
+        rate = sum(e.rate() for e in running)
+        eta = left / rate if rate > 0 else None
+        alone = [x for x in (e.eta() for e in running) if x is not None]
+        if eta is not None and alone:
+            eta = max(eta, max(alone))  # never sooner than one render on its own
+        if not running:
+            self.when.setText("Paused" if any(e.state == "paused" for e in active) else "Waiting")
+            self.left.setText("%d frames left" % left)
+        elif eta is None:
+            self.when.setText("done ≈ …")
+            self.left.setText("estimating  ·  %d frames left" % left)
+        else:
+            end = datetime.datetime.now() + datetime.timedelta(seconds=eta)
+            day = "" if end.date() == datetime.date.today() else (
+                "tomorrow " if end.date() == datetime.date.today() + datetime.timedelta(days=1) else end.strftime("%d.%m. "))
+            self.when.setText("done ≈ %s%s" % (day, end.strftime("%H:%M")))
+            self.left.setText("%s left  ·  %d frames  ·  %d render%s" % (fmt_secs(eta), left, len(active),
+                                                                          "" if len(active) == 1 else "s"))
+
+
 class RenderCard(QtWidgets.QFrame):
     """One render at the top of the window: name, progress and state. Click to look at it."""
 
@@ -2935,7 +3001,7 @@ class MainWindow(QtWidgets.QMainWindow):
         card = RenderCard(e)
         card.clicked.connect(self._card_clicked)
         card.closeRequested.connect(self._close_card)
-        self.cards_row.insertWidget(self.cards_row.count() - 1, card)
+        self.cards_row.insertWidget(self.cards_row.count() - 2, card)  # before the stretch and All renders
         self.cards[e] = card
         self._refresh_cards()
 
@@ -2970,6 +3036,7 @@ class MainWindow(QtWidgets.QMainWindow):
         picked = getattr(self, "picked", set())
         for e, card in self.cards.items():
             card.refresh(e is self.engine or e in picked, len(self.cards) > 1)
+        self.total_card.refresh(self.manager.engines)
 
     def _close_card(self, e):
         if e.state in ("rendering", "paused", "finishing", "waiting"):
@@ -3047,6 +3114,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cards_row = QtWidgets.QHBoxLayout()
         self.cards_row.setSpacing(8)
         self.cards_row.addStretch(1)
+        self.total_card = TotalCard()  # stays last, after the stretch
+        self.cards_row.addWidget(self.total_card)
         lay.addLayout(self.cards_row)
 
         # controls (Render, Pause, Stop, frame range, and the render's result right after them) go here
