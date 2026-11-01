@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.40 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.41 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.40 alpha"
+APP_VERSION = "0.41 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2360,7 +2360,7 @@ class Gantt(QtWidgets.QWidget):
 class RenderCard(QtWidgets.QFrame):
     """One render at the top of the window: name, progress and state. Click to look at it."""
 
-    clicked = QtCore.Signal(object)
+    clicked = QtCore.Signal(object, bool)  # engine, Shift held
     closeRequested = QtCore.Signal(object)
 
     def __init__(self, engine):
@@ -2422,7 +2422,7 @@ class RenderCard(QtWidgets.QFrame):
         self.close_btn.setVisible(closable)
 
     def mousePressEvent(self, event):
-        self.clicked.emit(self.engine)
+        self.clicked.emit(self.engine, bool(event.modifiers() & QtCore.Qt.ShiftModifier))
 
 
 class Graph(QtWidgets.QWidget):
@@ -2897,15 +2897,43 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _add_card(self, e):
         card = RenderCard(e)
-        card.clicked.connect(self.select)
+        card.clicked.connect(self._card_clicked)
         card.closeRequested.connect(self._close_card)
         self.cards_row.insertWidget(self.cards_row.count() - 1, card)
         self.cards[e] = card
         self._refresh_cards()
 
+    def _card_clicked(self, e, shift):
+        """A click picks one render; Shift+click adds it to (or takes it from) the renders picked, and Render,
+        Pause and Stop then act on all of them."""
+        picked = getattr(self, "picked", set())
+        if shift:
+            if not picked:
+                picked = {self.engine}
+            if e in picked and len(picked) > 1:
+                picked.discard(e)
+                self.picked = picked
+                if e is self.engine:
+                    self.select(next(x for x in self.manager.engines if x in picked))
+                else:
+                    self._refresh_cards()
+                    self._sync_controls()
+                return
+            picked.add(e)
+        else:
+            picked = set()
+        self.picked = picked
+        self.select(e)
+
+    def _targets(self):
+        """The renders Render / Pause / Stop act on: the picked ones, or the one shown."""
+        picked = [x for x in self.manager.engines if x in getattr(self, "picked", set())]
+        return picked if len(picked) > 1 else [self.engine]
+
     def _refresh_cards(self):
+        picked = getattr(self, "picked", set())
         for e, card in self.cards.items():
-            card.refresh(e is self.engine, len(self.cards) > 1)
+            card.refresh(e is self.engine or e in picked, len(self.cards) > 1)
 
     def _close_card(self, e):
         if e.state in ("rendering", "paused", "finishing", "waiting"):
@@ -2922,6 +2950,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._remove_engine(e)
 
     def _remove_engine(self, e):
+        getattr(self, "picked", set()).discard(e)
         card = self.cards.pop(e, None)
         if card is not None:
             card.setParent(None)
@@ -3019,14 +3048,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_start.clicked.connect(self._start)
         self.b_pause.clicked.connect(self._pause)
         self.b_stop.clicked.connect(self._stop)
-        self.b_render_all = QtWidgets.QPushButton("Render all")
+        self.b_start.setToolTip("Shift+click render cards to pick several: Render, Pause and Stop act on all of them")
+        self.b_render_all = QtWidgets.QPushButton("Render all")  # kept for scripts, not shown
         self.b_render_all.setToolTip("Render every render in the window that still has frames to render.\n"
                                      "Settings > Max renders at once decides how many run side by side.")
         self.b_render_all.clicked.connect(self._render_all)
         self.b_pause_all = QtWidgets.QPushButton("Pause all")
         self.b_pause_all.setToolTip("Pause or resume every render in the window")
         self.b_pause_all.clicked.connect(self._pause_all)
-        for b in (self.b_start, self.b_render_all, self.b_pause, self.b_stop, self.b_pause_all):
+        for b in (self.b_start, self.b_pause, self.b_stop):
             ctl.addWidget(b)
         ctl.addSpacing(14)
 
@@ -3736,28 +3766,34 @@ class MainWindow(QtWidgets.QMainWindow):
         write_settings(self.settings)
 
     def _start(self):
-        e = self.engine
-        if e.state == "paused":
-            e.resume()
-        else:
-            self.manager.request_start(e, everything=e.state == "done" or e.nothing_to_render())
-            self.frames_model.refilter()
+        targets = self._targets()
+        for e in targets:
+            if e.state == "paused":
+                e.resume()
+            elif len(targets) == 1:
+                self.manager.request_start(e, everything=e.state == "done" or e.nothing_to_render())
+            elif e.state in ("ready", "stopped", "failed") and not e.nothing_to_render():
+                self.manager.request_start(e)  # several picked: a finished render is left as it is
+        self.frames_model.refilter()
         self._sync_controls()
         self._refresh_cards()
 
     def _pause(self):
-        self.engine.pause()
+        for e in self._targets():
+            if e.state == "rendering":
+                e.pause()
         self._sync_controls()
+        self._refresh_cards()
 
     def _stop(self):
-        e = self.engine
-        if e.state == "waiting":
-            self.manager.cancel(e)
-        elif e.state in ("rendering", "paused", "finishing"):
-            e.stop()
-            e.forget_workers()  # its processes leave the timeline and the System table
-            self.gantt.update()
-            self._update_system()
+        for e in self._targets():
+            if e.state == "waiting":
+                self.manager.cancel(e)
+            elif e.state in ("rendering", "paused", "finishing"):
+                e.stop()
+                e.forget_workers()  # its processes leave the timeline and the System table
+        self.gantt.update()
+        self._update_system()
         self._sync_controls()
         self._refresh_cards()
 
@@ -3814,14 +3850,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
         for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
             widget.setEnabled(not any_running)
-        rendering = any(x.state == "rendering" for x in self.manager.engines)
-        paused = any(x.state == "paused" for x in self.manager.engines)
-        self.b_pause_all.setText("Pause all" if rendering or not paused else "Resume all")
-        self.b_pause_all.setEnabled(rendering or paused)
-        many = len(self.manager.engines) > 1  # the "all" buttons only mean something with several renders
-        self.b_render_all.setVisible(many)
-        self.b_pause_all.setVisible(many)
-        self.b_render_all.setEnabled(bool(self._startable()))
+        targets = self._targets()
+        if len(targets) > 1:  # several renders picked with Shift: the buttons act on all of them
+            startable = any(x.state in ("ready", "stopped", "failed") and not x.nothing_to_render() for x in targets)
+            paused = any(x.state == "paused" for x in targets)
+            self.b_start.setEnabled(startable or paused)
+            self.b_start.setText("Resume" if paused and not startable else "Render")
+            self.b_start.setToolTip("%d renders picked; finished ones are left as they are" % len(targets))
+            self.b_pause.setEnabled(any(x.state == "rendering" for x in targets))
+            self.b_stop.setEnabled(any(x.state in ("rendering", "paused", "finishing", "waiting") for x in targets))
 
     # ---- timers -------------------------------------------------------------
     def _tick(self):

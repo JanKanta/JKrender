@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.41 alpha — 2026-11-01
+
+- Shift+click render cards to pick several (Shift+click again takes one out). A plain click picks one, as before.
+- With two or more picked, Render, Pause and Stop act on all of them.
+  - Render starts the ones that have frames to render and leaves finished ones as they are.
+  - Render turns into Resume when the picked renders are paused.
+- The Render all and Pause all buttons are gone.
+
 ## 0.40 alpha — 2026-11-01
 
 - Settings → General → **Dim other renders in Workers** (on), under Show processes of all renders.
