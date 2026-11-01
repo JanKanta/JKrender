@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.55.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.55.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.55.2 alpha"
+APP_VERSION = "0.55.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2002,6 +2002,23 @@ class RenderManager:
                  if w.gpu and w.state != "gone"]
         return max(sizes) / 1024 ** 2 / total * 100 if sizes and max(sizes) else None
 
+    def vram_holder(self):
+        """Who else holds a lot of VRAM, for the log: "; NukeX (pid 39760) holds 16.5 GB", or ""."""
+        ours = {w.proc.pid for e in self.engines for w in e.workers.values() if w.state != "gone"}
+        others = [(v[1], pid) for pid, v in (self.gpu_mem or {}).items() if pid not in ours and v[1] > 2 * 1024 ** 3]
+        if not others:
+            return ""
+        size, pid = max(others)
+        name = "a program"
+        try:
+            proc = psutil.Process(pid) if psutil else None
+            if proc is not None:
+                cmd = " ".join(proc.cmdline()).lower()
+                name = "NukeX" if "--nukex" in cmd else ("Nuke" if "nuke" in proc.name().lower() else proc.name())
+        except Exception:
+            pass
+        return "; %s (pid %d) holds %.1f GB of it" % (name, pid, size / 1024 ** 3)
+
     def vram_others(self):
         """VRAM % other programs hold, from when none of our processes ran; None until seen."""
         if self.vram_idle is None or not self.vram or not self.vram[2]:
@@ -2027,7 +2044,7 @@ class RenderManager:
             mine = [w for w in engine.workers.values() if w.gpu and w.state != "gone"]
             pct = float(self.vram[1]) / float(self.vram[2]) * 100
             if mine and not any(w.vram_base for w in engine.workers.values()) and (pct >= 50 or len(mine) >= 3):
-                return "VRAM %.0f %%: waiting to see how much one process of this script takes" % pct
+                return "VRAM %.0f %%: waiting to see how much one process of this script takes%s" % (pct, self.vram_holder())
         one = self.vram_one(engine)
         if one and gpu_guard:
             total = float(self.vram[2])
@@ -2046,7 +2063,7 @@ class RenderManager:
             # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
             # never into the last few % where Windows starts moving VRAM into the RAM
             if pct + one >= 97.0 or (pct + one >= limit and (others is None or others + one < limit)):
-                return "VRAM %.0f %%, limit %.0f %%" % (pct, limit)
+                return "VRAM %.0f %%, limit %.0f %%%s" % (pct, limit, self.vram_holder())
         return ""
 
     def _note_running(self, text, level="ev"):
@@ -2177,7 +2194,9 @@ class RenderManager:
                                        % (pct, limit, cap), "warn")
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 busy = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state == "busy"]
-                if busy:
+                # the only one left keeps going: closing it would only throw its chunk away, again and again,
+                # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
+                if len(busy) > 1:
                     e, w = max(busy, key=lambda ew: vram_of(ew[1]))
                     e.note("!! VRAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
                     w.closed_why = "VRAM limit"

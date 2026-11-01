@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.55.3 alpha — 2026-11-01
+
+- The VRAM emergency close never closes the last GPU process. With NukeX holding 16.5 GB of the card, the one process left was closed at 97 % every minute and started again, throwing its chunk away each time.
+- When the VRAM keeps processes out, the log says who holds it: "VRAM 83 %, limit 95 %; NukeX (pid 39760) holds 16.5 GB of it".
+
 ## 0.55.2 alpha — 2026-11-01
 
 - Fix: a script whose path has Czech letters (D:/Práce/Žluťoučký kůň/...) did not render: Nuke reads its command line in the Windows code page, so the original script's path reached the worker broken and every Nuke stopped while opening the script. JKrender now passes it as UTF-8 too.
