@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.45 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.45.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.45 alpha"
+APP_VERSION = "0.45.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -1090,9 +1090,11 @@ class RenderEngine:
         running = {i for e in (self.manager.engines if self.manager else [self])
                    for i, x in e.workers.items() if x.state != "gone"}
         wanted = [i for i in self.preferred_wids if i not in running]  # Work on: the name the user moved here
-        restart = [i for i in getattr(self, "restart_ids", []) if i in self.workers and self.workers[i].state == "gone"]
+        # never a number that runs in another render meanwhile (W03 closed here, W03 already started in render 1)
+        restart = [i for i in getattr(self, "restart_ids", [])
+                   if i in self.workers and self.workers[i].state == "gone" and i not in running]
         gone = restart or sorted(i for i, x in self.workers.items()
-                                 if x.state == "gone" and i not in getattr(self, "held", ()))
+                                 if x.state == "gone" and i not in getattr(self, "held", ()) and i not in running)
         old = self.workers[gone[0]] if gone else None
         if wanted:
             self.preferred_wids.remove(wanted[0])

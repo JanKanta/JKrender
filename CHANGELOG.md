@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.45.1 alpha — 2026-11-01
+
+- Fix: two renders could run a process under the same number at once (two W03s on one Workers row). When a render restarts a closed process (after the VRAM or RAM limit closed it), it no longer reuses a number another render has started meanwhile; it takes a free one.
+
 ## 0.45 alpha — 2026-11-01
 
 - System: five new columns, off until ticked in the header menu: Mode (CPU, GPU, or GPU → CPU when the VRAM limit moved it), Uptime, Peak RAM (the most the process took), Chunks (done, and how many went back to the queue) and Last frame.
