@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.51 alpha — 2026-11-01
+
+- VRAM shares are shared: what one process leaves unused, another may take. A process may go over its share while the card is under the VRAM limit. At the limit, the process furthest over its share finishes its chunk and goes on without the GPU, one at a time.
+- The VRAM emergency close (a process killed mid-chunk) now only happens at 97 %, when VRAM is about to spill into the RAM, no longer at limit + 5 %.
+
 ## 0.50 alpha — 2026-11-01
 
 - VRAM limit, simpler: every Nuke process gets an equal share of it (24 GB × 90 % / 8 processes = 2.7 GB each). A GPU process that takes more than its share finishes its chunk and goes on without the GPU until the renders end. Nothing switches back and forth any more. Close to full (limit + 5 %) the GPU process taking the most closes at once and comes back without the GPU.
