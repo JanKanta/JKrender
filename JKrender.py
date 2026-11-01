@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.41.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.41.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.41.1 alpha"
+APP_VERSION = "0.41.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2830,6 +2830,7 @@ class MainWindow(QtWidgets.QMainWindow):
             psutil.cpu_percent(percpu=True)
         if shutil.which("nvidia-smi") or sys.platform.startswith("win"):
             threading.Thread(target=self._gpu_loop, daemon=True).start()
+        QtWidgets.QApplication.instance().installEventFilter(self)  # clicks off the cards drop the Shift picks
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(100)
@@ -3697,6 +3698,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if obj is getattr(self, "preview", None) and event.type() == QtCore.QEvent.MouseButtonDblClick:
             self._toggle_big()
             return True
+        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1                 and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
+            # a click anywhere but on a render card (or Render / Pause / Stop) drops the cards picked with Shift
+            w = obj
+            while w is not None:
+                if isinstance(w, RenderCard) or w in (self.b_start, self.b_pause, self.b_stop):
+                    break
+                w = w.parentWidget()
+            else:
+                self.picked = set()
+                self._refresh_cards()
+                self._sync_controls()
         return super().eventFilter(obj, event)
 
     def _system_tab(self):

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.41.2 alpha — 2026-11-01
+
+- A click anywhere off the render cards drops the cards picked with Shift; the render shown stays.
+  - Clicks on Render, Pause and Stop keep them picked.
+
 ## 0.41.1 alpha — 2026-11-01
 
 - When a render opens or is picked and it has frames on disk, its first rendered frame shows in the preview straight away. The open tab is left as it is.
