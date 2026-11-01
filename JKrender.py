@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.52.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.53 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.52.2 alpha"
+APP_VERSION = "0.53 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2404,7 +2404,8 @@ class Gantt(QtWidgets.QWidget):
 
 
 class TotalCard(QtWidgets.QFrame):
-    """Right of the render cards: when every render still to go should be done, at the speed the PC renders now."""
+    """Right of the render cards: when every render still to go should be done, at the speed the PC renders now,
+    and how long they have taken so far. Once they are all through, how long it took altogether."""
 
     def __init__(self):
         super().__init__()
@@ -2413,7 +2414,10 @@ class TotalCard(QtWidgets.QFrame):
         lay = QtWidgets.QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 7)
         lay.setVerticalSpacing(2)
-        head = QtWidgets.QLabel("ALL RENDERS DONE IN")
+        self.t0 = None  # when the renders now counted started
+        self.members = []  # the renders counted since then, finished ones too
+        self.through = False  # all of them are through: it shows how long they took
+        self.head = head = QtWidgets.QLabel("ALL RENDERS DONE IN")
         head.setStyleSheet("color: %s; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; background: transparent;"
                            % C["dim"])
         self.when = QtWidgets.QLabel("")
@@ -2438,10 +2442,19 @@ class TotalCard(QtWidgets.QFrame):
 
     def refresh(self, engines):
         active = [e for e in engines if e.state in ("rendering", "paused", "finishing", "waiting")]
+        now = time.time()
+        if active:
+            if self.t0 is None or self.through:  # renders start again after all were through: count anew
+                self.members, self.through = [], False
+                self.t0 = min([e.started for e in active if e.started] or [now])
+            self.members += [e for e in active if e not in self.members]
+        self.members = [e for e in self.members if e in engines]  # a closed render leaves the count
         if not active:
-            self.hide()
+            self._finished()
             return
         self.show()
+        self.head.setText("ALL RENDERS DONE IN")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent;")
         frames = sum(len(e.frames) for e in active)
         left = sum(e.counts()["queued"] + e.counts()["rendering"] for e in active)
         done = frames - left
@@ -2455,18 +2468,46 @@ class TotalCard(QtWidgets.QFrame):
         if eta is not None and alone:
             eta = max(eta, max(alone))  # never sooner than one render on its own
         renders = "%d render%s" % (len(active), "" if len(active) == 1 else "s")
+        so_far = "%s so far" % fmt_secs(now - self.t0)
         if not running:
             self.when.setText("Paused" if any(e.state == "paused" for e in active) else "Waiting")
-            self.left.setText("%d frames  ·  %s" % (left, renders))
+            self.left.setText("%s  ·  %d frames  ·  %s" % (so_far, left, renders))
         elif eta is None:
             self.when.setText("Estimating…")
-            self.left.setText("%d frames  ·  %s" % (left, renders))
+            self.left.setText("%s  ·  %d frames  ·  %s" % (so_far, left, renders))
         else:
             end = datetime.datetime.now() + datetime.timedelta(seconds=eta)
             day = "" if end.date() == datetime.date.today() else (
                 "tomorrow " if end.date() == datetime.date.today() + datetime.timedelta(days=1) else end.strftime("%d.%m. "))
             self.when.setText(fmt_secs(eta))
-            self.left.setText("finishes at %s%s  ·  %d frames  ·  %s" % (day, end.strftime("%H:%M"), left, renders))
+            self.left.setText("finishes at %s%s  ·  %s  ·  %d frames" % (day, end.strftime("%H:%M"), so_far, left))
+        self.setToolTip("Every render still rendering or waiting: the frames they have left, at the speed all\n"
+                        "Nuke processes together render now. Waiting renders are counted at that speed too.\n"
+                        "So far: since the first of them started (%s)." % renders)
+
+    def _finished(self):
+        """No render left to go: how long the renders took altogether, until the next one starts."""
+        ended = [e for e in self.members if e.ended]
+        if self.t0 is None or not ended:
+            self.t0 = None
+            self.hide()
+            return
+        self.show()
+        self.through = True
+        end = max(e.ended for e in ended)
+        ok = all(e.state == "done" for e in self.members)
+        self.head.setText("ALL RENDERS TOOK" if ok else "RENDERS ENDED AFTER")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent; color: %s;"
+                                % (C["done"] if ok else C["text"]))
+        self.when.setText(fmt_secs(end - self.t0))
+        frames = sum(len(e.frames) for e in self.members)
+        n = len(self.members)
+        self.left.setText("finished at %s  ·  %d frames  ·  %d render%s" % (
+            datetime.datetime.fromtimestamp(end).strftime("%H:%M"), frames, n, "" if n == 1 else "s"))
+        self.bar.setMaximum(1)
+        self.bar.setValue(1 if ok else 0)
+        self.pct.setText("100 %" if ok else "")
+        self.setToolTip("From the first of these renders starting to the last one ending.")
 
 
 class RenderCard(QtWidgets.QFrame):
@@ -3522,7 +3563,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if saved:
                 built = head.saveState()
                 head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
-                if head.count() != table.columnCount():  # saved before a column was added or removed
+                if head.count() != table.model().columnCount():  # saved before a column was added or removed
                     head.restoreState(built)
                     continue
                 if name == "chunks":

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.53 alpha — 2026-11-01
+
+- Fix: 0.52.1 and 0.52.2 did not open once column widths had been saved (the Frames table check failed).
+- The All renders tile also shows how long the renders have taken so far ("finishes at 19:50 · 1:40 so far · 47 frames"). Once all are through it stays, as "ALL RENDERS TOOK 1:38" (green when all are done), from the first one starting to the last one ending, until the next render starts.
+
 ## 0.52.2 alpha — 2026-11-01
 
 - Start on a closed process now works under the VRAM limit too (it only went past the RAM limit before: the log said "starts again" but nothing started). The RAM and VRAM limits then leave it alone for 90 s.
