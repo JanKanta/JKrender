@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.52.2 alpha — 2026-11-01
+
+- Start on a closed process now works under the VRAM limit too (it only went past the RAM limit before: the log said "starts again" but nothing started). The RAM and VRAM limits then leave it alone for 90 s.
+- The VRAM limit no longer takes processes away when that does not help: when other programs hold the graphics card's memory, or the last process closed for the limit freed almost none of it, JKrender keeps the processes it has and says so in the log. Only at 97 % does one close at once, as before.
+
 ## 0.52.1 alpha — 2026-11-01
 
 - System: the Mode column is gone (every process uses the GPU when Use GPU is on). Column widths saved with a different number of columns are dropped instead of breaking the header; hidden columns and their order stay.
