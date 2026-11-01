@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.49.2 alpha — 2026-11-01
+
+- The tile right of the cards is headed All renders done in.
+
 ## 0.49.1 alpha — 2026-11-01
 
 - The tile right of the cards is now Remaining for all renders: the time left is the big number; under it the finish time, frames left and how many renders.

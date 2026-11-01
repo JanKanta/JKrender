@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.49.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.49.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.49.1 alpha"
+APP_VERSION = "0.49.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2401,7 +2401,7 @@ class TotalCard(QtWidgets.QFrame):
         lay = QtWidgets.QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 7)
         lay.setVerticalSpacing(2)
-        head = QtWidgets.QLabel("REMAINING FOR ALL RENDERS")
+        head = QtWidgets.QLabel("ALL RENDERS DONE IN")
         head.setStyleSheet("color: %s; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; background: transparent;"
                            % C["dim"])
         self.when = QtWidgets.QLabel("")
