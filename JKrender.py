@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.41 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.41.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -48,7 +48,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.41 alpha"
+APP_VERSION = "0.41.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
@@ -2983,6 +2983,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_info.setText("")
         self._frame_play_stop()
         self._sync_frame_bar(None)  # the slider covers this render's frames before any frame is shown
+        # frames already rendered: the first one shows in the preview straight away
+        first = None if e.movie else next((f for f in e.frame_list() if e.frames[f].state in ("done", "skipped")), None)
+        if first is not None:
+            QtCore.QTimer.singleShot(0, lambda e=e, f=first: self._show_first(e, f))
         self.out_pages.setCurrentIndex(1 if e.movie else 0)
         if e.movie:
             self._movie_size_last = None
@@ -4231,6 +4235,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_model.mode = text
         self.frames_model.refilter()
 
+    def _show_first(self, e, frame):
+        """Preview a render's first rendered frame without switching away from the tab that is open."""
+        if self.engine is not e or self._preview_frame is not None:
+            return
+        self._quiet_pick = True
+        try:
+            self._pick_frame(frame)
+        finally:
+            self._quiet_pick = False
+
     def _pick_frame(self, frame):
         """A click on the chunk map: the frame is selected in the Output list, which scrolls to it, and previewed."""
         rows = self.frames_model.rows
@@ -4282,7 +4296,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self.preview.setPixmap(QtGui.QPixmap())
             self.preview.setText("No preview: %s" % exc)
-        if self.side_tabs.currentWidget() is not self.output_page:
+        if self.side_tabs.currentWidget() is not self.output_page and not getattr(self, "_quiet_pick", False):
             self.side_tabs.setCurrentWidget(self.output_page)
 
     # ---- movie output -------------------------------------------------------

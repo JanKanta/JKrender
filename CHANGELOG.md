@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.41.1 alpha — 2026-11-01
+
+- When a render opens or is picked and it has frames on disk, its first rendered frame shows in the preview straight away. The open tab is left as it is.
+
 ## 0.41 alpha — 2026-11-01
 
 - Shift+click render cards to pick several (Shift+click again takes one out). A plain click picks one, as before.
