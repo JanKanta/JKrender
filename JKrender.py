@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.58 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.58.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.58 alpha"
+APP_VERSION = "0.58.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2707,7 +2707,7 @@ class ScriptTest(QtWidgets.QDialog):
         super().__init__(window)
         self.window, self.src = window, engine
         self.setWindowTitle("Test this script: %s" % engine.name)
-        self.resize(1040, 460)
+        self.resize(1120, 460)
         cpu = os.cpu_count() or 8
         m = window.manager
         cur = (m.total, m.threads, m.ram)
@@ -2728,15 +2728,15 @@ class ScriptTest(QtWidgets.QDialog):
             % (len(self.frames), frames_to_spec(self.frames), self.LIMIT // 60))
         intro.setObjectName("dim")
         lay.addWidget(intro)
-        self.table = QtWidgets.QTableWidget(len(self.setups), 10)
-        self.table.setHorizontalHeaderLabels(["Setup", "Ran", "Frames / min", "Frame", "CPU avg", "RAM avg", "GPU avg", "VRAM avg",
-                                               "Fell", "State"])
+        self.table = QtWidgets.QTableWidget(len(self.setups), 11)
+        self.table.setHorizontalHeaderLabels(["Setup", "Ran", "Took", "Frames / min", "Frame", "CPU avg", "RAM avg", "GPU avg",
+                                              "VRAM avg", "Fell", "State"])
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
         for i, (n, t, c) in enumerate(self.setups):
             self._cell(i, 0, "%d processes x %d threads, cache %d GB%s" % (n, t, c, "  (yours)" if (n, t, c) == cur else ""))
-            self._cell(i, 9, "waiting")
+            self._cell(i, 10, "waiting")
         self.table.resizeColumnsToContents()
         lay.addWidget(self.table, 1)
         self.verdict = QtWidgets.QLabel("")
@@ -2811,7 +2811,7 @@ class ScriptTest(QtWidgets.QDialog):
                     "cpu": [], "ram": [], "gpu": [], "vram": [], "busy": [], "stopping": False}
         if psutil:
             psutil.cpu_percent(None)  # from here on
-        self._cell(self.index, 9, "rendering")
+        self._cell(self.index, 10, "rendering")
 
     def tick(self):
         r = self.run
@@ -2836,6 +2836,7 @@ class ScriptTest(QtWidgets.QDialog):
         self._show(self.index, r, rate, done)
         if not r["stopping"] and (now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
             r["stopping"] = True
+            r["took"] = now - r["t0"]
             r["rate"] = rate if rate is not None else (done / ((now - r["t0"]) / 60.0))
             r["frame"] = statistics.median([sec for w in e.workers.values() for sec in w.frame_secs] or [0])
             r["fell"] = sum("closed now" in x[1] for x in e.log) + e.crashes
@@ -2862,16 +2863,21 @@ class ScriptTest(QtWidgets.QDialog):
     def _show(self, i, r, rate, done, final=False):
         busy = r["busy"][len(r["busy"]) // 3:] or r["busy"]  # once it has settled
         self._cell(i, 1, "%.1f processes" % (sum(busy) / float(len(busy))) if busy else "")
-        self._cell(i, 2, "%.1f" % rate if rate is not None else "")
+        # the whole render of these frames, from the start with the script loads; when the limit ended it, how far it got
+        took = fmt_secs(r.get("took", time.time() - r["t0"]))
+        if final and done < len(self.frames):
+            took += "  (%d of %d frames)" % (done, len(self.frames))
+        self._cell(i, 2, took)
+        self._cell(i, 3, "%.1f" % rate if rate is not None else "")
         if final:
-            self._cell(i, 3, "%.1f s" % r["frame"] if r.get("frame") else "")
+            self._cell(i, 4, "%.1f s" % r["frame"] if r.get("frame") else "")
         average = lambda v: sum(v) / float(len(v))
-        self._cell(i, 4, "%.0f %%" % average(r["cpu"]) if r["cpu"] else "")
-        self._cell(i, 5, "%.0f %%  (max %.0f)" % (average(r["ram"]), max(r["ram"])) if r["ram"] else "")
-        self._cell(i, 6, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
-        self._cell(i, 7, "%.0f %%  (max %.0f)" % (average(r["vram"]), max(r["vram"])) if r["vram"] else "")
-        self._cell(i, 8, str(r.get("fell", "")) if final else "")
-        self._cell(i, 9, "done" if final else "rendering, %d frames" % done)
+        self._cell(i, 5, "%.0f %%" % average(r["cpu"]) if r["cpu"] else "")
+        self._cell(i, 6, "%.0f %%  (max %.0f)" % (average(r["ram"]), max(r["ram"])) if r["ram"] else "")
+        self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
+        self._cell(i, 8, "%.0f %%  (max %.0f)" % (average(r["vram"]), max(r["vram"])) if r["vram"] else "")
+        self._cell(i, 9, str(r.get("fell", "")) if final else "")
+        self._cell(i, 10, "done" if final else "rendering, %d frames" % done)
 
     def stop(self):
         self.timer.stop()
@@ -2880,7 +2886,7 @@ class ScriptTest(QtWidgets.QDialog):
             if r["engine"].state in ("rendering", "paused", "finishing", "waiting"):
                 r["engine"].stop("Test stopped")
             self._drop(r)
-            self._cell(self.index, 9, "stopped")
+            self._cell(self.index, 10, "stopped")
             self.run = None
         self.b_start.setEnabled(True)
         self.b_stop.setEnabled(False)
