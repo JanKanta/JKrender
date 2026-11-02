@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.58.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.58.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.58.1 alpha"
+APP_VERSION = "0.58.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2808,7 +2808,7 @@ class ScriptTest(QtWidgets.QDialog):
         e.set_range(frames_to_spec(self.frames))
         manager.request_start(e)
         self.run = {"manager": manager, "engine": e, "root": root, "t0": time.time(), "first": None, "n0": 0,
-                    "cpu": [], "ram": [], "gpu": [], "vram": [], "busy": [], "stopping": False}
+                    "cpu": [], "ram": [], "ram_gb": [], "gpu": [], "vram": [], "vram_gb": [], "busy": [], "stopping": False}
         if psutil:
             psutil.cpu_percent(None)  # from here on
         self._cell(self.index, 10, "rendering")
@@ -2827,10 +2827,13 @@ class ScriptTest(QtWidgets.QDialog):
             r["first"], r["n0"] = now, done  # from the first finished frame on: the script loads are behind
         if psutil:
             r["cpu"].append(psutil.cpu_percent(None))
-            r["ram"].append(psutil.virtual_memory().percent)
+            vm = psutil.virtual_memory()
+            r["ram"].append(vm.percent)
+            r["ram_gb"].append(vm.used / 1024.0 ** 3)
         if m.vram and m.vram[2]:
             r["gpu"].append(m.vram[0])
             r["vram"].append(m.vram[1] / m.vram[2] * 100)
+            r["vram_gb"].append(m.vram[1] / 1024.0)
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
         rate = (done - r["n0"]) / ((now - r["first"]) / 60.0) if r["first"] and now - r["first"] > 5 else None
         self._show(self.index, r, rate, done)
@@ -2873,9 +2876,9 @@ class ScriptTest(QtWidgets.QDialog):
             self._cell(i, 4, "%.1f s" % r["frame"] if r.get("frame") else "")
         average = lambda v: sum(v) / float(len(v))
         self._cell(i, 5, "%.0f %%" % average(r["cpu"]) if r["cpu"] else "")
-        self._cell(i, 6, "%.0f %%  (max %.0f)" % (average(r["ram"]), max(r["ram"])) if r["ram"] else "")
+        self._cell(i, 6, "%.0f %%  ·  %.1f GB" % (average(r["ram"]), average(r["ram_gb"])) if r["ram"] else "")
         self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
-        self._cell(i, 8, "%.0f %%  (max %.0f)" % (average(r["vram"]), max(r["vram"])) if r["vram"] else "")
+        self._cell(i, 8, "%.0f %%  ·  %.1f GB" % (average(r["vram"]), average(r["vram_gb"])) if r["vram"] else "")
         self._cell(i, 9, str(r.get("fell", "")) if final else "")
         self._cell(i, 10, "done" if final else "rendering, %d frames" % done)
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.58.2 alpha — 2026-11-02
+
+- Test this script: RAM avg and VRAM avg show the average in % and in GB, not the maximum.
+
 ## 0.58.1 alpha — 2026-11-02
 
 - Test this script: a Took column, how long each setup's whole render of the frames took, script loads included (with how far it got when the time limit ended it).
