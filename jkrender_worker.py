@@ -110,6 +110,55 @@ def render_range(writes, chunk, first, last):
     say("CHUNK", chunk)
 
 
+TEMPORAL = {"FrameHold", "FrameBlend", "FrameRange", "TimeOffset", "Retime", "TimeWarp", "TimeBlur", "OFlow2", "OFlow", "Kronos",
+            "TimeEcho", "Tracker4", "VectorGenerator", "SmartVector", "VectorDistort", "Denoise2", "ParticleEmitter", "VectorBlur2"}
+NOT_WORK = {"Dot", "Input", "Output", "Viewer", "BackdropNode", "StickyNote", "NoOp", "Root", "Write"}
+
+
+def analyze(writes):
+    """What feeds the Writes, for Settings > Test this script > Analyze script. Only reads the script.
+    A disabled node does no work, but what is above it (through its first input) still counts."""
+    seen, stack, classes, gpu, reads, big_blurs = set(), list(writes), {}, {}, [], 0
+    while stack:
+        n = stack.pop()
+        if n is None or n.fullName() in seen:
+            continue
+        seen.add(n.fullName())
+        disabled = bool(n.knob("disable") and n["disable"].value())
+        cls = n.Class()
+        if not disabled:
+            if cls not in NOT_WORK:
+                classes[cls] = classes.get(cls, 0) + 1
+            if cls in ("Read", "DeepRead"):
+                reads.append(n.width() * n.height())
+            # a node runs on the GPU only if it has this knob, and it is on
+            use_gpu = n.knob("useGPUIfAvailable")
+            if use_gpu is not None and use_gpu.value():
+                gpu[cls] = gpu.get(cls, 0) + 1
+            if cls == "Blur":
+                try:
+                    big_blurs += float(n["size"].value()) >= 100
+                except (TypeError, ValueError):
+                    pass
+            if cls == "Group":
+                stack.extend(x for x in n.nodes() if x.Class() not in ("Input", "Output", "Dot"))
+        if cls == "Input" and "." in n.fullName():
+            # inside a Group (a Write in a publish Group): what feeds it comes in through the Group's input
+            group = nuke.toNode(n.fullName().rsplit(".", 1)[0])
+            stack.append(group.input(int(n["number"].value())) if group is not None else None)
+        for i in range(n.inputs() if not disabled else min(1, n.inputs())):
+            stack.append(n.input(i))
+        try:
+            if not disabled:
+                stack.extend(n.dependencies(nuke.EXPRESSIONS))
+        except Exception:
+            pass
+    return {"all": len(nuke.allNodes(recurseGroups=True)), "above": sum(classes.values()),
+            "reads": len(reads), "largest_read": max(reads or [0]), "big_blurs": big_blurs,
+            "gpu": gpu, "temporal": {k: v for k, v in classes.items() if k in TEMPORAL},
+            "top": sorted(classes.items(), key=lambda kv: -kv[1])[:8]}
+
+
 def main():
     script, original, names = (sys.argv[1:] + ["", "", ""])[:3]
     if os.environ.get("JKRENDER_ARGS"):
@@ -127,6 +176,9 @@ def main():
         if node is None:
             raise RuntimeError("Write node not found: %s" % name)
         writes.append(node)
+    if os.environ.get("JKRENDER_ANALYZE"):
+        say("INFO", json.dumps(analyze(writes)))
+        return 0
     test_out = os.environ.get("JKRENDER_TEST_OUT")
     if test_out:
         # Settings > Test this script: the frames go to its test folder, never over the render's own files.

@@ -431,6 +431,12 @@ def _create_read(msg):
     return "OK %s" % read.name()
 
 
+def _clear_cache():
+    """JKrender's Render button: this Nuke gives the render its RAM and VRAM back. The disk cache stays."""
+    nuke.clearRAMCache()
+    nuke.clearBlinkCache()
+
+
 def _serve(server):
     while True:
         try:
@@ -451,6 +457,9 @@ def _serve(server):
             msg = json.loads(data.decode("utf-8"))
             if msg.get("command") == "create_read":
                 reply = nuke.executeInMainThreadWithResult(_create_read, (msg,))
+            elif msg.get("command") == "clear_cache":
+                nuke.executeInMainThread(_clear_cache)
+                reply = "OK"
             else:
                 reply = "OK " + _norm(nuke.root().name())
         except Exception as exc:

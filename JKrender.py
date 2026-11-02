@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.61.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.62 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.61.1 alpha"
+APP_VERSION = "0.62 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -72,6 +72,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "r
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
+NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
@@ -197,6 +198,22 @@ def clean_render_folders(root, days, keep=()):
         except OSError:
             continue
     return deleted, freed
+
+
+def clear_open_nukes():
+    """Every open Nuke frees its RAM cache and Blink cache, for the render about to start. In the background: a port
+    nobody listens on takes a moment to answer. A Nuke started before this version just ignores it."""
+    def send():
+        for port in NUKE_PORTS:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3) as conn:
+                    conn.sendall(b'{"command": "clear_cache"}')
+                    conn.shutdown(socket.SHUT_WR)
+                    conn.recv(64)
+            except OSError:
+                pass
+
+    threading.Thread(target=send, daemon=True).start()
 
 
 def hidden():
@@ -2760,6 +2777,11 @@ class ScriptTest(QtWidgets.QDialog):
         self.verdict = QtWidgets.QLabel("")
         self.verdict.setWordWrap(True)
         lay.addWidget(self.verdict)
+        self.report = QtWidgets.QPlainTextEdit()  # Analyze script
+        self.report.setReadOnly(True)
+        self.report.setMaximumHeight(190)
+        self.report.hide()
+        lay.addWidget(self.report)
         ram = max(1, int(psutil.virtual_memory().total / 1024 ** 3)) if psutil else 256
 
         def box(lo, hi, value, suffix=""):
@@ -2801,10 +2823,17 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_use = QtWidgets.QPushButton("Use these settings")
         self.b_use.setEnabled(False)
         self.b_stop.setEnabled(False)
-        for b in (self.b_start, self.b_stop, self.b_use):
+        self.b_analyze = QtWidgets.QPushButton("Analyze script")
+        self.b_analyze.setToolTip("Opens the script without rendering, goes through the nodes that feed this Write and recommends\n"
+                                  "processes, threads and Nuke cache to start from. Start then measures them.")
+        self.b_analyze.clicked.connect(self.analyze)
+        for b in (self.b_start, self.b_stop, self.b_use, self.b_analyze):
             buttons.addWidget(b)
         buttons.addStretch(1)
         lay.addLayout(buttons)
+        self._analysis = self._analysis_proc = None
+        self.analysis_timer = QtCore.QTimer(self)
+        self.analysis_timer.timeout.connect(self._analysis_tick)
         self.b_start.clicked.connect(self.start)
         self.b_stop.clicked.connect(self.stop)
         self.b_use.clicked.connect(self.use)
@@ -2849,9 +2878,88 @@ class ScriptTest(QtWidgets.QDialog):
         self._fill_table()
 
     def _idle(self, on):
-        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c):
+        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c, self.b_analyze):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
+
+    def analyze(self):
+        """A Nuke opens the script in this render's environment, reports what feeds the Write and closes. No render."""
+        self.b_analyze.setEnabled(False)
+        self.b_start.setEnabled(False)
+        self.report.show()
+        self.report.setPlainText("Opening the script in Nuke…")
+        self._analysis = None
+        threading.Thread(target=self._analysis_run, daemon=True).start()
+        self.analysis_timer.start(200)
+
+    def _analysis_run(self):
+        e = self.src
+        env = nuke_render_env(e.job.get("env"))
+        env["JKRENDER_ARGS"] = json.dumps(e._worker_args())
+        env["JKRENDER_ANALYZE"] = "1"
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                      errors="replace", env=env)
+        kwargs.update(hidden())
+        script_dir = Path(e.job.get("script") or "").parent
+        if script_dir.is_dir():
+            kwargs["cwd"] = str(script_dir)
+        try:
+            self._analysis_proc = subprocess.Popen([e.job.get("nuke_exe") or "Nuke", "-i", "-m", "2", "-c", "2G", "-t", str(WORKER_SCRIPT)],
+                                                   **kwargs)
+            out = self._analysis_proc.communicate(timeout=300)[0]
+        except Exception as exc:
+            self._analysis = "Could not analyze the script: %s" % exc
+            return
+        found = re.search(r"JKR INFO (\{.*\})", out)
+        self._analysis = dict(json.loads(found.group(1)), format=e.job.get("format", "")) if found \
+            else "Nuke did not report on the script:\n" + out[-600:]
+
+    def _analysis_tick(self):
+        result = self._analysis
+        if result is None:
+            return
+        self.analysis_timer.stop()
+        self.b_analyze.setEnabled(True)
+        self.b_start.setEnabled(True)
+        if isinstance(result, str):
+            self.report.setPlainText(result)
+            return
+        n, t, c, why = self.advise(result, os.cpu_count() or 8, self._free_gb())
+        self.report.setPlainText(self._report_text(result, n, t, c, why))
+        self.best = (n, t, c)
+        self.b_use.setEnabled((n, t, c) != self.current)
+
+    @staticmethod
+    def advise(info, cpu, free_gb):
+        """Processes, threads, Nuke cache and why: what the scripts measured so far did best, for Start to confirm."""
+        if info["above"] < 60:
+            n, floor = 8, 4
+            why = "A light script: many small processes render it fastest (1.nk: 8 x 4 ahead of 4 x 8)."
+        else:
+            n, floor = 4, 8
+            why = "A heavy script: a heavy comp was best with 4-6 processes and collapsed with under 7-8 GB of cache per process, " \
+                  "so as many processes as keep 8 GB of cache."
+        n = max(1, min(n, cpu // 4))
+        while n > 1 and free_gb / n - BESIDE_CACHE < floor:
+            n -= 1
+        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), why
+
+    @staticmethod
+    def _report_text(info, n, t, c, why):
+        names = lambda d: ", ".join("%s %d" % kv for kv in sorted(d.items(), key=lambda kv: -kv[1])) or "none"
+        return "\n".join([
+            "%d nodes in the script, %d feed this Write. Format %s." % (info["all"], info["above"], info.get("format") or "unknown"),
+            "Reads: %d, the largest %.1f MP. Blurs of 100 px and more: %d." % (info["reads"], info["largest_read"] / 1e6, info["big_blurs"]),
+            "On the GPU: %s" % names(info["gpu"]),
+            "Nodes that look at other frames: %s" % names(info["temporal"]),
+            "Most used: %s" % ", ".join("%s %d" % tuple(kv) for kv in info["top"]),
+            "",
+            "Recommended to start from: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c),
+            why,
+            "A guess from the number of nodes and a few measured scripts. Nodes do not show everything (sh0070 looks heavy "
+            "like this, yet was fastest with 1 process), so Start measures it on this one."]
+            + (["VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there VRAM kept "
+                "growing. Suspects, not proven: test 1 x all threads too."] if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]) else []))
 
     def _frames_for(self, processes):
         """Frames from the middle of the render, the same for every setup but for those that need more."""
@@ -3069,6 +3177,9 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
+        self.analysis_timer.stop()
+        if self._analysis_proc is not None and self._analysis_proc.poll() is None:
+            self._analysis_proc.kill()
         self.stop()
         super().closeEvent(event)
 
@@ -4759,6 +4870,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start(self):
         targets = self._targets()
+        if any(e.state != "paused" for e in targets):
+            clear_open_nukes()
         for e in targets:
             if e.state == "paused":
                 e.resume()

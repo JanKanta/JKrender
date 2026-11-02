@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.62 alpha — 2026-11-02
+
+- Test this script has an Analyze script button: a Nuke opens the script without rendering, goes through the nodes that really feed this Write (disabled branches left out), and reports their number, Reads, big Blurs, nodes on the GPU, nodes that look at other frames and the most used ones. It recommends processes, threads and Nuke cache to start from; Use these settings takes them. It is a guess from a few measured scripts, and Start measures it.
+- Render clears the RAM cache and Blink cache of every open Nuke before the render starts. The disk cache stays. Resume does not clear. A Nuke has to be restarted once to get this.
+
 ## 0.61.1 alpha — 2026-11-02
 
 - Over the RAM or VRAM limit, the last process started closes first, whatever it is doing: one still opening the script closes at once, one rendering after its chunk. A process with more work behind it stays. Under the VRAM limit this replaces closing the one taking the most VRAM.
