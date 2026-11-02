@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.58.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.59 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,10 +49,11 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.58.3 alpha"
+APP_VERSION = "0.59 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
+TEST_RESULTS = HOME_DIR / "test_results"  # and its tables, kept
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
 
 # Movie containers are one file for the whole range, so they render in one piece on one worker.
@@ -2678,6 +2679,11 @@ class ScriptTest(QtWidgets.QDialog):
     The frames go to a test folder, deleted after each setup; the render's own files stay as they are."""
 
     LIMIT = 360  # seconds a setup may take; a slow one is measured on the frames it got done
+    # Once a setup has rendered the frames, one that takes this much longer cannot win and stops. After two like that
+    # in a row the setups with still more processes are left out: each has less cache and fewer threads
+    # (measured: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
+    SLOWER = 1.25
+    GIVE_UP = 2
     # On 32 threads. (n, None): n processes share the CPU's threads; (None, t): processes of t threads each fill it.
     # 6 x 6 and 10 x 3 keep their share of the threads (6/32, 3/32). So 64 threads test 1x64, 64x1, 2x32, 32x2 ...
     SETUPS = ((1, None), (None, 1), (2, None), (None, 2), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
@@ -2696,7 +2702,7 @@ class ScriptTest(QtWidgets.QDialog):
                 procs, threads = n, max(1, round(cpu * t) if t else cpu // n)
             if procs <= cpu and (procs, threads) not in [x[:2] for x in setups]:
                 setups.append((procs, threads, max(1, int(free_gb / procs - cls.BESIDE_CACHE))))
-        return setups
+        return sorted(setups)
 
     def _free_gb(self):
         """RAM Nuke processes may take: up to the RAM limit, less what the PC uses now (nothing should render)."""
@@ -2710,13 +2716,13 @@ class ScriptTest(QtWidgets.QDialog):
         super().__init__(window)
         self.window, self.src = window, engine
         self.setWindowTitle("Test this script: %s" % engine.name)
-        self.resize(1120, 460)
+        self.resize(1400, 520)
         cpu = os.cpu_count() or 8
         m = window.manager
         cur = (m.total, m.threads, m.ram)
-        self.setups = self.plan(cpu, self._free_gb())
-        if cur not in self.setups:
-            self.setups.append(cur)
+        # your own settings stand in for a planned setup with the same processes and threads and about the same cache
+        self.setups = sorted([x for x in self.plan(cpu, self._free_gb())
+                              if not (x[:2] == cur[:2] and abs(x[2] - cur[2]) <= 2)] + [cur])
         self.current = cur
         frames = engine.frame_list()
         # the same frames for every setup, from the middle: a quarter of the render, at least 30
@@ -2787,11 +2793,16 @@ class ScriptTest(QtWidgets.QDialog):
         self.verdict.setText("")
         self.results = {}
         self.index = -1
+        self.slow_in_a_row = 0
         self._next()
         self.timer.start(1000)
 
     def _next(self):
         self.index += 1
+        while (self.index < len(self.setups) and self.slow_in_a_row >= self.GIVE_UP
+               and self.setups[self.index] != self.current):
+            self._cell(self.index, 10, "left out: more processes only got slower")
+            self.index += 1
         if self.index >= len(self.setups):
             self._finish()
             return
@@ -2840,8 +2851,12 @@ class ScriptTest(QtWidgets.QDialog):
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
         rate = (done - r["n0"]) / ((now - r["first"]) / 60.0) if r["first"] and now - r["first"] > 5 else None
         self._show(self.index, r, rate, done)
-        if not r["stopping"] and (now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
+        tooks = [x["took"] for x in self.results.values() if x["complete"]]
+        slower = bool(tooks) and now - r["t0"] >= min(tooks) * self.SLOWER and e.state == "rendering"
+        if not r["stopping"] and (slower or now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
             r["stopping"] = True
+            r["slower"] = slower
+            r["complete"] = done >= len(self.frames)
             r["took"] = now - r["t0"]
             r["rate"] = rate if rate is not None else (done / ((now - r["t0"]) / 60.0))
             r["frame"] = statistics.median([sec for w in e.workers.values() for sec in w.frame_secs] or [0])
@@ -2850,7 +2865,9 @@ class ScriptTest(QtWidgets.QDialog):
                 e.stop("Test setup done")
         if r["stopping"] and all(w.state == "gone" for w in e.workers.values()):
             self.results[self.setups[self.index]] = r
+            self.slow_in_a_row = self.slow_in_a_row + 1 if r["slower"] or not done else 0
             self._show(self.index, r, r["rate"], done, final=True)
+            self.table.resizeColumnsToContents()
             self._drop(r)
             self.run = None
             self._next()
@@ -2884,7 +2901,8 @@ class ScriptTest(QtWidgets.QDialog):
         self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
         self._cell(i, 8, "%.0f %%  ·  %.1f GB" % (average(r["vram"]), average(r["vram_gb"])) if r["vram"] else "")
         self._cell(i, 9, str(r.get("fell", "")) if final else "")
-        self._cell(i, 10, "done" if final else "rendering, %d frames" % done)
+        self._cell(i, 10, ("stopped: slower than the best" if r.get("slower") else "done") if final
+                   else "rendering, %d frames" % done)
 
     def stop(self):
         self.timer.stop()
@@ -2907,7 +2925,9 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_stop.setEnabled(False)
         if not self.results:
             return
-        best = max(self.results, key=lambda k: self.results[k]["rate"])
+        # a setup that rendered all the frames; the rate of one stopped early says less
+        whole = [k for k in self.results if self.results[k]["complete"]] or list(self.results)
+        best = max(whole, key=lambda k: self.results[k]["rate"])
         self.best = best
         rate = self.results[best]["rate"]
         mine = self.results.get(self.current)
@@ -2922,6 +2942,21 @@ class ScriptTest(QtWidgets.QDialog):
         if partial:
             text = "(Stopped before all setups were tested.) " + text
         self.verdict.setText(text)
+        self._save_results(text)
+
+    def _save_results(self, verdict):
+        """The table as text, to look at or compare later: ~/.jkrender/test_results."""
+        try:
+            TEST_RESULTS.mkdir(parents=True, exist_ok=True)
+            head = [self.table.horizontalHeaderItem(c).text() for c in range(self.table.columnCount())]
+            rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
+                    for r in range(self.table.rowCount())]
+            path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
+            lines = ["%s, %d frames (%s), %d threads" % (self.src.name, len(self.frames), frames_to_spec(self.frames), os.cpu_count() or 0),
+                     " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def use(self):
         n, t, c = self.best

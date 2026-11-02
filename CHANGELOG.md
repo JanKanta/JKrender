@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.59 alpha — 2026-11-02
+
+Test this script, after a full run on a heavy comp (40 frames): 2-6 processes rendered them in about 2 minutes; 8 x 4 with 4 GB of cache took 69 s a frame, and 10 x 3, 16 x 2 and 32 x 1 with 2 GB and 1 GB did not finish one frame in 6 minutes each.
+
+- Setups go in order of the number of processes.
+- Once a setup has rendered the frames, another stops when it has taken 25 % longer: it cannot win. After two like that in a row, the setups with still more processes are left out. Your own settings always run.
+- A planned setup with your processes and threads and about your cache is not run twice.
+- The recommendation comes from setups that rendered all the frames.
+- The table is saved to ~/.jkrender/test_results.
+
 ## 0.58.3 alpha — 2026-11-02
 
 - Test this script takes its setups from the CPU's threads: 64 threads test 1x64, 64x1, 2x32, 32x2, 4x16, 16x4, 6x12, 10x6; 16 threads 1x16, 16x1, 2x8, 8x2, 4x4, 6x3, 10x2.
