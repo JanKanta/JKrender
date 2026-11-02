@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.64.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64.2 alpha"
+APP_VERSION = "0.64.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -1547,10 +1547,20 @@ class RenderEngine:
                 self._requeue(c, error="%s: %s" % (reason, msg))
             # The retry gets a fresh Nuke: whatever broke stays with this one.
             self._quit(w, "after a failed frame")
+            self._stop_if_nothing_renders()
         elif kind == "ERROR":
             w.error = " ".join(rest)
         elif kind == "BYE":
             pass
+
+    def _stop_if_nothing_renders(self):
+        """Chunk after chunk has failed and not one frame has come out of this run: a missing file or the like, which
+        every chunk would meet again. Without this each chunk takes three fresh Nukes, hundreds on a long render."""
+        failed = [c for c in self.chunks if c.state == "failed"]
+        if len(failed) >= 3 and not self.done_times and self.state == "rendering":
+            self.error = "%d chunks failed and no frame rendered: %s" % (len(failed), failed[0].error)
+            self.stop("Render stopped: " + self.error)
+            self.state = "failed"
 
     def _on_exit(self, w, code):
         if w is None:
@@ -2670,7 +2680,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
 
     def __init__(self, window, engine):
         super().__init__(window)
-        self.window, self.src = window, engine
+        self.main, self.src = window, engine
         self.setWindowTitle("Analyze script: %s" % engine.name)
         self.resize(1060, 640)
         self.lay = QtWidgets.QVBoxLayout(self)
@@ -2734,19 +2744,19 @@ class ScriptAnalysis(QtWidgets.QDialog):
             return
         # for this script on this PC, not for this moment: what runs now (renders, a Nuke's viewer cache) says nothing about it.
         # The RAM limit, less what Windows and other programs usually hold.
-        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else float(self.window.manager.ram * self.window.manager.total)
-        free = total * float(self.window.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2)
+        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else float(self.main.manager.ram * self.main.manager.total)
+        free = total * float(self.main.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2)
         n, t, c, why = self.advise(result, os.cpu_count() or 8, free)
         self.best = (n, t, c)
-        m = self.window.manager
-        self.b_use.setEnabled((n, t, c) != (m.total, m.threads, m.ram) and self.window.s_workers.isEnabled())
+        m = self.main.manager
+        self.b_use.setEnabled((n, t, c) != (m.total, m.threads, m.ram) and self.main.s_workers.isEnabled())
         self._show_result(result, why)
 
     def use(self):
         n, t, c = self.best
-        self.window.s_workers.setValue(n)
-        self.window.s_threads.setValue(t)
-        self.window.s_ram.setValue(c)
+        self.main.s_workers.setValue(n)
+        self.main.s_threads.setValue(t)
+        self.main.s_ram.setValue(c)
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
@@ -2813,7 +2823,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
     def _show_result(self, info, why):
         """First what to set and why, then what the script is made of."""
         n, t, c = self.best
-        m = self.window.manager
+        m = self.main.manager
         writes = ", ".join(w.get("name", "") for w in self.src.job.get("writes", []))
         title = QtWidgets.QLabel("%s  ·  %s" % (self.src.name, writes))
         title.setStyleSheet("font-size: 12pt; font-weight: 600;")
@@ -2900,14 +2910,14 @@ class ScriptTest(QtWidgets.QDialog):
     def _free_gb(self):
         """RAM Nuke processes may take: up to the RAM limit, less what the PC uses now (nothing should render)."""
         if not psutil:
-            return float(self.window.manager.ram * self.window.manager.total)
+            return float(self.main.manager.ram * self.main.manager.total)
         vm = psutil.virtual_memory()
-        limit = float(self.window.settings.get("ram_limit", 90)) / 100
+        limit = float(self.main.settings.get("ram_limit", 90)) / 100
         return max(1.0, (vm.total * limit - vm.used) / 1024 ** 3)
 
     def __init__(self, window, engine):
         super().__init__(window)
-        self.window, self.src = window, engine
+        self.main, self.src = window, engine
         self.setWindowTitle("Test this script: %s" % engine.name)
         self.resize(1400, 580)
         cpu = os.cpu_count() or 8
@@ -3013,7 +3023,7 @@ class ScriptTest(QtWidgets.QDialog):
     def _add_setup(self):
         setup = (self.s_add_p.value(), self.s_add_t.value(), self.s_add_c.value())
         self.added.add(setup)
-        self.window._save_setting("test_setups", sorted(self.added))
+        self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
             self.setups = sorted(self.setups + [setup])
         self._fill_table()
@@ -3023,7 +3033,7 @@ class ScriptTest(QtWidgets.QDialog):
         gone = {self.setups[r] for r in rows}
         self.setups = [x for x in self.setups if x not in gone]
         self.added -= gone
-        self.window._save_setting("test_setups", sorted(self.added))
+        self.main._save_setting("test_setups", sorted(self.added))
         self._fill_table()
 
     def _idle(self, on):
@@ -3049,7 +3059,7 @@ class ScriptTest(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "JKrender", "A movie renders in one process from start to end: "
                                               "there is nothing to compare.")
             return
-        if any(e.state in ("rendering", "paused", "finishing", "waiting") for e in self.window.manager.engines):
+        if any(e.state in ("rendering", "paused", "finishing", "waiting") for e in self.main.manager.engines):
             QtWidgets.QMessageBox.information(self, "JKrender", "A render is going: the test would only measure the two "
                                               "fighting over the PC. Start it when nothing renders.")
             return
@@ -3075,7 +3085,7 @@ class ScriptTest(QtWidgets.QDialog):
             self._finish()
             return
         n, t, c = self.setups[self.index]
-        settings = dict(self.window.settings)
+        settings = dict(self.main.settings)
         settings.update(processes=n, threads=t, ram=c, max_renders=1, _test=True)
         settings.pop("script_ram", None)  # what the script took with another cache would keep processes out
         root = TEST_DIR / ("%s_%dx%d_%d" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c))
@@ -3101,8 +3111,8 @@ class ScriptTest(QtWidgets.QDialog):
         if r is None:
             return
         m, e = r["manager"], r["engine"]
-        m.vram = self.window._gpu
-        m.gpu_mem = self.window._gpu_procs or {}
+        m.vram = self.main._gpu
+        m.gpu_mem = self.main._gpu_procs or {}
         m.tick()
         now = time.time()
         done = e.counts()["done"]
@@ -3240,9 +3250,9 @@ class ScriptTest(QtWidgets.QDialog):
 
     def use(self):
         n, t, c = self.best
-        self.window.s_workers.setValue(n)
-        self.window.s_threads.setValue(t)
-        self.window.s_ram.setValue(c)
+        self.main.s_workers.setValue(n)
+        self.main.s_threads.setValue(t)
+        self.main.s_ram.setValue(c)
         self.verdict.setText(self.verdict.text() + "  Set: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c))
         self.b_use.setEnabled(False)
 

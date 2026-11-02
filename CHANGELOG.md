@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.64.3 alpha — 2026-11-02
+
+From running real small renders through the window:
+
+- A script that cannot render stops itself: after 3 failed chunks with no frame rendered in the run, instead of three fresh Nukes for every chunk. A missing file on 67 chunks took 10 Nuke starts instead of about 200.
+- Test this script and Analyze script no longer hide Qt's window() with their own attribute. A key or a click on such a dialog itself could raise an error and bring JKrender down.
+
 ## 0.64.2 alpha — 2026-11-02
 
 From reading the rest of the application:
