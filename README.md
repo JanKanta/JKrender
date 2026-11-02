@@ -1,6 +1,6 @@
 # JKrender
 
-![JKrender rendering a 4K comp: 8 Nuke processes on the timeline, chunks under the progress bar, and the EXR preview of a finished frame](docs/screenshot.png)
+![JKrender rendering with 8 Nuke processes: render cards on top, chunks under the tiles, the EXR preview and frame list on the left, the Workers timeline and Settings on the right](docs/screenshot.png)
 
 Fast local rendering for Nuke. JKrender splits a render into chunks and renders them in several
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
@@ -16,6 +16,10 @@ on disk.
 - **Several renders in one window.** Each Write is a card at the top. They share one budget of
   Nuke processes, and up to 3 run side by side. Shift+click cards to pick several: Render, Pause and Stop then act on all of them.
   Right of the cards: when all renders should be done and how long they have taken so far; once through, how long they took altogether.
+  With **Start next render when one ends** (Settings > General, off by default), the next card not yet started starts by itself when a render
+  finishes or fails. A render you stopped stays stopped and starts nothing.
+- **Render clears the cache of open Nukes.** Each open Nuke frees its RAM cache and Blink cache before the render starts, so the render has the memory.
+  The disk cache stays, and Resume clears nothing. A Nuke has to be restarted once after an update to take part.
 - **Output check.**
   - Image sequences: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames.
   - Movies (MOV / MP4 / MXF): codec, profile, fps, resolution, timecode and frame count against the Write's settings.
@@ -25,20 +29,24 @@ on disk.
 - **Test this script** (Settings > Processes and Chunks): renders 20 frames from the middle of the selected render (you can set
   how many) with a few recommended Processes x Threads x Nuke cache setups taken from the CPU and RAM, and any you add,
   and recommends the fastest. The frames go to a test folder and are deleted; nothing changes unless you press
-  Use these settings. Tables stay in `~/.jkrender/test_results`.
+  Use these settings. Tables stay in `~/.jkrender/test_results`. A Write's render hooks do not run in a test, so it cannot write
+  to the real output; a frame that does not arrive in the test folder stops the test.
+- **Analyze script** (right under it): opens the script without rendering, shows the nodes that really feed the Write (disabled branches left out),
+  those on the GPU and those that look at other frames, and recommends a setup to start from. It only counts nodes, so Test this script has the last word.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
+- **Space** plays and stops the preview. It never presses a button, so it cannot stop a render.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
-  graphics card. 1.nk rendered 3x faster with identical frames; every process takes its own VRAM,
-  and the VRAM limit (on, 95 %) keeps the card from filling: some scripts make Nuke keep VRAM it no longer needs, frame
-  after frame, so a process that grew past its part of the card gets a fresh Nuke after its chunk; only when none grew
-  do fewer processes run. New processes start only when they fit in the RAM and VRAM.
-  When the VRAM keeps processes out of such a script, each process renders one frame and a fresh Nuke takes over,
-  so more of them fit on the card (sh0070: 4-6 processes instead of 3).
-- **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, the one started last closing first,
-  so Windows never swaps. The Nuke cache setting is Nuke's cache limit per process (`-c`); a heavy script takes more than that.
+  graphics card. 1.nk rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
+  (on, 95 %) keeps the card from filling: close to the limit, the process that grew the most gets a fresh Nuke after its chunk;
+  at the limit fewer processes run. With room on the card nothing restarts.
+- **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, so Windows never swaps.
+  The Nuke cache setting is Nuke's cache limit per process (`-c`); a process takes more than that.
+- **Starting and falling.** A render starts all its processes at once. Over a limit, the process started last closes first:
+  at once if it is still opening the script, otherwise after its chunk. A process that fell or closed comes back by itself
+  as soon as it fits: the RAM left under the limit, split by what one process takes, and room in the VRAM.
 
 ## Files
 
