@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.58.3 alpha — 2026-11-02
+
+- Test this script takes its setups from the CPU's threads: 64 threads test 1x64, 64x1, 2x32, 32x2, 4x16, 16x4, 6x12, 10x6; 16 threads 1x16, 16x1, 2x8, 8x2, 4x4, 6x3, 10x2.
+- CPU average also in threads, in the test and in the System tile ("average 39 % · 12.5 threads").
+
 ## 0.58.2 alpha — 2026-11-02
 
 - Test this script: RAM avg and VRAM avg show the average in % and in GB, not the maximum.

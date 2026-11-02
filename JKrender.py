@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.58.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.58.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.58.2 alpha"
+APP_VERSION = "0.58.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2678,7 +2678,9 @@ class ScriptTest(QtWidgets.QDialog):
     The frames go to a test folder, deleted after each setup; the render's own files stay as they are."""
 
     LIMIT = 360  # seconds a setup may take; a slow one is measured on the frames it got done
-    SETUPS = ((1, 32), (32, 1), (2, 16), (16, 2), (4, 8), (8, 4), (6, 6), (10, 3))  # on 32 threads; scaled to the CPU
+    # On 32 threads. (n, None): n processes share the CPU's threads; (None, t): processes of t threads each fill it.
+    # 6 x 6 and 10 x 3 keep their share of the threads (6/32, 3/32). So 64 threads test 1x64, 64x1, 2x32, 32x2 ...
+    SETUPS = ((1, None), (None, 1), (2, None), (None, 2), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
     BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 
     @classmethod
@@ -2686,12 +2688,13 @@ class ScriptTest(QtWidgets.QDialog):
         """The setups for this PC: (processes, threads, Nuke cache GB). The RAM free for Nuke, split by the number
         of processes, less what a process takes besides its cache. A setup that cannot fit gets 1 GB of cache
         and starts what the RAM limit lets it (the Ran column shows how many)."""
-        scale = cpu / 32.0
         setups = []
         for n, t in cls.SETUPS:
-            procs = max(1, round(n * scale))
-            threads = max(1, round(t * n * scale / procs))
-            if (procs, threads) not in [x[:2] for x in setups]:
+            if n is None:
+                procs, threads = max(1, cpu // t), t
+            else:
+                procs, threads = n, max(1, round(cpu * t) if t else cpu // n)
+            if procs <= cpu and (procs, threads) not in [x[:2] for x in setups]:
                 setups.append((procs, threads, max(1, int(free_gb / procs - cls.BESIDE_CACHE))))
         return setups
 
@@ -2875,7 +2878,8 @@ class ScriptTest(QtWidgets.QDialog):
         if final:
             self._cell(i, 4, "%.1f s" % r["frame"] if r.get("frame") else "")
         average = lambda v: sum(v) / float(len(v))
-        self._cell(i, 5, "%.0f %%" % average(r["cpu"]) if r["cpu"] else "")
+        cpus = os.cpu_count() or 1
+        self._cell(i, 5, "%.0f %%  ·  %.1f threads" % (average(r["cpu"]), average(r["cpu"]) * cpus / 100.0) if r["cpu"] else "")
         self._cell(i, 6, "%.0f %%  ·  %.1f GB" % (average(r["ram"]), average(r["ram_gb"])) if r["ram"] else "")
         self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
         self._cell(i, 8, "%.0f %%  ·  %.1f GB" % (average(r["vram"]), average(r["vram_gb"])) if r["vram"] else "")
@@ -4977,7 +4981,8 @@ class MainWindow(QtWidgets.QMainWindow):
                         total, n = self._avg.get(key, (0.0, 0))
                         self._avg[key] = (total + value, n + 1)
         values = {k: t / n for k, (t, n) in getattr(self, "_avg", {}).items()}
-        self.m_cpu.set_avg("average %.0f %%" % values["cpu"] if "cpu" in values else "")
+        self.m_cpu.set_avg("average %.0f %%  ·  %.1f threads" % (values["cpu"], values["cpu"] * (os.cpu_count() or 1) / 100.0)
+                           if "cpu" in values else "")
         self.m_ram.set_avg("average %.0f %%" % values["ram"] if "ram" in values else "")
         self.m_gpu.set_avg("average %.0f %%  ·  VRAM %.0f %%" % (values["gpu"], values.get("vram", 0)) if "gpu" in values else "")
 
