@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.60 alpha — 2026-11-02
+
+Test this script:
+- 10 frames per setup by default (Frames per setup sets it), at least 2 per process. Frames per minute now count from when the script is open: with so few frames, counting from the first finished frame favoured setups with many processes.
+- Fewer recommended setups: on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4, 10x3, and your own settings.
+- Add setup with your own Processes, Threads and Nuke cache, kept for next time; Remove selected takes out any row. Setups you add are never left out.
+- A setup stops at 1.5 x the best time per frame (with so few frames, 1.25 x could stop one still starting up).
+
 ## 0.59 alpha — 2026-11-02
 
 Test this script, after a full run on a heavy comp (40 frames): 2-6 processes rendered them in about 2 minutes; 8 x 4 with 4 GB of cache took 69 s a frame, and 10 x 3, 16 x 2 and 32 x 1 with 2 GB and 1 GB did not finish one frame in 6 minutes each.

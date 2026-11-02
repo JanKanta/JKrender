@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.59 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.60 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.59 alpha"
+APP_VERSION = "0.60 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2673,20 +2673,23 @@ class Gantt(QtWidgets.QWidget):
 
 
 class ScriptTest(QtWidgets.QDialog):
-    """Settings > Test this script: the same frames from the middle of the render, rendered with each Processes x
-    Threads setup, the RAM split between the processes (Nuke cache). Frames per minute from the first finished frame
-    on. It recommends the fastest; Use these settings puts it into Settings. Nothing changes unless you press it.
-    The frames go to a test folder, deleted after each setup; the render's own files stay as they are."""
+    """Settings > Test this script: frames from the middle of the render, rendered with each Processes x Threads x
+    Nuke cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
+    per minute from when the script is open. It recommends the fastest; Use these settings puts it into Settings.
+    Nothing changes unless you press it. The frames go to a test folder, deleted after each setup; the render's own
+    files stay as they are."""
 
     LIMIT = 360  # seconds a setup may take; a slow one is measured on the frames it got done
     # Once a setup has rendered the frames, one that takes this much longer cannot win and stops. After two like that
     # in a row the setups with still more processes are left out: each has less cache and fewer threads
     # (measured: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
-    SLOWER = 1.25
+    SLOWER = 1.5
     GIVE_UP = 2
-    # On 32 threads. (n, None): n processes share the CPU's threads; (None, t): processes of t threads each fill it.
-    # 6 x 6 and 10 x 3 keep their share of the threads (6/32, 3/32). So 64 threads test 1x64, 64x1, 2x32, 32x2 ...
-    SETUPS = ((1, None), (None, 1), (2, None), (None, 2), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
+    # The recommended ones, on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4, 10x3. (n, None): n processes share the CPU's
+    # threads; (None, t): processes of t threads each fill it; 6 x 6 and 10 x 3 keep their share (6/32, 3/32).
+    # 16x2 and 32x1 are not among them: on a heavy comp, with 1 GB of cache, not one frame in 6 minutes. They can be added.
+    SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
+    FRAMES = 10  # per setup by default, and at least 2 per process, or a setup with many has them all on its first frame
     BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 
     @classmethod
@@ -2716,25 +2719,21 @@ class ScriptTest(QtWidgets.QDialog):
         super().__init__(window)
         self.window, self.src = window, engine
         self.setWindowTitle("Test this script: %s" % engine.name)
-        self.resize(1400, 520)
+        self.resize(1400, 580)
         cpu = os.cpu_count() or 8
         m = window.manager
         cur = (m.total, m.threads, m.ram)
-        # your own settings stand in for a planned setup with the same processes and threads and about the same cache
-        self.setups = sorted([x for x in self.plan(cpu, self._free_gb())
-                              if not (x[:2] == cur[:2] and abs(x[2] - cur[2]) <= 2)] + [cur])
         self.current = cur
-        frames = engine.frame_list()
-        # the same frames for every setup, from the middle: a quarter of the render, at least 30
-        count = min(len(frames), max(30, len(frames) // 4))
-        first = (len(frames) - count) // 2
-        self.frames = frames[first:first + count]
+        self.added = {tuple(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
+        # your own settings stand in for a planned setup with the same processes and threads and about the same cache
+        self.setups = sorted({x for x in self.plan(cpu, self._free_gb())
+                              if not (x[:2] == cur[:2] and abs(x[2] - cur[2]) <= 2)} | {cur} | self.added)
+        self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "Renders the same %d frames (%s) with each setup below, at most %d minutes each, and measures frames per minute.\n"
-            "Nuke cache: the free RAM split between the processes. The frames go to a test folder and are deleted;\n"
-            "your render's files stay as they are. Nothing else should render meanwhile."
-            % (len(self.frames), frames_to_spec(self.frames), self.LIMIT // 60))
+            "Renders frames from the middle of this render with each setup below, at most %d minutes each, and measures\n"
+            "frames per minute. The frames go to a test folder and are deleted; your render's files stay as they are.\n"
+            "Nothing else should render meanwhile." % (self.LIMIT // 60))
         intro.setObjectName("dim")
         lay.addWidget(intro)
         self.table = QtWidgets.QTableWidget(len(self.setups), 11)
@@ -2742,15 +2741,46 @@ class ScriptTest(QtWidgets.QDialog):
                                               "VRAM avg", "Fell", "State"])
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
-        for i, (n, t, c) in enumerate(self.setups):
-            self._cell(i, 0, "%d processes x %d threads, cache %d GB%s" % (n, t, c, "  (yours)" if (n, t, c) == cur else ""))
-            self._cell(i, 10, "waiting")
-        self.table.resizeColumnsToContents()
         lay.addWidget(self.table, 1)
         self.verdict = QtWidgets.QLabel("")
         self.verdict.setWordWrap(True)
         lay.addWidget(self.verdict)
+        ram = max(1, int(psutil.virtual_memory().total / 1024 ** 3)) if psutil else 256
+
+        def box(lo, hi, value, suffix=""):
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(lo, hi)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            return spin
+
+        def label(text):
+            lab = QtWidgets.QLabel(text)
+            lab.setObjectName("dim")
+            return lab
+
+        edit = QtWidgets.QHBoxLayout()
+        self.s_frames = box(1, max(1, len(self.all_frames)), min(max(1, len(self.all_frames)),
+                                                                 int(window.settings.get("test_frames", self.FRAMES))))
+        self.s_frames.setToolTip("Frames each setup renders; at least 2 per process, so a setup with many gets more.\n"
+                                 "Few frames are quick but less exact: run the two best again with more to be sure.")
+        self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
+        self.s_add_p, self.s_add_t, self.s_add_c = box(1, cpu, m.total), box(1, cpu, m.threads), box(1, ram, m.ram, " GB")
+        self.b_add = QtWidgets.QPushButton("Add setup")
+        self.b_add.clicked.connect(self._add_setup)
+        self.b_remove = QtWidgets.QPushButton("Remove selected")
+        self.b_remove.setToolTip("A recommended setup comes back the next time this window opens; one you added is gone.")
+        self.b_remove.clicked.connect(self._remove_setups)
+        for widget in (label("Frames per setup"), self.s_frames):
+            edit.addWidget(widget)
+        edit.addSpacing(24)
+        for widget in (label("Processes"), self.s_add_p, label("Threads"), self.s_add_t, label("Nuke cache"), self.s_add_c,
+                       self.b_add, self.b_remove):
+            edit.addWidget(widget)
+        edit.addStretch(1)
+        lay.addLayout(edit)
         buttons = QtWidgets.QHBoxLayout()
         self.b_start = QtWidgets.QPushButton("Start")
         self.b_start.setObjectName("primary")
@@ -2770,6 +2800,43 @@ class ScriptTest(QtWidgets.QDialog):
         self.run = None
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
+        self._fill_table()
+
+    def _fill_table(self):
+        self.table.clearContents()
+        self.table.setRowCount(len(self.setups))
+        for i, (n, t, c) in enumerate(self.setups):
+            mark = "  (yours)" if (n, t, c) == self.current else ("  (added)" if (n, t, c) in self.added else "")
+            self._cell(i, 0, "%d processes x %d threads, cache %d GB%s" % (n, t, c, mark))
+            self._cell(i, 10, "waiting")
+        self.table.resizeColumnsToContents()
+
+    def _add_setup(self):
+        setup = (self.s_add_p.value(), self.s_add_t.value(), self.s_add_c.value())
+        self.added.add(setup)
+        self.window._save_setting("test_setups", sorted(self.added))
+        if setup not in self.setups:
+            self.setups = sorted(self.setups + [setup])
+        self._fill_table()
+
+    def _remove_setups(self):
+        rows = {i.row() for i in self.table.selectedIndexes()}
+        gone = {self.setups[r] for r in rows}
+        self.setups = [x for x in self.setups if x not in gone]
+        self.added -= gone
+        self.window._save_setting("test_setups", sorted(self.added))
+        self._fill_table()
+
+    def _idle(self, on):
+        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c):
+            widget.setEnabled(on)
+        self.b_stop.setEnabled(not on)
+
+    def _frames_for(self, processes):
+        """Frames from the middle of the render, the same for every setup but for those that need more."""
+        count = min(len(self.all_frames), max(self.s_frames.value(), 2 * processes))
+        first = (len(self.all_frames) - count) // 2
+        return self.all_frames[first:first + count]
 
     def _cell(self, row, col, text):
         item = self.table.item(row, col)
@@ -2787,10 +2854,12 @@ class ScriptTest(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "JKrender", "A render is going: the test would only measure the two "
                                               "fighting over the PC. Start it when nothing renders.")
             return
-        self.b_start.setEnabled(False)
-        self.b_stop.setEnabled(True)
+        if not self.setups:
+            return
+        self._idle(False)
         self.b_use.setEnabled(False)
         self.verdict.setText("")
+        self._fill_table()
         self.results = {}
         self.index = -1
         self.slow_in_a_row = 0
@@ -2800,7 +2869,7 @@ class ScriptTest(QtWidgets.QDialog):
     def _next(self):
         self.index += 1
         while (self.index < len(self.setups) and self.slow_in_a_row >= self.GIVE_UP
-               and self.setups[self.index] != self.current):
+               and self.setups[self.index] != self.current and self.setups[self.index] not in self.added):
             self._cell(self.index, 10, "left out: more processes only got slower")
             self.index += 1
         if self.index >= len(self.setups):
@@ -2819,9 +2888,10 @@ class ScriptTest(QtWidgets.QDialog):
         job["test_out"] = str(out).replace("\\", "/")
         manager = RenderManager(settings)
         e = manager.add(job, root)
-        e.set_range(frames_to_spec(self.frames))
+        frames = self._frames_for(n)
+        e.set_range(frames_to_spec(frames))
         manager.request_start(e)
-        self.run = {"manager": manager, "engine": e, "root": root, "t0": time.time(), "first": None, "n0": 0,
+        self.run = {"manager": manager, "engine": e, "root": root, "t0": time.time(), "open": None, "frames": frames,
                     "cpu": [], "ram": [], "ram_gb": [], "gpu": [], "vram": [], "vram_gb": [], "busy": [], "stopping": False}
         if psutil:
             psutil.cpu_percent(None)  # from here on
@@ -2837,8 +2907,8 @@ class ScriptTest(QtWidgets.QDialog):
         m.tick()
         now = time.time()
         done = e.counts()["done"]
-        if r["first"] is None and done:
-            r["first"], r["n0"] = now, done  # from the first finished frame on: the script loads are behind
+        if r["open"] is None and any(w.state == "busy" for w in e.workers.values()):
+            r["open"] = now  # the first process has opened the script: a short test should not be mostly script loads
         if psutil:
             r["cpu"].append(psutil.cpu_percent(None))
             vm = psutil.virtual_memory()
@@ -2849,14 +2919,15 @@ class ScriptTest(QtWidgets.QDialog):
             r["vram"].append(m.vram[1] / m.vram[2] * 100)
             r["vram_gb"].append(m.vram[1] / 1024.0)
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
-        rate = (done - r["n0"]) / ((now - r["first"]) / 60.0) if r["first"] and now - r["first"] > 5 else None
+        rate = done / ((now - (r["open"] or r["t0"])) / 60.0) if done else None
         self._show(self.index, r, rate, done)
-        tooks = [x["took"] for x in self.results.values() if x["complete"]]
-        slower = bool(tooks) and now - r["t0"] >= min(tooks) * self.SLOWER and e.state == "rendering"
+        # time per frame: a setup with many processes renders more of them
+        paces = [x["took"] / len(x["frames"]) for x in self.results.values() if x["complete"]]
+        slower = bool(paces) and now - r["t0"] >= min(paces) * len(r["frames"]) * self.SLOWER and e.state == "rendering"
         if not r["stopping"] and (slower or now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
             r["stopping"] = True
             r["slower"] = slower
-            r["complete"] = done >= len(self.frames)
+            r["complete"] = done >= len(r["frames"])
             r["took"] = now - r["t0"]
             r["rate"] = rate if rate is not None else (done / ((now - r["t0"]) / 60.0))
             r["frame"] = statistics.median([sec for w in e.workers.values() for sec in w.frame_secs] or [0])
@@ -2888,8 +2959,8 @@ class ScriptTest(QtWidgets.QDialog):
         self._cell(i, 1, "%.1f processes" % (sum(busy) / float(len(busy))) if busy else "")
         # the whole render of these frames, from the start with the script loads; when the limit ended it, how far it got
         took = fmt_secs(r.get("took", time.time() - r["t0"]))
-        if final and done < len(self.frames):
-            took += "  (%d of %d frames)" % (done, len(self.frames))
+        if final:
+            took += "  (%d of %d frames)" % (done, len(r["frames"]))
         self._cell(i, 2, took)
         self._cell(i, 3, "%.1f" % rate if rate is not None else "")
         if final:
@@ -2913,16 +2984,14 @@ class ScriptTest(QtWidgets.QDialog):
             self._drop(r)
             self._cell(self.index, 10, "stopped")
             self.run = None
-        self.b_start.setEnabled(True)
-        self.b_stop.setEnabled(False)
+        self._idle(True)
         if self.results:
             self._finish(partial=True)
 
     def _finish(self, partial=False):
         self.timer.stop()
         shutil.rmtree(TEST_DIR, ignore_errors=True)  # its test renders; a folder Windows still held is gone now
-        self.b_start.setEnabled(True)
-        self.b_stop.setEnabled(False)
+        self._idle(True)
         if not self.results:
             return
         # a setup that rendered all the frames; the rate of one stopped early says less
@@ -2952,7 +3021,7 @@ class ScriptTest(QtWidgets.QDialog):
             rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
                     for r in range(self.table.rowCount())]
             path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
-            lines = ["%s, %d frames (%s), %d threads" % (self.src.name, len(self.frames), frames_to_spec(self.frames), os.cpu_count() or 0),
+            lines = ["%s, %d frames per setup or more, %d threads" % (self.src.name, self.s_frames.value(), os.cpu_count() or 0),
                      " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError:
