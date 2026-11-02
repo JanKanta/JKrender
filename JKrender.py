@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.64.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64.1 alpha"
+APP_VERSION = "0.64.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -92,7 +92,10 @@ def read_settings():
 def write_settings(settings):
     try:
         HOME_DIR.mkdir(parents=True, exist_ok=True)
-        SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        # whole or not at all: a file cut off by a crash would silently bring every setting back to its default
+        temp = SETTINGS_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        os.replace(temp, SETTINGS_FILE)
     except Exception:
         pass
 
@@ -1102,6 +1105,7 @@ class RenderEngine:
                                                                  ": only these render" if self.scope else ""))
         if self.state in ("ready", "done", "failed", "stopped", "finishing"):
             if idle:  # a new run: its own clock
+                self.crashes = self.load_failures = 0
                 self.rerun_at = time.time() if self.started else None
                 self.started, self.paused_secs, self.paused_at, self.pauses = time.time(), 0.0, None, []
                 self.done_times.clear()
@@ -1385,6 +1389,19 @@ class RenderEngine:
         except Exception:
             pass
 
+    def _end_stuck(self):
+        """A process told to quit that is still there after 8 s (Nuke can take long to let go of the GPU) is ended, so it
+        does not hold a place another process is waiting for, or the memory once the render is through."""
+        now = time.time()
+        for w in self.workers.values():
+            if w.state == "quitting" and now - getattr(w, "quit_at", now) > 8:
+                try:
+                    w.proc.kill()
+                except Exception:
+                    pass
+                w.quit_at = now + 3600
+                self.note("%s did not quit within 8 s and was ended" % w.name, "warn")
+
     def tick(self):
         changed = False
         for _ in range(5000):
@@ -1400,6 +1417,7 @@ class RenderEngine:
                 self._on_exit(ev[1], ev[2])
             elif kind == "check":
                 self._on_check(*ev[1:])
+        self._end_stuck()
         if self._small_dirty:
             self._flag_small()
         if self.state in ("rendering", "paused"):
@@ -1670,15 +1688,6 @@ class RenderEngine:
     def _schedule(self):
         now = time.time()
         for w in list(self.workers.values()):
-            # A process told to quit that is still there after 8 s (Nuke can take long to let go of the GPU)
-            # is ended, so it does not hold a place another process is waiting for.
-            if w.state == "quitting" and now - getattr(w, "quit_at", now) > 8:
-                try:
-                    w.proc.kill()
-                except Exception:
-                    pass
-                w.quit_at = now + 3600
-                self.note("%s did not quit within 8 s and was ended" % w.name, "warn")
             if w.state in ("loading", "idle", "busy") and w.ps:
                 try:
                     w.cpu = w.ps.cpu_percent(None) / 100.0
@@ -1831,6 +1840,11 @@ class RenderEngine:
 
     def frame_secs(self):
         return [fr.secs for fr in self.frames.values() if fr.secs is not None]
+
+    def run_secs(self):
+        """Frame times of this run. Frames from an earlier run keep theirs, which says nothing about its speed: against
+        this run's clock they showed 8 processes rendering 17 frames at once."""
+        return [fr.secs for fr in self.frames.values() if fr.secs is not None and fr.started and fr.started >= (self.started or 0)]
 
     def write_report(self):
         secs = self.frame_secs()
@@ -3439,7 +3453,6 @@ class Graph(QtWidgets.QWidget):
         for i in range(1, 4):
             y = r.top() + r.height() * i / 4.0
             p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
-        x_text = 8
         p.setPen(QtGui.QColor(C["dim"]))
         p.drawText(QtCore.QRectF(8, 3, 200, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self.title)
         x_text = 8 + p.fontMetrics().horizontalAdvance(self.title) + 16
@@ -4763,7 +4776,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return True
             if isinstance(obj, QtWidgets.QAbstractButton):
                 return True
-        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1                and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
+        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1 \
+                and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
             # a click anywhere but on a render card (or Render / Pause / Stop) drops the cards picked with Shift
             w = obj
             while w is not None:
@@ -5098,7 +5112,7 @@ class MainWindow(QtWidgets.QMainWindow):
                        if eta else "")
         rate = e.rate()
         self.t_speed.set("%.2f fr/s" % rate if rate else "—", "%.1f fr/min" % (rate * 60) if rate else "")
-        secs = e.frame_secs()
+        secs = e.run_secs()
         if secs:
             conc = sum(secs) / max(1.0, e.elapsed())
             self.t_avg.set("%.2f s" % (sum(secs) / len(secs)), "per frame in one process · ×%.1f at once" % conc)
@@ -5897,12 +5911,12 @@ class MainWindow(QtWidgets.QMainWindow):
                       row("Fastest frame", "%d: %.2f s" % (fastest[1], fastest[0])),
                       row("Slowest frame", "%d: %.2f s" % (slowest[1], slowest[0])),
                       row("Sum of frame times", fmt_secs(sum(secs))),
-                      row("Frames rendering at once", "×%.1f on average" % (sum(secs) / max(1.0, e.elapsed()))),
+                      row("Frames rendering at once", "×%.1f on average" % (sum(e.run_secs()) / max(1.0, e.elapsed()))),
                       row("Script load per process", "%.1f s average" % (sum(loads) / len(loads)) if loads else "—")]
         else:
             parts.append(row("", "No frames rendered yet"))
         parts.append("</table><h3>Command of one process</h3><p style='font-family:Consolas'>%s</p>"
-                     % esc(subprocess.list2cmdline(e._command())))
+                     % esc(subprocess.list2cmdline(e._command(gpu=bool(self.settings.get("use_gpu", True))))))
         env = j.get("env") or {}
         parts.append("<h3>Environment from Nuke</h3><table>")
         for k in sorted(env):
@@ -5922,6 +5936,9 @@ class MainWindow(QtWidgets.QMainWindow):
             if ask != QtWidgets.QMessageBox.Yes:
                 event.ignore()
                 return
+        for dialog in self.findChildren(QtWidgets.QDialog):  # a test still running has Nukes and frames of its own
+            if isinstance(dialog, (ScriptTest, ScriptAnalysis)):
+                dialog.close()
         for e in running:
             if e.state == "waiting":
                 self.manager.cancel(e)

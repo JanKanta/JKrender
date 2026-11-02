@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.64.2 alpha — 2026-11-02
+
+From reading the rest of the application:
+
+- Frame time and × at once count only frames of this run. Frames from a run before made 8 processes show ×17 and a frame time from other settings.
+- A process that does not quit within 8 s is ended in every state. While a render was finishing, or after it, one could stay and hold its memory.
+- The settings file is written whole or not at all; a crash mid-write could bring every setting back to its default.
+- Closing the window also closes an open Test this script or Analyze script, with their Nukes.
+- Details shows the Nuke command with --gpu when processes use it.
+- Render this frame on an idle render also starts its crash count at zero.
+- Removed more that nothing used, such as the render-current-frame path in the Nuke menu.
+
 ## 0.64.1 alpha — 2026-11-02
 
 From a review of the scheduler and the unused code:

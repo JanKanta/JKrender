@@ -159,15 +159,13 @@ def _nuke_executable():
     return exe if "nuke" in Path(exe).name.lower() else ""
 
 
-def _make_job(writes, renders_dir, current_frame_only=False):
+def _make_job(writes, renders_dir):
     script = _script_path()
     if not script:
         return None
     root = nuke.root()
     infos = [_write_info(n) for n in writes]
-    if current_frame_only:
-        first = last = int(nuke.frame())
-    elif all(i["limit"] for i in infos):
+    if all(i["limit"] for i in infos):
         first = min(i["limit"][0] for i in infos)
         last = max(i["limit"][1] for i in infos)
     else:
@@ -356,7 +354,7 @@ def _launch(app, job_paths):
         nuke.executeInMainThread(nuke.message, args=("Could not start JKrender:\n%s" % exc,))
 
 
-def _render(current_frame_only=False):
+def render_selected():
     writes = _write_nodes()
     if not writes:
         return
@@ -368,7 +366,7 @@ def _render(current_frame_only=False):
     job_paths = []
     for node in writes:
         try:
-            job_path = _make_job([node], renders_dir, current_frame_only)
+            job_path = _make_job([node], renders_dir)
         except Exception as exc:
             nuke.message("JKrender could not prepare %s:\n%s" % (node.fullName(), exc))
             continue
@@ -377,10 +375,6 @@ def _render(current_frame_only=False):
         job_paths.append(job_path)
     if job_paths:
         threading.Thread(target=_launch, args=(app, job_paths), daemon=True).start()
-
-
-def render_selected():
-    _render(False)
 
 
 def open_renders_folder():
