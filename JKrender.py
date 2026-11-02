@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.60.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.60.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.60.4 alpha"
+APP_VERSION = "0.60.5 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -4583,7 +4583,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if obj is getattr(self, "preview", None) and event.type() == QtCore.QEvent.MouseButtonDblClick:
             self._toggle_big()
             return True
-        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1                 and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
+        if event.type() in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease) and event.key() == QtCore.Qt.Key_Space \
+                and isinstance(obj, QtWidgets.QWidget):
+            # Space plays and stops the preview. It never presses a button: after a click on Stop, Qt would press Stop again
+            if obj.window() is self and not isinstance(obj, (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox)):
+                if event.type() == QtCore.QEvent.KeyPress and not event.isAutoRepeat():
+                    button = self.b_play if self.engine.movie else self.b_frame_play
+                    if button.isVisible():
+                        button.click()
+                return True
+            if isinstance(obj, QtWidgets.QAbstractButton):
+                return True
+        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1                and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
             # a click anywhere but on a render card (or Render / Pause / Stop) drops the cards picked with Shift
             w = obj
             while w is not None:

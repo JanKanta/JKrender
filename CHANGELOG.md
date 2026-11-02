@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.60.5 alpha — 2026-11-02
+
+- Space plays and stops the preview. It no longer presses the button clicked last, which could stop a render.
+
 ## 0.60.4 alpha — 2026-11-02
 
 - Test this script no longer recommends 10 x 3; it can still be added by hand.
