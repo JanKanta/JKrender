@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.61 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.61.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.61 alpha"
+APP_VERSION = "0.61.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -1337,20 +1337,19 @@ class RenderEngine:
         if extra > 0:
             # Hand the places over gently, so no work is thrown away: an idle one closes now; a busy one
             # finishes its chunk first; one still opening the script opens it, renders one chunk, then closes.
-            # Busy ones before loading ones (they are free sooner); the last one started first, or under the
-            # VRAM limit the one taking the most VRAM.
+            # Busy ones before loading ones (they are free sooner), the last one started first.
+            # Over the RAM or VRAM limit the last one started closes first whatever it does, and one still opening
+            # the script closes now: it has the least work to lose and is about to take more memory.
             m = self.manager
             vram = m is not None and m.vram_bound()
-            gpu_mem = m.gpu_mem if m is not None else {}
-            order = (lambda w: -gpu_mem.get(w.proc.pid, (0, 0))[1]) if vram else (lambda w: -w.spawned)
-            for w in sorted(live, key=lambda w: (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state],
-                                                 w.pinned, order(w)))[:extra]:
-                why = None if w.leave or m is None else (
-                    "VRAM limit" if vram else ("RAM limit" if m.ram_cap is not None else None))
+            limit = vram or (m is not None and m.ram_cap is not None)
+            for w in sorted(live, key=lambda w: (not w.leave, w.pinned, -w.spawned) if limit else
+                            (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned, -w.spawned))[:extra]:
+                why = None if w.leave or not limit else ("VRAM limit" if vram else "RAM limit")
                 w.why_leaving = w.closed_why = why
                 if w.state == "busy":
                     w.retire = True
-                elif w.state == "loading":
+                elif w.state == "loading" and not why:
                     w.handover = True
                 else:
                     self._quit(w, "not needed")
@@ -2094,6 +2093,16 @@ class RenderManager:
             if e.state in ("rendering", "paused", "finishing"):
                 e.note(text, level)
 
+    @staticmethod
+    def _close_first(running):
+        """Of (engine, worker) pairs, the one to close over a limit: the last one started, so a process still opening
+        the script or just started goes before one with work behind it. One you started by hand only when nothing else is left."""
+        return max(running, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
+
+    @staticmethod
+    def _chunk_back(w):
+        return ", its chunk goes back to the queue" if w.chunk is not None else ""
+
     def _ram_guard(self):
         """Fewer Nuke processes while RAM is nearly full, so Windows never starts swapping."""
         now = time.time()
@@ -2116,12 +2125,11 @@ class RenderManager:
                                    % (pct, limit, cap), "warn")
             self._ram_ok_since = None
             if pct >= min(98.0, limit + 6) and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
-                # Nearly out of memory: one process gives up its chunk now instead of after it.
-                busy = [(e, w) for e in self.engines for w in e.workers.values() if w.state == "busy"]
-                if busy:
-                    # the last one started, but one you started again by hand only when nothing else is left
-                    e, w = max(busy, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
-                    e.note("!! RAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
+                # Nearly out of memory: one process closes now instead of after its chunk.
+                running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
+                if running:
+                    e, w = self._close_first(running)
+                    e.note("!! RAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
                     w.closed_why = "RAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._last_kill = now
@@ -2155,11 +2163,11 @@ class RenderManager:
     def _vram_guard(self):
         """Fewer Nuke processes while the graphics card's memory is over the limit, like the RAM limit: every
         process uses the GPU, each with an equal share of the limit (limit / processes), and a share one leaves
-        unused is free for the others. At the limit one process fewer: the one taking the most VRAM finishes its
-        chunk and closes, and the next only once it is gone. Places come back when one more fits.
+        unused is free for the others. At the limit one process fewer: the last one started closes (after its chunk,
+        or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
-        About to spill into the RAM (97 %), the process taking the most closes at once."""
+        About to spill into the RAM (97 %), the last one started closes at once."""
         now = time.time()
         if now - self._vram_checked < 2:
             return
@@ -2225,12 +2233,13 @@ class RenderManager:
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
-                busy = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state == "busy"]
+                running = [(e, w) for e in self.engines for w in e.workers.values()
+                           if w.gpu and w.state in ("loading", "idle", "busy")]
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
-                if len(busy) > 1:
-                    e, w = max(busy, key=lambda ew: vram_of(ew[1]))
-                    e.note("!! VRAM %.0f %%: %s closed now, its chunk goes back to the queue" % (pct, w.name), "err")
+                if len(running) > 1:
+                    e, w = self._close_first(running)
+                    e.note("!! VRAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._last_vram_kill = now
@@ -4131,11 +4140,11 @@ class MainWindow(QtWidgets.QMainWindow):
         row(perf, "VRAM limit", [self.c_vram, self.s_vram],
             "Every Nuke process uses the GPU, each with an equal share of the graphics card's memory (the limit\n"
             "split by the number of processes); what one leaves unused, the others may take.\n"
-            "Over the limit, fewer processes, like the RAM limit: the one taking the most VRAM finishes its chunk\n"
-            "and closes, one at a time; places come back when one more fits.\n"
-            "About to spill into the RAM (97 %), the one taking the most closes at once.\n"
+            "Over the limit, fewer processes, like the RAM limit: the last one started closes first (after its chunk,\n"
+            "or now if it is still opening the script), one at a time; places come back when one more fits.\n"
+            "About to spill into the RAM (97 %), the last one started closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
-        note(perf, "Over the limit fewer processes, the one taking the most VRAM first.")
+        note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)

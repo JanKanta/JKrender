@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.61.1 alpha — 2026-11-02
+
+- Over the RAM or VRAM limit, the last process started closes first, whatever it is doing: one still opening the script closes at once, one rendering after its chunk. A process with more work behind it stays. Under the VRAM limit this replaces closing the one taking the most VRAM.
+- The same goes for the emergency close near full memory, which now also takes processes still opening the script.
+- One you started by hand still closes last. Places handed to another render go gently as before.
+
 ## 0.61 alpha — 2026-11-02
 
 - Render starts all its processes straight away. The Start at once setting and the wait to see how much VRAM one process takes are gone.
