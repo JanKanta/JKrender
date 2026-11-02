@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.60 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.60.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.60 alpha"
+APP_VERSION = "0.60.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2689,7 +2689,7 @@ class ScriptTest(QtWidgets.QDialog):
     # threads; (None, t): processes of t threads each fill it; 6 x 6 and 10 x 3 keep their share (6/32, 3/32).
     # 16x2 and 32x1 are not among them: on a heavy comp, with 1 GB of cache, not one frame in 6 minutes. They can be added.
     SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
-    FRAMES = 10  # per setup by default, and at least 2 per process, or a setup with many has them all on its first frame
+    FRAMES = 20  # per setup at the least (or the whole render), and at least 2 per process, or a setup with many has them all on its first frame
     BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 
     @classmethod
@@ -2762,8 +2762,8 @@ class ScriptTest(QtWidgets.QDialog):
             return lab
 
         edit = QtWidgets.QHBoxLayout()
-        self.s_frames = box(1, max(1, len(self.all_frames)), min(max(1, len(self.all_frames)),
-                                                                 int(window.settings.get("test_frames", self.FRAMES))))
+        total = max(1, len(self.all_frames))
+        self.s_frames = box(min(self.FRAMES, total), total, min(total, max(self.FRAMES, int(window.settings.get("test_frames", self.FRAMES)))))
         self.s_frames.setToolTip("Frames each setup renders; at least 2 per process, so a setup with many gets more.\n"
                                  "Few frames are quick but less exact: run the two best again with more to be sure.")
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))

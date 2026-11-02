@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.60.1 alpha — 2026-11-02
+
+- Test this script: at least 20 frames per setup (or the whole render, when it is shorter).
+
 ## 0.60 alpha — 2026-11-02
 
 Test this script:
