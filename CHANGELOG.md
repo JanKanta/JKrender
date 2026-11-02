@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.64 alpha — 2026-11-02
+
+- One frame per fresh Nuke is gone. It started by mistake on 1.nk, whose processes simply warm up from 1 GB to 2.3 GB of VRAM, and spent 3.3 s on a script load for each 0.7 s frame with the card at 39 %.
+- A process is no longer restarted for going over its share of the VRAM while the card has room. Only close to the VRAM limit does the process that grew the most get a fresh Nuke after its chunk.
+
 ## 0.63.2 alpha — 2026-11-02
 
 - Analyze script names the script and Write at the top, and its texts fit any script instead of naming measured ones. Every number has a short explanation.
