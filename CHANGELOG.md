@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.61 alpha — 2026-11-02
+
+- Render starts all its processes straight away. The Start at once setting and the wait to see how much VRAM one process takes are gone.
+- A process that fell comes back by itself as soon as it fits: the RAM left under the limit, split by what one process takes. Before a process has rendered a frame, that is its Nuke cache + 4 GB. It also has to fit in the VRAM.
+- The RAM and VRAM limits still close processes when they are reached.
+- An empty place in System says "not running: why" instead of "waiting".
+
 ## 0.60.5 alpha — 2026-11-02
 
 - Space plays and stops the preview. It no longer presses the button clicked last, which could stop a render.

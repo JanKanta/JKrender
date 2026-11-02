@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.60.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.61 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.60.5 alpha"
+APP_VERSION = "0.61 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -60,13 +60,14 @@ WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
 MOVIE_EXTS = {".mov", ".mp4", ".m4v", ".mxf", ".avi", ".mkv", ".webm", ".gif"}
 MAX_ATTEMPTS = 3  # a chunk is rendered up to 3 times (each retry on a fresh Nuke) before it counts as failed
 SPAWN_GAP = 0.3  # seconds between Nuke starts, so licence checkout and script loads do not all hit at once
+BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 NUKE_ENV_KEYS = ("NUKE_PATH", "PYTHONPATH", "OCIO")
 SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
-                    "vram_guard": True, "vram_limit": 95, "start_at_once": 6,
+                    "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True}
@@ -720,6 +721,7 @@ class RenderEngine:
         self.chunks = []
         self.workers = {}
         self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
+        self.filling = True  # all its processes still to start (see _may_spawn)
         self.preferred_wids = []  # names moved here with Work on, taken by the next processes started
         self.hand_wids = set()  # of those, the ones you started by hand: they go past the RAM and VRAM limits
         self.scope = None  # set of frames: only these render (Render this frame / batch); None = everything
@@ -846,6 +848,7 @@ class RenderEngine:
             return
         self.lean = False  # one frame per fresh Nuke, while VRAM keeps processes out (see _on_line, CHUNK)
         self._vram_grows = False  # this script's Nuke takes more VRAM with every frame
+        self.filling = True  # all its processes still to start (see _may_spawn)
         self.scope = None  # Render renders everything still to render
         if everything:
             self.rebuild_plan()
@@ -1316,6 +1319,10 @@ class RenderEngine:
         if m.free_slots() <= 0:
             return False
         if self.restart_ids or self.hand_wids:
+            return True
+        if self.filling:
+            # Render starts all its processes straight away; from then on one that fell comes back when it fits
+            self.filling = len(self._live()) + 1 < self.workers_target
             return True
         why = m.no_room(self)
         if why and time.time() - getattr(self, "_no_room_noted", 0) > 60:
@@ -1949,16 +1956,18 @@ class RenderManager:
         return psutil.virtual_memory().percent if psutil else 0.0
 
     def _more_fit(self, pct, limit):
-        """How many more Nuke processes fit under the limit, counting the RAM that processes still loading or on
-        their first frame are about to take (up to what their script took last time)."""
+        """How many more Nuke processes fit under the limit: the RAM left, split by what one process takes. It counts
+        the RAM that processes still loading or on their first frame are about to take (what their script took
+        last time, or else their cache and what a process takes besides it)."""
         if not psutil:
             return 0
         total = psutil.virtual_memory().total / 1024 ** 3
         growing = 0.0
         for e in self.engines:
             need = e.ram_need()
-            if need:
-                growing += sum(max(0.0, need - w.rss) for w in e.workers.values() if w.state != "gone") / total * 100
+            for w in e.workers.values():
+                if w.state != "gone":
+                    growing += max(0.0, (need or (0.0 if w.frame_secs else e.ram + BESIDE_CACHE)) - w.rss) / total * 100
         return max(0, int((limit - 2 - pct - growing) // max(0.5, self._process_ram_percent())))
 
     def _process_ram_percent(self):
@@ -1966,6 +1975,9 @@ class RenderManager:
         sizes = [w.rss for e in self.engines for w in e.workers.values() if w.state != "gone" and w.rss]
         # still-loading processes are small; what the script took last time is the better guess
         sizes += [e.ram_need() for e in self.engines if e.state == "rendering" and e.ram_need()]
+        # nothing rendered yet: its cache and what a process takes besides it
+        sizes += [e.ram + BESIDE_CACHE for e in self.engines if e.state == "rendering"
+                  and not any(w.frame_secs for w in e.workers.values())]
         total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 0
         if not sizes or not total:
             return 8.0
@@ -2041,8 +2053,8 @@ class RenderManager:
         return self.vram_idle / float(self.vram[2]) * 100
 
     def no_room(self, engine=None):
-        """Why one more Nuke process does not fit, or "". It has to fit in the RAM (counting what the ones still opening the script will take, from
-        what the script took last time) and in the graphics card's memory. Starting one that does not fit would
+        """Why a process that fell cannot come back yet, or "". It has to fit in the RAM (counting what the ones still
+        opening the script will take) and in the graphics card's memory. Starting one that does not fit would
         only push the PC over a limit, and a process would be closed again. The first one always starts."""
         if self.live_count() == 0:
             return ""
@@ -2052,14 +2064,6 @@ class RenderManager:
             if self._more_fit(pct, limit) < 1:
                 return "RAM %.0f %%, limit %.0f %%" % (pct, limit)
         gpu_guard = self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)
-        if gpu_guard and engine is not None:
-            # A script whose processes have not finished a first chunk yet: how much VRAM one takes is unknown
-            # (1.nk 2 GB, sh0070 5 GB growing to 14). Settings > Start at once start; the rest once one has finished
-            # a chunk, or one at a time on a card already half full.
-            mine = [w for w in engine.workers.values() if w.gpu and w.state != "gone"]
-            pct = float(self.vram[1]) / float(self.vram[2]) * 100
-            if mine and not any(w.vram_base for w in engine.workers.values()) and (pct >= 50 or len(mine) >= int(self.settings.get("start_at_once", 6))):
-                return "VRAM %.0f %%: waiting to see how much one process of this script takes%s" % (pct, self.vram_holder())
         one = self.vram_one(engine)
         if one and gpu_guard:
             total = float(self.vram[2])
@@ -2690,7 +2694,6 @@ class ScriptTest(QtWidgets.QDialog):
     # 10x3, 16x2 and 32x1 are not among them: on a heavy comp, with 1-2 GB of cache, not one frame in 6 minutes. They can be added.
     SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0))
     FRAMES = 20  # per setup by default (Frames per setup), and at least 2 per process, or a setup with many has them all on its first frame
-    BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 
     @classmethod
     def plan(cls, cpu, free_gb):
@@ -2704,7 +2707,7 @@ class ScriptTest(QtWidgets.QDialog):
             else:
                 procs, threads = n, max(1, round(cpu * t) if t else cpu // n)
             if procs <= cpu and (procs, threads) not in [x[:2] for x in setups]:
-                setups.append((procs, threads, max(1, int(free_gb / procs - cls.BESIDE_CACHE))))
+                setups.append((procs, threads, max(1, int(free_gb / procs - BESIDE_CACHE))))
         return sorted(setups)
 
     def _free_gb(self):
@@ -4152,14 +4155,6 @@ class MainWindow(QtWidgets.QMainWindow):
         row(procs, "Processes", [self.s_workers])
         row(procs, "Threads", [self.s_threads])
         row(procs, "Nuke cache", [self.s_ram])
-        self.s_start = QtWidgets.QSpinBox()
-        self.s_start.setRange(1, 64)
-        self.s_start.setValue(int(self.settings.get("start_at_once", 6)))
-        self.s_start.valueChanged.connect(lambda v: self._save_setting("start_at_once", v))
-        row(procs, "Start at once", [self.s_start],
-            "GPU processes a render starts right away, before it has seen how much VRAM one takes.\n"
-            "The others start once one has finished its first chunk. A script that takes a lot of VRAM\n"
-            "may fill the card with too many at once. Processes above still is the most that run.")
         self.b_test = QtWidgets.QPushButton("Test this script…")
         self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Nuke cache setups\n"
                                "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
@@ -4274,7 +4269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
-                           (self.s_vram, 95), (self.s_start, 6)):
+                           (self.s_vram, 95)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
@@ -5135,7 +5130,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return "not running"
         why = m.no_room()
         if why:
-            return "waiting: %s" % why.replace("; ", " · ")
+            return "not running: %s" % why.replace("; ", " · ")
         if not any(e.state == "rendering" and queued_left_for(e) for e in m.engines):
             return "not needed (no chunks left)"
         return "starting"
