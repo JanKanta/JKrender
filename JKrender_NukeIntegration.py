@@ -393,7 +393,7 @@ def open_renders_folder():
 
 
 # ----------------------------------------------------------------------------
-# JKrender -> Nuke: "Create Read in Nuke"
+# JKrender -> Nuke: Render clears the cache of open Nukes
 # ----------------------------------------------------------------------------
 _listener = None
 
@@ -403,32 +403,6 @@ def _norm(path):
         return os.path.normcase(os.path.normpath(os.path.abspath(path or "")))
     except Exception:
         return path or ""
-
-
-def _create_read(msg):
-    same_script = _norm(nuke.root().name()) == _norm(msg.get("script", ""))
-    if not msg.get("force") and not same_script:
-        return "SKIP"
-    file_path = msg.get("file") or ""
-    if not file_path:
-        return "ERROR: no output path"
-    write = nuke.toNode(msg.get("write") or "") if same_script else None
-    nuke.Undo.begin("JKrender: Create Read")
-    try:
-        for n in nuke.selectedNodes():
-            n.setSelected(False)
-        read = nuke.nodes.Read()
-        read["file"].fromUserText("%s %d-%d" % (file_path, int(msg["first"]), int(msg["last"])))
-        try:
-            read["label"].setValue("JKrender")
-        except Exception:
-            pass
-        if write is not None:
-            read.setXYpos(write.xpos() + 150, write.ypos())
-        read.setSelected(True)
-    finally:
-        nuke.Undo.end()
-    return "OK %s" % read.name()
 
 
 def _clear_cache():
@@ -455,9 +429,7 @@ def _serve(server):
                 if len(data) > 1000000:
                     raise ValueError("message too large")
             msg = json.loads(data.decode("utf-8"))
-            if msg.get("command") == "create_read":
-                reply = nuke.executeInMainThreadWithResult(_create_read, (msg,))
-            elif msg.get("command") == "clear_cache":
+            if msg.get("command") == "clear_cache":
                 nuke.executeInMainThread(_clear_cache)
                 reply = "OK"
             else:

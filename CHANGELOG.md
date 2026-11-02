@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.64.1 alpha — 2026-11-02
+
+From a review of the scheduler and the unused code:
+
+- A new run starts with its crash count at zero. After Nuke keeps crashing stopped a render, its next run stopped at its first crash.
+- A process is recycled for RAM only above its cache plus 8 GB and 1.5 x its first chunk. Before, a normal process (cache + 4 GB) could pass the 1.3 x cache mark after a small first chunk.
+- System shows CPU used in threads, like everywhere else.
+- Removed what nothing used: the hidden Render all and Pause all, Create Read in Nuke, a log filter value.
+
 ## 0.64 alpha — 2026-11-02
 
 - One frame per fresh Nuke is gone. It started by mistake on 1.nk, whose processes simply warm up from 1 GB to 2.3 GB of VRAM, and spent 3.3 s on a script load for each 0.7 s frame with the card at 39 %.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.64.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64 alpha"
+APP_VERSION = "0.64.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -348,7 +348,7 @@ def _exr_complete(f, size):
         n = struct.unpack("<i", data[tend + 1:tend + 5])[0]
         attrs[name] = data[tend + 5:tend + 5 + n]
         pos = tend + 5 + n
-    xmin, ymin, xmax, ymax = struct.unpack("<4i", attrs[b"dataWindow"])
+    _, ymin, _, ymax = struct.unpack("<4i", attrs[b"dataWindow"])
     lines = EXR_LINES_PER_BLOCK.get(attrs[b"compression"][0])
     if lines is None:
         return None
@@ -864,6 +864,8 @@ class RenderEngine:
         if self.state in ("rendering", "starting", "finishing"):
             return
         self.filling = True  # all its processes still to start (see _may_spawn)
+        self.crashes = self.load_failures = 0  # a new run: the last one's crashes must not stop it at its first
+        self.ever_ready = False
         self.scope = None  # Render renders everything still to render
         if everything:
             self.rebuild_plan()
@@ -1499,8 +1501,9 @@ class RenderEngine:
             if vram_now and w.vram_base is None:
                 w.vram_base = vram_now
                 self._vram_seen = max(getattr(self, "_vram_seen", 0.0), vram_now)
-            if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
-                self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
+            # A process normally takes its cache and BESIDE_CACHE more, and the first chunk can be well under that.
+            if w.rss > max(w.ram + 2 * BESIDE_CACHE, w.rss_base * 1.5):
+                self._quit(w, "recycled:%.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
             elif getattr(w, "recycle_vram", False):
                 # Picked only with the card close to the limit (_recycle_grown). Some scripts make Nuke keep VRAM it no
                 # longer needs, frame after frame; with room on the card that costs nothing, and a restart costs a script load.
@@ -2263,14 +2266,6 @@ class RenderManager:
             self.waiting.remove(e)
             e.state = e.resume_state
             e.note("No longer waiting to render")
-
-    def pause_all(self):
-        for e in self.engines:
-            e.pause()
-
-    def resume_all(self):
-        for e in self.engines:
-            e.resume()
 
     def paused_between(self, a, b):
         spans = list(self.pauses) + ([(self.paused_at, time.time())] if self.paused_at else [])
@@ -3807,7 +3802,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exit_when_done = exit_when_done
         self.cards = {}
         self._last_states = {}
-        self._log_filter = "All"
         self._preview_frame = None
         self._gpu = None
         self._gpu_procs = {}  # pid -> (GPU %, VRAM bytes)
@@ -4058,13 +4052,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_pause.clicked.connect(self._pause)
         self.b_stop.clicked.connect(self._stop)
         self.b_start.setToolTip("Shift+click render cards to pick several: Render, Pause and Stop act on all of them")
-        self.b_render_all = QtWidgets.QPushButton("Render all")  # kept for scripts, not shown
-        self.b_render_all.setToolTip("Render every render in the window that still has frames to render.\n"
-                                     "Settings > Max renders at once decides how many run side by side.")
-        self.b_render_all.clicked.connect(self._render_all)
-        self.b_pause_all = QtWidgets.QPushButton("Pause all")
-        self.b_pause_all.setToolTip("Pause or resume every render in the window")
-        self.b_pause_all.clicked.connect(self._pause_all)
         for b in (self.b_start, self.b_pause, self.b_stop):
             ctl.addWidget(b)
         ctl.addSpacing(14)
@@ -4969,25 +4956,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_controls()
         self._refresh_cards()
 
-    def _startable(self):
-        return [x for x in self.manager.engines
-                if x.state in ("ready", "stopped", "failed") and not x.nothing_to_render()]
-
-    def _render_all(self):
-        for x in self._startable():
-            self.manager.request_start(x)
-        self.frames_model.refilter()
-        self._sync_controls()
-        self._refresh_cards()
-
-    def _pause_all(self):
-        if any(e.state == "rendering" for e in self.manager.engines):
-            self.manager.pause_all()
-        else:
-            self.manager.resume_all()
-        self._sync_controls()
-        self._refresh_cards()
-
     def _workers_changed(self, v):
         self.manager.set_budget(total=v)
         self._save_setting("processes", v)
@@ -5269,7 +5237,7 @@ class MainWindow(QtWidgets.QMainWindow):
             gpu = gpus.get(w.proc.pid)
             values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), x.worker_state(w),
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
-                      "" if gone else "%.1f of %d cores" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
+                      "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
                       "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
