@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.62 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.63 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.62 alpha"
+APP_VERSION = "0.63 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -66,7 +66,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -1918,6 +1918,7 @@ class RenderManager:
         self._vram_others_noted = 0.0
         self.vram_idle = None  # MB of VRAM in use while none of our Nuke processes ran
         self._vram_lowered_at = None  # VRAM % when the VRAM limit last took a process away
+        self._running = set()  # renders running at the last tick, to see one end (see _start_next)
         self.started_by_hand = 0.0  # until then the RAM and VRAM limits leave a process started by hand alone
         self._vram_ok_since = None
         self.vram = None  # [GPU %, VRAM used MB, VRAM total MB] from the window's GPU monitor
@@ -2348,6 +2349,7 @@ class RenderManager:
         self._vram_idle_update()
         self._ram_guard()
         self._vram_guard()
+        changed = self._start_next() or changed
         self._admit()
         self._allocate()
         all_paused = any(e.state == "paused" for e in self.engines) and not any(
@@ -2358,6 +2360,23 @@ class RenderManager:
             self.pauses.append((self.paused_at, time.time()))
             self.paused_at = None
         return changed
+
+    def _start_next(self):
+        """Settings > Start next render when one ends: for each render that finished just now, the next one on the cards
+        that has not been started. One you stopped stays stopped and does not start another."""
+        running = {e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")}
+        ended = [e for e in self._running if e not in running and e.state in ("done", "failed")]
+        self._running = running
+        if not ended or not self.settings.get("auto_next", False):
+            return False
+        ready = sorted((e for e in self.engines if e.state == "ready" and not e.nothing_to_render()), key=lambda e: e.number)
+        if ready:
+            clear_open_nukes()
+        for e in ready[:len(ended)]:
+            e.note("Started by itself: the render before it finished", "ok")
+            self.request_start(e)
+            self._running.add(e)
+        return bool(ready)
 
     def _admit(self):
         busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail()]
@@ -2702,6 +2721,117 @@ class Gantt(QtWidgets.QWidget):
         QtWidgets.QToolTip.hideText()
 
 
+class ScriptAnalysis(QtWidgets.QDialog):
+    """Settings > Analyze script: a Nuke opens the script in this render's environment, reports what feeds the Write and
+    closes. No render. It recommends processes, threads and Nuke cache to start from; Test this script measures them."""
+
+    def __init__(self, window, engine):
+        super().__init__(window)
+        self.window, self.src = window, engine
+        self.setWindowTitle("Analyze script: %s" % engine.name)
+        self.resize(900, 360)
+        lay = QtWidgets.QVBoxLayout(self)
+        self.report = QtWidgets.QPlainTextEdit()
+        self.report.setReadOnly(True)
+        self.report.setPlainText("Opening the script in Nuke…")
+        lay.addWidget(self.report, 1)
+        buttons = QtWidgets.QHBoxLayout()
+        self.b_use = QtWidgets.QPushButton("Use these settings")
+        self.b_use.setEnabled(False)
+        self.b_use.clicked.connect(self.use)
+        buttons.addWidget(self.b_use)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
+        self._analysis = self._analysis_proc = None
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._analysis_tick)
+        threading.Thread(target=self._analysis_run, daemon=True).start()
+        self.timer.start(200)
+
+    def _analysis_run(self):
+        e = self.src
+        env = nuke_render_env(e.job.get("env"))
+        env["JKRENDER_ARGS"] = json.dumps(e._worker_args())
+        env["JKRENDER_ANALYZE"] = "1"
+        kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                      errors="replace", env=env)
+        kwargs.update(hidden())
+        script_dir = Path(e.job.get("script") or "").parent
+        if script_dir.is_dir():
+            kwargs["cwd"] = str(script_dir)
+        try:
+            self._analysis_proc = subprocess.Popen([e.job.get("nuke_exe") or "Nuke", "-i", "-m", "2", "-c", "2G", "-t", str(WORKER_SCRIPT)],
+                                                   **kwargs)
+            out = self._analysis_proc.communicate(timeout=300)[0]
+        except Exception as exc:
+            self._analysis = "Could not analyze the script: %s" % exc
+            return
+        found = re.search(r"JKR INFO (\{.*\})", out)
+        self._analysis = dict(json.loads(found.group(1)), format=e.job.get("format", "")) if found \
+            else "Nuke did not report on the script:\n" + out[-600:]
+
+    def _analysis_tick(self):
+        result = self._analysis
+        if result is None:
+            return
+        self.timer.stop()
+        if isinstance(result, str):
+            self.report.setPlainText(result)
+            return
+        # what renders running now take is theirs to give back: the recommendation is for this script alone
+        free = ScriptTest._free_gb(self) + sum(w.rss for e in self.window.manager.engines for w in e.workers.values() if w.state != "gone")
+        n, t, c, why = self.advise(result, os.cpu_count() or 8, free)
+        self.report.setPlainText(self._report_text(result, n, t, c, why))
+        self.best = (n, t, c)
+        m = self.window.manager
+        self.b_use.setEnabled((n, t, c) != (m.total, m.threads, m.ram) and self.window.s_workers.isEnabled())
+
+    def use(self):
+        n, t, c = self.best
+        self.window.s_workers.setValue(n)
+        self.window.s_threads.setValue(t)
+        self.window.s_ram.setValue(c)
+        self.b_use.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.timer.stop()
+        if self._analysis_proc is not None and self._analysis_proc.poll() is None:
+            self._analysis_proc.kill()
+        super().closeEvent(event)
+
+    @staticmethod
+    def advise(info, cpu, free_gb):
+        """Processes, threads, Nuke cache and why: what the scripts measured so far did best, for Start to confirm."""
+        if info["above"] < 60:
+            n, floor = 8, 4
+            why = "A light script: many small processes render it fastest (1.nk: 8 x 4 ahead of 4 x 8)."
+        else:
+            n, floor = 4, 8
+            why = "A heavy script: a heavy comp was best with 4-6 processes and collapsed with under 7-8 GB of cache per process, " \
+                  "so as many processes as keep 8 GB of cache."
+        n = max(1, min(n, cpu // 4))
+        while n > 1 and free_gb / n - BESIDE_CACHE < floor:
+            n -= 1
+        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), why
+
+    @staticmethod
+    def _report_text(info, n, t, c, why):
+        names = lambda d: ", ".join("%s %d" % kv for kv in sorted(d.items(), key=lambda kv: -kv[1])) or "none"
+        return "\n".join([
+            "%d nodes in the script, %d feed this Write. Format %s." % (info["all"], info["above"], info.get("format") or "unknown"),
+            "Reads: %d, the largest %.1f MP. Blurs of 100 px and more: %d." % (info["reads"], info["largest_read"] / 1e6, info["big_blurs"]),
+            "On the GPU: %s" % names(info["gpu"]),
+            "Nodes that look at other frames: %s" % names(info["temporal"]),
+            "Most used: %s" % ", ".join("%s %d" % tuple(kv) for kv in info["top"]),
+            "",
+            "Recommended to start from: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c),
+            why,
+            "A guess from the number of nodes and a few measured scripts. Nodes do not show everything (sh0070 looks heavy "
+            "like this, yet was fastest with 1 process), so Start measures it on this one."]
+            + (["VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there VRAM kept "
+                "growing. Suspects, not proven: test 1 x all threads too."] if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]) else []))
+
+
 class ScriptTest(QtWidgets.QDialog):
     """Settings > Test this script: frames from the middle of the render, rendered with each Processes x Threads x
     Nuke cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
@@ -2777,11 +2907,6 @@ class ScriptTest(QtWidgets.QDialog):
         self.verdict = QtWidgets.QLabel("")
         self.verdict.setWordWrap(True)
         lay.addWidget(self.verdict)
-        self.report = QtWidgets.QPlainTextEdit()  # Analyze script
-        self.report.setReadOnly(True)
-        self.report.setMaximumHeight(190)
-        self.report.hide()
-        lay.addWidget(self.report)
         ram = max(1, int(psutil.virtual_memory().total / 1024 ** 3)) if psutil else 256
 
         def box(lo, hi, value, suffix=""):
@@ -2823,17 +2948,10 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_use = QtWidgets.QPushButton("Use these settings")
         self.b_use.setEnabled(False)
         self.b_stop.setEnabled(False)
-        self.b_analyze = QtWidgets.QPushButton("Analyze script")
-        self.b_analyze.setToolTip("Opens the script without rendering, goes through the nodes that feed this Write and recommends\n"
-                                  "processes, threads and Nuke cache to start from. Start then measures them.")
-        self.b_analyze.clicked.connect(self.analyze)
-        for b in (self.b_start, self.b_stop, self.b_use, self.b_analyze):
+        for b in (self.b_start, self.b_stop, self.b_use):
             buttons.addWidget(b)
         buttons.addStretch(1)
         lay.addLayout(buttons)
-        self._analysis = self._analysis_proc = None
-        self.analysis_timer = QtCore.QTimer(self)
-        self.analysis_timer.timeout.connect(self._analysis_tick)
         self.b_start.clicked.connect(self.start)
         self.b_stop.clicked.connect(self.stop)
         self.b_use.clicked.connect(self.use)
@@ -2878,88 +2996,9 @@ class ScriptTest(QtWidgets.QDialog):
         self._fill_table()
 
     def _idle(self, on):
-        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c, self.b_analyze):
+        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
-
-    def analyze(self):
-        """A Nuke opens the script in this render's environment, reports what feeds the Write and closes. No render."""
-        self.b_analyze.setEnabled(False)
-        self.b_start.setEnabled(False)
-        self.report.show()
-        self.report.setPlainText("Opening the script in Nuke…")
-        self._analysis = None
-        threading.Thread(target=self._analysis_run, daemon=True).start()
-        self.analysis_timer.start(200)
-
-    def _analysis_run(self):
-        e = self.src
-        env = nuke_render_env(e.job.get("env"))
-        env["JKRENDER_ARGS"] = json.dumps(e._worker_args())
-        env["JKRENDER_ANALYZE"] = "1"
-        kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                      errors="replace", env=env)
-        kwargs.update(hidden())
-        script_dir = Path(e.job.get("script") or "").parent
-        if script_dir.is_dir():
-            kwargs["cwd"] = str(script_dir)
-        try:
-            self._analysis_proc = subprocess.Popen([e.job.get("nuke_exe") or "Nuke", "-i", "-m", "2", "-c", "2G", "-t", str(WORKER_SCRIPT)],
-                                                   **kwargs)
-            out = self._analysis_proc.communicate(timeout=300)[0]
-        except Exception as exc:
-            self._analysis = "Could not analyze the script: %s" % exc
-            return
-        found = re.search(r"JKR INFO (\{.*\})", out)
-        self._analysis = dict(json.loads(found.group(1)), format=e.job.get("format", "")) if found \
-            else "Nuke did not report on the script:\n" + out[-600:]
-
-    def _analysis_tick(self):
-        result = self._analysis
-        if result is None:
-            return
-        self.analysis_timer.stop()
-        self.b_analyze.setEnabled(True)
-        self.b_start.setEnabled(True)
-        if isinstance(result, str):
-            self.report.setPlainText(result)
-            return
-        n, t, c, why = self.advise(result, os.cpu_count() or 8, self._free_gb())
-        self.report.setPlainText(self._report_text(result, n, t, c, why))
-        self.best = (n, t, c)
-        self.b_use.setEnabled((n, t, c) != self.current)
-
-    @staticmethod
-    def advise(info, cpu, free_gb):
-        """Processes, threads, Nuke cache and why: what the scripts measured so far did best, for Start to confirm."""
-        if info["above"] < 60:
-            n, floor = 8, 4
-            why = "A light script: many small processes render it fastest (1.nk: 8 x 4 ahead of 4 x 8)."
-        else:
-            n, floor = 4, 8
-            why = "A heavy script: a heavy comp was best with 4-6 processes and collapsed with under 7-8 GB of cache per process, " \
-                  "so as many processes as keep 8 GB of cache."
-        n = max(1, min(n, cpu // 4))
-        while n > 1 and free_gb / n - BESIDE_CACHE < floor:
-            n -= 1
-        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), why
-
-    @staticmethod
-    def _report_text(info, n, t, c, why):
-        names = lambda d: ", ".join("%s %d" % kv for kv in sorted(d.items(), key=lambda kv: -kv[1])) or "none"
-        return "\n".join([
-            "%d nodes in the script, %d feed this Write. Format %s." % (info["all"], info["above"], info.get("format") or "unknown"),
-            "Reads: %d, the largest %.1f MP. Blurs of 100 px and more: %d." % (info["reads"], info["largest_read"] / 1e6, info["big_blurs"]),
-            "On the GPU: %s" % names(info["gpu"]),
-            "Nodes that look at other frames: %s" % names(info["temporal"]),
-            "Most used: %s" % ", ".join("%s %d" % tuple(kv) for kv in info["top"]),
-            "",
-            "Recommended to start from: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c),
-            why,
-            "A guess from the number of nodes and a few measured scripts. Nodes do not show everything (sh0070 looks heavy "
-            "like this, yet was fastest with 1 process), so Start measures it on this one."]
-            + (["VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there VRAM kept "
-                "growing. Suspects, not proven: test 1 x all threads too."] if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]) else []))
 
     def _frames_for(self, processes):
         """Frames from the middle of the render, the same for every setup but for those that need more."""
@@ -3177,9 +3216,6 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
-        self.analysis_timer.stop()
-        if self._analysis_proc is not None and self._analysis_proc.poll() is None:
-            self._analysis_proc.kill()
         self.stop()
         super().closeEvent(event)
 
@@ -4180,6 +4216,10 @@ class MainWindow(QtWidgets.QMainWindow):
         gen = card("General")
         self.c_auto = toggle("auto_start", False)
         row(gen, "Start render on open", [self.c_auto], "Render as soon as the window opens, without clicking Render")
+        self.c_next = toggle("auto_next", False)
+        row(gen, "Start next render when one ends", [self.c_next],
+            "When a render finishes, the next render still waiting to be started starts by itself, in the order of the\n"
+            "cards, and so on. A render you stopped stays stopped and does not start the next one.")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -4280,6 +4320,11 @@ class MainWindow(QtWidgets.QMainWindow):
                                "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
         self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
         row(procs, "Test", [self.b_test])
+        self.b_analyze = QtWidgets.QPushButton("Analyze script…")
+        self.b_analyze.setToolTip("Opens the selected render's script without rendering, goes through the nodes that feed its Write\n"
+                                  "and recommends Processes, Threads and Nuke cache to start from. Test this script measures them.")
+        self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
+        row(procs, "Analyze", [self.b_analyze])
         self.l_ram_need = note(procs, QtWidgets.QLabel(""))
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")
@@ -4391,7 +4436,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)

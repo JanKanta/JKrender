@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.63 alpha — 2026-11-02
+
+- Settings > General has Start next render when one ends (off by default): when a render finishes, the next one on the cards that has not been started starts by itself, one after another. Failed renders also pass on to the next. A render you stopped stays stopped and does not start another.
+- Analyze script moved from the test window to Settings, right under Test this script, and opens its own window.
+
 ## 0.62 alpha — 2026-11-02
 
 - Test this script has an Analyze script button: a Nuke opens the script without rendering, goes through the nodes that really feed this Write (disabled branches left out), and reports their number, Reads, big Blurs, nodes on the GPU, nodes that look at other frames and the most used ones. It recommends processes, threads and Nuke cache to start from; Use these settings takes them. It is a guess from a few measured scripts, and Start measures it.
