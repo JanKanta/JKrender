@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.64.5 alpha — 2026-11-02
+
+- One more project detail out of this changelog.
+
 ## 0.64.4 alpha — 2026-11-02
 
 - Names of projects and studio tools are out of the code comments, the README and this changelog. The README picture no longer shows a file path.
@@ -609,7 +613,7 @@ Experiment, to be kept or undone (0.26 has the old layout).
 
 ## 0.8 alpha — 2026-10-30
 
-- Fixed: with a heavy script, a new Nuke process started after every chunk (29 processes for 46 frames on a 10 MP comp).
+- Fixed: with a heavy script, a new Nuke process started after every chunk (29 processes for 46 frames on a heavy comp).
   - A process was closed after any chunk that left it over 1.3 x the RAM setting, so a script that simply needs more RAM was reloaded every time.
   - Now a process is recycled only when its RAM grows to 1.5 x what it used after its first chunk (a leak). The Log says once when the RAM setting is lower than what the script needs.
 - RAM guard: a process comes back only when one more fits under the limit (measured by the largest running process). Before, RAM 8 % under the limit was enough, so one process was closed and another started, round and round.

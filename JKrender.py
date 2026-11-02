@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.64.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64.4 alpha"
+APP_VERSION = "0.64.5 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
