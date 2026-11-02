@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.63 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.63.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.63 alpha"
+APP_VERSION = "0.63.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2729,19 +2729,27 @@ class ScriptAnalysis(QtWidgets.QDialog):
         super().__init__(window)
         self.window, self.src = window, engine
         self.setWindowTitle("Analyze script: %s" % engine.name)
-        self.resize(900, 360)
-        lay = QtWidgets.QVBoxLayout(self)
-        self.report = QtWidgets.QPlainTextEdit()
-        self.report.setReadOnly(True)
-        self.report.setPlainText("Opening the script in Nuke…")
-        lay.addWidget(self.report, 1)
-        buttons = QtWidgets.QHBoxLayout()
+        self.resize(1060, 540)
+        self.lay = QtWidgets.QVBoxLayout(self)
+        self.lay.setSpacing(10)
+        self.waiting = QtWidgets.QWidget()
+        wait = QtWidgets.QVBoxLayout(self.waiting)
+        wait.addStretch(1)
+        text = QtWidgets.QLabel("Opening the script in Nuke. Nothing renders.")
+        text.setObjectName("dim")
+        text.setAlignment(QtCore.Qt.AlignCenter)
+        wait.addWidget(text)
+        busy = QtWidgets.QProgressBar()
+        busy.setRange(0, 0)
+        busy.setTextVisible(False)
+        busy.setMaximumHeight(6)
+        wait.addWidget(busy)
+        wait.addStretch(1)
+        self.lay.addWidget(self.waiting, 1)
         self.b_use = QtWidgets.QPushButton("Use these settings")
+        self.b_use.setObjectName("primary")
         self.b_use.setEnabled(False)
         self.b_use.clicked.connect(self.use)
-        buttons.addWidget(self.b_use)
-        buttons.addStretch(1)
-        lay.addLayout(buttons)
         self._analysis = self._analysis_proc = None
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._analysis_tick)
@@ -2775,16 +2783,19 @@ class ScriptAnalysis(QtWidgets.QDialog):
         if result is None:
             return
         self.timer.stop()
+        self.waiting.hide()
         if isinstance(result, str):
-            self.report.setPlainText(result)
+            log = QtWidgets.QPlainTextEdit(result)
+            log.setReadOnly(True)
+            self.lay.addWidget(log, 1)
             return
         # what renders running now take is theirs to give back: the recommendation is for this script alone
         free = ScriptTest._free_gb(self) + sum(w.rss for e in self.window.manager.engines for w in e.workers.values() if w.state != "gone")
         n, t, c, why = self.advise(result, os.cpu_count() or 8, free)
-        self.report.setPlainText(self._report_text(result, n, t, c, why))
         self.best = (n, t, c)
         m = self.window.manager
         self.b_use.setEnabled((n, t, c) != (m.total, m.threads, m.ram) and self.window.s_workers.isEnabled())
+        self._show_result(result, why)
 
     def use(self):
         n, t, c = self.best
@@ -2814,22 +2825,84 @@ class ScriptAnalysis(QtWidgets.QDialog):
             n -= 1
         return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), why
 
+    def _card(self, title, hint=""):
+        frame = QtWidgets.QFrame()
+        frame.setObjectName("card")
+        frame.setStyleSheet("#card { background: %s; border: 1px solid %s; border-radius: 6px; }" % (C["panel"], C["line"]))
+        box = QtWidgets.QVBoxLayout(frame)
+        box.setContentsMargins(14, 10, 14, 12)
+        box.setSpacing(6)
+        head = QtWidgets.QLabel(title)
+        head.setStyleSheet("color: %s; font-weight: 600; font-size: 10pt;" % C["accent"])
+        box.addWidget(head)
+        if hint:
+            box.addWidget(self._text(hint, dim=True))
+        return frame, box
+
     @staticmethod
-    def _report_text(info, n, t, c, why):
-        names = lambda d: ", ".join("%s %d" % kv for kv in sorted(d.items(), key=lambda kv: -kv[1])) or "none"
-        return "\n".join([
-            "%d nodes in the script, %d feed this Write. Format %s." % (info["all"], info["above"], info.get("format") or "unknown"),
-            "Reads: %d, the largest %.1f MP. Blurs of 100 px and more: %d." % (info["reads"], info["largest_read"] / 1e6, info["big_blurs"]),
-            "On the GPU: %s" % names(info["gpu"]),
-            "Nodes that look at other frames: %s" % names(info["temporal"]),
-            "Most used: %s" % ", ".join("%s %d" % tuple(kv) for kv in info["top"]),
-            "",
-            "Recommended to start from: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c),
-            why,
-            "A guess from the number of nodes and a few measured scripts. Nodes do not show everything (sh0070 looks heavy "
-            "like this, yet was fastest with 1 process), so Start measures it on this one."]
-            + (["VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there VRAM kept "
-                "growing. Suspects, not proven: test 1 x all threads too."] if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]) else []))
+    def _text(text, dim=False):
+        label = QtWidgets.QLabel(text)
+        label.setWordWrap(True)
+        if dim:
+            label.setObjectName("dim")
+        return label
+
+    def _node_list(self, title, hint, counts):
+        """A card with one line per kind of node, the most first."""
+        frame, box = self._card(title, hint)
+        grid = QtWidgets.QGridLayout()
+        grid.setColumnStretch(0, 1)
+        grid.setVerticalSpacing(3)
+        for i, (name, count) in enumerate(sorted(counts, key=lambda kv: -kv[1])):
+            # the class without its version: Merge2 is the Merge you know
+            grid.addWidget(QtWidgets.QLabel(re.sub(r"\d+$", "", name)), i, 0)
+            number = QtWidgets.QLabel(str(count))
+            number.setAlignment(QtCore.Qt.AlignRight)
+            grid.addWidget(number, i, 1)
+        if not counts:
+            grid.addWidget(self._text("None", dim=True), 0, 0)
+        box.addLayout(grid)
+        box.addStretch(1)
+        return frame
+
+    def _show_result(self, info, why):
+        """First what to set and why, then what the script is made of."""
+        n, t, c = self.best
+        m = self.window.manager
+        frame, box = self._card("Recommended to start from")
+        row = QtWidgets.QHBoxLayout()
+        for title, value, now in (("Processes", str(n), str(m.total)), ("Threads", str(t), str(m.threads)),
+                                  ("Nuke cache", "%d GB" % c, "%d GB" % m.ram)):
+            tile = Tile(title)
+            tile.set(value, "now %s" % now)
+            tile.value.setStyleSheet("color: %s; font-size: 20pt; font-weight: 600;" % C["accent"])
+            row.addWidget(tile)
+        row.addWidget(self.b_use, 0, QtCore.Qt.AlignVCenter)
+        box.addLayout(row)
+        box.addWidget(self._text(why))
+        box.addWidget(self._text("A guess from the number of nodes and a few measured scripts. Nodes do not show everything: sh0070 "
+                                 "looks heavy like this too, yet was fastest with 1 process. Test this script measures it.", dim=True))
+        self.lay.addWidget(frame)
+        if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]):
+            warn = self._text("VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there "
+                              "VRAM kept growing. Suspects, not proven: test 1 x all threads too.")
+            warn.setStyleSheet("color: %s;" % C["small"])
+            self.lay.addWidget(warn)
+        tiles = QtWidgets.QHBoxLayout()
+        for title, value, sub in (("Nodes doing the work", str(info["above"]), "of %d in the script" % info["all"]),
+                                  ("Format", info.get("format") or "unknown", ""),
+                                  ("Reads", str(info["reads"]), "largest %.1f MP" % (info["largest_read"] / 1e6)),
+                                  ("Blurs of 100 px or more", str(info["big_blurs"]), "")):
+            tile = Tile(title)
+            tile.set(value, sub)
+            tiles.addWidget(tile, 1)
+        self.lay.addLayout(tiles)
+        lists = QtWidgets.QHBoxLayout()
+        lists.addWidget(self._node_list("On the GPU", "Take VRAM, and every process shares one card.", list(info["gpu"].items())), 1)
+        lists.addWidget(self._node_list("Look at other frames", "Read neighbouring frames too: more RAM and reading.",
+                                        list(info["temporal"].items())), 1)
+        lists.addWidget(self._node_list("Most used", "The script's biggest groups of nodes.", [tuple(kv) for kv in info["top"]]), 1)
+        self.lay.addLayout(lists, 1)
 
 
 class ScriptTest(QtWidgets.QDialog):

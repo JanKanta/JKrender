@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.63.1 alpha — 2026-11-02
+
+- The Analyze script window is laid out to read: the recommended Processes, Threads and Nuke cache big at the top, next to your current ones, with the reason and Use these settings. Below it tiles for nodes, format, Reads and big Blurs, then lists of nodes on the GPU, nodes that look at other frames and the most used ones.
+
 ## 0.63 alpha — 2026-11-02
 
 - Settings > General has Start next render when one ends (off by default): when a render finishes, the next one on the cards that has not been started starts by itself, one after another. Failed renders also pass on to the next. A render you stopped stays stopped and does not start another.
