@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.64.3 alpha.** It works in tests; expect rough edges.
+**Version 0.64.4 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -39,7 +39,7 @@ on disk.
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
-  graphics card. 1.nk rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
+  graphics card. A light 4K script with Kronos rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
   (on, 95 %) keeps the card from filling: close to the limit, the process that grew the most gets a fresh Nuke after its chunk;
   at the limit fewer processes run. With room on the card nothing restarts.
 - **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, so Windows never swaps.

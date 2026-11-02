@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.64.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64.3 alpha"
+APP_VERSION = "0.64.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2240,7 +2240,7 @@ class RenderManager:
 
     def _recycle_grown(self, vram_of):
         """The GPU process that grew the most past what it took after its first chunk is replaced by a fresh Nuke
-        after its chunk. Nuke keeps VRAM it no longer needs (sh0070: 5 GB after the first chunk, 14 GB later), so
+        after its chunk. Nuke keeps VRAM it no longer needs (one script: 5 GB after the first chunk, 14 GB later), so
         at the limit the card is full of that, not of too many processes. True when one was picked."""
         grown = [(vram_of(w) - w.vram_base, e, w) for e in self.engines for w in e.workers.values()
                  if w.gpu and w.state == "busy" and w.vram_base and not (w.retire or w.handover or w.leave)
@@ -2883,7 +2883,7 @@ class ScriptTest(QtWidgets.QDialog):
     LIMIT = 360  # seconds a setup may take; a slow one is measured on the frames it got done
     # Once a setup has rendered the frames, one that takes this much longer cannot win and stops. After two like that
     # in a row the setups with still more processes are left out: each has less cache and fewer threads
-    # (measured: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
+    # (a heavy comp: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
     SLOWER = 1.5
     GIVE_UP = 2
     # The recommended ones, on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4. (n, None): n processes share the CPU's

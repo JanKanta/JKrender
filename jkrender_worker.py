@@ -182,8 +182,8 @@ def main():
     test_out = os.environ.get("JKRENDER_TEST_OUT")
     if test_out:
         # Settings > Test this script: the frames go to its test folder, never over the render's own files.
-        # A studio's render hooks must not run: a beforeRender hook sets the real path again just
-        # before the render, and an afterRender hook writes a csv and a CDL next to the delivery.
+        # A studio's render hooks must not run: a beforeRender hook can set the real path again just
+        # before the render, and an afterRender hook can write files next to the delivery.
         paths = {}
         for node in writes:
             paths[node.fullName()] = test_out + "/" + os.path.basename(node["file"].value())

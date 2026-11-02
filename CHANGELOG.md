@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.64.4 alpha — 2026-11-02
+
+- Names of projects and studio tools are out of the code comments, the README and this changelog. The README picture no longer shows a file path.
+
 ## 0.64.3 alpha — 2026-11-02
 
 From running real small renders through the window:
@@ -30,7 +34,7 @@ From a review of the scheduler and the unused code:
 
 ## 0.64 alpha — 2026-11-02
 
-- One frame per fresh Nuke is gone. It started by mistake on 1.nk, whose processes simply warm up from 1 GB to 2.3 GB of VRAM, and spent 3.3 s on a script load for each 0.7 s frame with the card at 39 %.
+- One frame per fresh Nuke is gone. It started by mistake on a light script, whose processes simply warm up from 1 GB to 2.3 GB of VRAM, and spent 3.3 s on a script load for each 0.7 s frame with the card at 39 %.
 - A process is no longer restarted for going over its share of the VRAM while the card has room. Only close to the VRAM limit does the process that grew the most get a fresh Nuke after its chunk.
 
 ## 0.63.2 alpha — 2026-11-02
@@ -75,7 +79,7 @@ From a review of the scheduler and the unused code:
 
 ## 0.60.3 alpha — 2026-11-02
 
-Test this script wrote its frames to the render's own folder on scripts whose Write has a beforeRender hook that sets the path again (a heavy comp: 0 of 20 frames, and a recommendation at 0.0 frames / min).
+Test this script wrote its frames to the render's own folder on scripts whose Write has a beforeRender hook that sets the path again (0 of 20 frames, and a recommendation at 0.0 frames / min).
 
 - In a test, the Write's render hooks do not run and its frames stay in the test folder, also against a callback the pipeline adds at start-up. Only in the test's own Nuke processes: nothing is saved, and real renders still run the hooks.
 - A frame that does not arrive in the test folder stops the test at once, with a warning to check the render's folder.
@@ -160,31 +164,31 @@ Test this script, after a full run on a heavy comp (40 frames): 2-6 processes re
 ## 0.55.1 alpha — 2026-11-01
 
 - Workers: a process started again under its name (a fresh Nuke for the VRAM, the RAM, or by hand) shows its script load as a grey block, from when the previous one finished; before, the timeline had gaps there. The tooltip says why it loaded again.
-- Tried and left out: `nuke.clearBlinkCache()` after every frame. sh0070's Nuke then grew 0.6 GB per frame instead of 1.5 GB, but every frame took 3 s longer, about what a fresh Nuke costs, and it still grew.
+- Tried and left out: `nuke.clearBlinkCache()` after every frame. A GPU-heavy script's Nuke then grew 0.6 GB per frame instead of 1.5 GB, but every frame took 3 s longer, about what a fresh Nuke costs, and it still grew.
 
 ## 0.55 alpha — 2026-11-01
 
-- One frame per Nuke when the VRAM keeps processes out: a script whose Nuke takes more VRAM with every frame (sh0070: 3 GB after one frame, 9 GB after six) switches to one-frame chunks, each process making way for a fresh Nuke after its frame. A fresh Nuke stays small, so more of them fit on the card; a script load per frame (3-5 s) is the price. 1.nk and sh0050, whose VRAM stays flat, never switch.
-- A script not seen yet in the run starts three GPU processes, the rest once one has finished a chunk (all eight at once on sh0070 meant five closed mid-chunk).
+- One frame per Nuke when the VRAM keeps processes out: a script whose Nuke takes more VRAM with every frame (3 GB after one frame, 9 GB after six) switches to one-frame chunks, each process making way for a fresh Nuke after its frame. A fresh Nuke stays small, so more of them fit on the card; a script load per frame (3-5 s) is the price. 1.nk and sh0050, whose VRAM stays flat, never switch.
+- A script not seen yet in the run starts three GPU processes, the rest once one has finished a chunk (all eight at once on a GPU-heavy script meant five closed mid-chunk).
 
-Tested, sh0070 alone with 8 processes: 10:58 → 7:27 (3 → 4 processes on average, frames 34 s → 28 s since a fresh Nuke does not slow down). All three renders at once: 16:06 → 11:29, one process closed mid-chunk instead of three.
+Tested, a GPU-heavy script alone with 8 processes: 10:58 → 7:27 (3 → 4 processes on average, frames 34 s → 28 s since a fresh Nuke does not slow down). All three renders at once: 16:06 → 11:29, one process closed mid-chunk instead of three.
 
 ## 0.54 alpha — 2026-11-01
 
-Tested on three real renders (1.nk, sh0050, sh0070) all at once, one after another, and with processes moved between them.
+Tested on three real renders all at once, one after another, and with processes moved between them.
 
-- A GPU process whose VRAM keeps growing gets a fresh Nuke after its chunk. Nuke keeps VRAM it no longer needs: sh0070 took 5 GB after its first chunk and 16 GB later, its frames 25 s at first and 143 s at the end. Recycled when it grows past its part of the card, or from 5 % below the VRAM limit the one that grew the most. Only when none grew does the VRAM limit run fewer processes. Changing Nuke's GPU cache preference does not stop the growth (tested).
+- A GPU process whose VRAM keeps growing gets a fresh Nuke after its chunk. Nuke keeps VRAM it no longer needs: one script took 5 GB after its first chunk and 16 GB later, its frames 25 s at first and 143 s at the end. Recycled when it grows past its part of the card, or from 5 % below the VRAM limit the one that grew the most. Only when none grew does the VRAM limit run fewer processes. Changing Nuke's GPU cache preference does not stop the growth (tested).
 - VRAM other programs hold is now measured while none of JKrender's processes run. Before, it was guessed from the per-process counters, which miss part of Nuke's own VRAM, so 7 GB of JKrender's own showed as "other programs" and the limit stopped working.
 - A new process is counted at the VRAM its script's processes took after their first chunk, not at what one grew to (one grown process blocked every new start, and for 15 minutes one process rendered alone). Processes still opening the script count at full size, and for a script not seen yet in this run they start one at a time once the card is half full.
 - Start again on a closed process of a finished render starts it in a render still going ("Start again in"); before, it was greyed out. A start by hand goes past the RAM and VRAM limits, and says so when all places are taken.
 - The VRAM limit message no longer blames other programs when it is JKrender's processes that grew.
 - System > Load: a VRAM curve.
 
-Test results, all three renders (minutes): all at once 20+ (sh0070 half done) → 16; one after another 24 → 19; processes closed mid-chunk 6 → 3-4 per run.
+Test results, all three renders (minutes): all at once 20+ (the heavy one half done) → 16; one after another 24 → 19; processes closed mid-chunk 6 → 3-4 per run.
 
 ## 0.53.1 alpha — 2026-11-01
 
-- A new Nuke process starts only when it fits: in the RAM, counting what the ones still opening the script will take (from what the script took last time), and in the graphics card's memory. Before, all of them started at once and a heavy script pushed the RAM to 100 %, so one was killed mid-chunk straight away (measured: 8 × 12 GB on a 94 GB PC). The log says once a minute when one more does not fit.
+- A new Nuke process starts only when it fits: in the RAM, counting what the ones still opening the script will take (from what the script took last time), and in the graphics card's memory. Before, all of them started at once and a heavy script pushed the RAM to 100 %, so one was killed mid-chunk straight away (8 × 12 GB on a 94 GB PC). The log says once a minute when one more does not fit.
 - Start on a closed process now gets the place in its own render; before, the extra place could go to another render first.
 - The RAM and VRAM emergency closes never fire in the same few seconds, so one shortage does not close two processes.
 
@@ -459,7 +463,7 @@ Experiment, to be kept or undone (0.26 has the old layout).
 - System: a Cache column after RAM shows how much of its cache each Nuke process uses, against the Nuke cache limit, e.g. "3.4 / 8 GB".
   - Each process reports it after every frame, from Nuke's `nuke.memory2`.
   - RAM stays the whole process, so the gap between the two is what the nodes themselves take.
-  - On 1.nk, each process held about 3 GB in cache and took about 4 GB in all.
+  - On a light 4K script, each process held about 3 GB in cache and took about 4 GB in all.
 
 ## 0.21 alpha — 2026-10-31
 
@@ -501,7 +505,7 @@ Experiment, to be kept or undone (0.26 has the old layout).
 
 - Settings → Nuke processes → Use GPU (off by default) starts the Nuke processes with `--gpu`.
   - Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, Denoise, ...) on the CPU without it.
-  - On 48 frames of 1.nk (4K, 2x Kronos) with 8 processes, the render took 15.3 s against 48.7 s, and the frames were identical to the CPU ones.
+  - On 48 frames of a light 4K script (2x Kronos) with 8 processes, the render took 15.3 s against 48.7 s, and the frames were identical to the CPU ones.
   - Each process takes its own VRAM, about 2.3 GB there: 18 of 24 GB with 8 processes. System → GPU shows it per process.
 
 ## 0.17 alpha — 2026-10-31
@@ -527,7 +531,7 @@ Experiment, to be kept or undone (0.26 has the old layout).
 ## 0.15 alpha — 2026-10-31
 
 - Auto-tune processes is gone, together with Forget tuned scripts.
-  - The split comparison gained little: on 1.nk, 8 x 4 at 1.04 fr/s against 4 x 8 at 0.97.
+  - The split comparison gained little: on a light 4K script, 8 x 4 at 1.04 fr/s against 4 x 8 at 0.97.
   - Starting fewer processes from the remembered RAM is gone too.
 - Processes and Threads are set by hand under Settings → Nuke processes, and exactly that many start.
 - The RAM limit (on by default) is the only thing that closes processes, the one started last first, when RAM runs over.
@@ -599,7 +603,7 @@ Experiment, to be kept or undone (0.26 has the old layout).
 - A process that had to close (RAM guard, recycled) is replaced under its own name and on its own timeline row: W01 starts again instead of a new W09.
 - JKrender remembers how much RAM one Nuke process of each script takes (after its first chunk).
   - The next render of that script starts only as many processes as fit in RAM right now, so the RAM guard does not have to close any in the middle of a frame.
-  - on a heavy comp that is about 11 GB per process: 8 of them do not fit in 94 GB next to Nuke's GUI.
+  - On a heavy comp of about 10 MP that is about 11 GB per process: 8 of them do not fit in 94 GB next to Nuke's GUI.
 - The RAM guard adds back as many processes as fit at once, counting the RAM that just-started processes are still about to take, instead of one every 15 s.
 - The RAM setting is Nuke's cache limit (-c), not a cap on the whole process; a heavy script takes more. The README says so.
 
