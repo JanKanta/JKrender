@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.60.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.60.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.60.3 alpha"
+APP_VERSION = "0.60.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2685,10 +2685,10 @@ class ScriptTest(QtWidgets.QDialog):
     # (measured: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
     SLOWER = 1.5
     GIVE_UP = 2
-    # The recommended ones, on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4, 10x3. (n, None): n processes share the CPU's
-    # threads; (None, t): processes of t threads each fill it; 6 x 6 and 10 x 3 keep their share (6/32, 3/32).
-    # 16x2 and 32x1 are not among them: on a heavy comp, with 1 GB of cache, not one frame in 6 minutes. They can be added.
-    SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0), (10, 3 / 32.0))
+    # The recommended ones, on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4. (n, None): n processes share the CPU's
+    # threads; (None, t): processes of t threads each fill it; 6 x 6 keeps its share (6/32).
+    # 10x3, 16x2 and 32x1 are not among them: on a heavy comp, with 1-2 GB of cache, not one frame in 6 minutes. They can be added.
+    SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0))
     FRAMES = 20  # per setup by default (Frames per setup), and at least 2 per process, or a setup with many has them all on its first frame
     BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 

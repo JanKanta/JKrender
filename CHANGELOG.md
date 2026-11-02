@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.60.4 alpha — 2026-11-02
+
+- Test this script no longer recommends 10 x 3; it can still be added by hand.
+
 ## 0.60.3 alpha — 2026-11-02
 
 Test this script wrote its frames to the render's own folder on scripts whose Write has a beforeRender hook that sets the path again (a heavy comp: 0 of 20 frames, and a recommendation at 0.0 frames / min).
