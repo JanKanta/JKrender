@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.56 alpha.** It works in tests; expect rough edges.
+**Version 0.57 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -22,6 +22,9 @@ on disk.
     The movie has a looping player with zoom.
   - Rendered frames: a frame bar with Play and a slider under the preview, and an enlarged view over the panes.
 - **Delete** in Output removes all rendered frames (the default) or a frame range, after asking.
+- **Test this script** (Settings > Processes and Chunks): renders a piece of the selected render with a few
+  Processes x Threads x Nuke cache setups and recommends the fastest for it on this PC. The frames go to a test folder
+  and are deleted; nothing changes unless you press Use these settings.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).

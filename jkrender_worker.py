@@ -127,6 +127,11 @@ def main():
         if node is None:
             raise RuntimeError("Write node not found: %s" % name)
         writes.append(node)
+    test_out = os.environ.get("JKRENDER_TEST_OUT")
+    if test_out:
+        # Settings > Test this script: the frames go to its test folder, never over the render's own files
+        for node in writes:
+            node["file"].setValue(test_out + "/" + os.path.basename(node["file"].value()))
     say("READY", "%.2f" % (time.time() - opened))
     while True:
         line = sys.stdin.readline()

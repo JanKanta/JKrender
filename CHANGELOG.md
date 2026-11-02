@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.57 alpha — 2026-11-02
+
+- Settings > Processes and Chunks > Test this script: the selected render's script rendered with a few Processes x Threads x Nuke cache setups, 2-6 minutes each. A table shows the processes that ran, frames per minute, frame time, RAM, VRAM and how many fell; it recommends the fastest, and Use these settings takes it. The frames go to a test folder and are deleted; the render's own files stay as they are.
+- Settings > Start at once (default 6): GPU processes a render starts before it has seen how much VRAM one takes. It was fixed at 3.
+- One frame per Nuke switches on as soon as a script's Nuke shows it grows and the card is within 10 % of the VRAM limit, and the limit then no longer lowers the number of processes: closed places fill again when one more fits. Before, the limit could go down to 2 and processes stayed closed until started by hand.
+- Workers: a fresh Nuke for the VRAM is a darker green block; other script loads stay grey.
+- "One more Nuke process would not fit" shows the card's real VRAM, with the processes still starting named apart (it could say 134 %).
+
 ## 0.56 alpha — 2026-11-01
 
 - System: every place of Settings > Processes has a row (W01-W08), also the ones no process has taken. Their State says why: "not running", "waiting: VRAM 88 %, limit 95 % · NukeX (pid 39760) holds 16.5 GB of it", "not running (RAM limit)", "not needed (no chunks left)". Right-click one to start a process there by hand in a render still going (Start in).

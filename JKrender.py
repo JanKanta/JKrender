@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.56 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.57 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -11,6 +11,7 @@ truncated EXR / PNG / JPEG / DPX, suspiciously small).
 
 import collections
 import concurrent.futures
+import copy
 import datetime
 import json
 import math
@@ -48,9 +49,10 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.56 alpha"
+APP_VERSION = "0.57 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
+TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
 
 # Movie containers are one file for the whole range, so they render in one piece on one worker.
@@ -63,7 +65,7 @@ JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
-                    "vram_guard": True, "vram_limit": 95,
+                    "vram_guard": True, "vram_limit": 95, "start_at_once": 6,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True}
@@ -1101,6 +1103,21 @@ class RenderEngine:
             return auto_plan(1, True)["threads"], self.ram
         return self.threads, self.ram
 
+    def go_lean(self):
+        """One frame per Nuke from now on. This script's Nuke takes ~1.5 GB more VRAM with every frame
+        (sh0070: 3 GB after one frame, 9 GB after six; three of them fill the card). A Nuke that renders one frame
+        and makes way for a fresh one stays small, so twice as many fit; the price is a script load per frame.
+        The VRAM limit then no longer lowers the number of processes: whether one more fits decides."""
+        if getattr(self, "lean", False) or self.state != "rendering":
+            return
+        self.lean = True
+        self.lean_since = time.time()
+        if self.manager is not None and self.manager.vram_cap is not None:
+            self.manager.vram_cap = None
+            self.manager._vram_lowered_at = None
+        self.note("This script's Nuke takes more VRAM with every frame and the card is nearly full: from now on each "
+                  "process renders one frame, then a fresh Nuke takes over, so more of them fit on the card", "warn")
+
     def _worker_args(self):
         """What the worker opens: the script (its snapshot), the original's path, the Write names."""
         names = "|".join(w["name"] for w in self.job.get("writes", []))
@@ -1156,6 +1173,8 @@ class RenderEngine:
         # the same, as UTF-8: Nuke reads its command line in the Windows code page, so a path such as
         # "D:/Práce/Žluťoučký kůň/..." arrived broken and every Nuke stopped while opening the script
         kwargs["env"]["JKRENDER_ARGS"] = json.dumps(self._worker_args())
+        if self.job.get("test_out"):
+            kwargs["env"]["JKRENDER_TEST_OUT"] = self.job["test_out"]
         script_dir = Path(self.job.get("script") or "").parent
         if script_dir.is_dir():
             kwargs["cwd"] = str(script_dir)
@@ -1476,16 +1495,8 @@ class RenderEngine:
             share = m.vram_share() if m is not None and w.vram_base and self.settings.get("vram_guard", True) else None
             if w.vram_base and vram_now > w.vram_base * 1.3:
                 self._vram_grows = True
-            if (w.gpu and share and self._vram_grows and not getattr(self, "lean", False) and m.vram_short()):
-                # This script's Nuke takes ~1.5 GB more VRAM with every frame and the card keeps more processes out
-                # (sh0070: 3 GB after one frame, 9 GB after six; three of them fill the card). A Nuke that renders
-                # one frame and makes way for a fresh one stays small, so twice as many fit; the price is a
-                # script load per frame.
-                self.lean = True
-                self.lean_since = time.time()
-                self.note("VRAM keeps more Nuke processes out and this script's Nuke takes more VRAM with every "
-                          "frame: from now on each process renders one frame, then a fresh Nuke takes over, so more "
-                          "of them fit on the card", "warn")
+            if w.gpu and share and self._vram_grows and m.vram_short():
+                self.go_lean()
             if w.rss > max(w.ram * 1.3, w.rss_base * 1.5):
                 self._quit(w, "recycled: %.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
             elif w.gpu and getattr(self, "lean", False) and queued_left_for(self):
@@ -1648,7 +1659,8 @@ class RenderEngine:
         need = dict(self.settings.get("script_ram") or {})
         need[self.name] = round(gb, 1)
         self.settings["script_ram"] = need
-        write_settings(self.settings)
+        if not self.settings.get("_test"):
+            write_settings(self.settings)
 
     def ram_need(self):
         """GB per Nuke process this script took last time, or None."""
@@ -2041,11 +2053,11 @@ class RenderManager:
         gpu_guard = self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)
         if gpu_guard and engine is not None:
             # A script whose processes have not finished a first chunk yet: how much VRAM one takes is unknown
-            # (1.nk 2 GB, sh0070 5 GB growing to 14). Three start; the rest once one has finished a chunk, or
-            # one at a time on a card already half full. All eight at once on sh0070 meant five closed mid-chunk.
+            # (1.nk 2 GB, sh0070 5 GB growing to 14). Settings > Start at once start; the rest once one has finished
+            # a chunk, or one at a time on a card already half full.
             mine = [w for w in engine.workers.values() if w.gpu and w.state != "gone"]
             pct = float(self.vram[1]) / float(self.vram[2]) * 100
-            if mine and not any(w.vram_base for w in engine.workers.values()) and (pct >= 50 or len(mine) >= 3):
+            if mine and not any(w.vram_base for w in engine.workers.values()) and (pct >= 50 or len(mine) >= int(self.settings.get("start_at_once", 6))):
                 return "VRAM %.0f %%: waiting to see how much one process of this script takes%s" % (pct, self.vram_holder())
         one = self.vram_one(engine)
         if one and gpu_guard:
@@ -2059,13 +2071,17 @@ class RenderManager:
                     if size and w.gpu and w.state != "gone" and w.vram_base is None:
                         now_pct = self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100
                         growing += max(0.0, size - now_pct)
-            pct = float(self.vram[1]) / total * 100 + growing
+            real = float(self.vram[1]) / total * 100
+            pct = real + growing
             others = self.vram_others()
             limit = float(self.settings.get("vram_limit", 95))
             # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
             # never into the last few % where Windows starts moving VRAM into the RAM
             if pct + one >= 97.0 or (pct + one >= limit and (others is None or others + one < limit)):
-                return "VRAM %.0f %%, limit %.0f %%%s" % (pct, limit, self.vram_holder())
+                return "VRAM %.0f %%%s, limit %.0f %%%s" % (
+                    real, " and %d still starting" % sum(1 for e in self.engines for w in e.workers.values()
+                                                       if w.gpu and w.state != "gone" and w.vram_base is None)
+                    if growing else "", limit, self.vram_holder())
         return ""
 
     def _note_running(self, text, level="ev"):
@@ -2164,6 +2180,15 @@ class RenderManager:
         # (only a guess while the VRAM of other programs is unknown: ours also grow, frame after frame)
         no_help = others is None and self._vram_lowered_at is not None and live <= (self.vram_cap or live) \
             and pct > self._vram_lowered_at - one / 2
+        for e in self.engines:
+            if e.state != "rendering" or getattr(e, "lean", False):
+                continue
+            if any(w.gpu and w.vram_base and w.state != "gone" and vram_of(w) > w.vram_base * 1.3
+                   for w in e.workers.values()):
+                e._vram_grows = True
+            if getattr(e, "_vram_grows", False) and pct >= limit - 10:
+                e.go_lean()
+        lean = any(getattr(e, "lean", False) and e.state == "rendering" for e in self.engines)
         pending = any(getattr(w, "recycle_vram", False) for e in self.engines for w in e.workers.values()
                       if w.state != "gone")
         if limit - 5 <= pct < limit and not pending:
@@ -2187,7 +2212,7 @@ class RenderManager:
                 pass  # one is already to be replaced by a fresh Nuke after its chunk: see what that frees first
             elif self._recycle_grown(vram_of):
                 pass
-            elif live > 1:
+            elif live > 1 and not lean:
                 cap = max(1, min(self.budget(), live) - 1)
                 if (self.vram_cap is None or (live <= self.vram_cap and cap < self.vram_cap)) and now >= self.started_by_hand:
                     self.vram_cap = cap
@@ -2366,7 +2391,7 @@ class RenderManager:
 C = {
     "bg": "#282828", "panel": "#323232", "panel2": "#3b3b3b", "line": "#1c1c1c",
     "text": "#cdcdcd", "dim": "#8c8c8c", "accent": "#f7931e", "ram": "#d2d2d2",
-    "vram": "#5aa9e6", "queued": "#4a4a4a", "rendering": "#f7931e", "done": "#7fae58", "failed": "#d4503f",
+    "vram": "#5aa9e6", "refresh": "#4e7a37", "queued": "#4a4a4a", "rendering": "#f7931e", "done": "#7fae58", "failed": "#d4503f",
     "bad": "#d4503f", "skipped": "#556b45", "small": "#e3c63d", "loading": "#626262", "stopped": "#7b6f60",
 }
 STATE_LABELS = {
@@ -2581,7 +2606,8 @@ class Gantt(QtWidgets.QWidget):
                     bw = max(1.5, (b - a) / span * width)
                     rect = QtCore.QRectF(x, y + 1.5, bw - 1, row_h - 3)
                     if kind == "load":
-                        color = QtGui.QColor(C["loading"])
+                        # a fresh Nuke for the VRAM is part of rendering: darker green; other script loads grey
+                        color = QtGui.QColor(C["refresh"] if "VRAM" in label else C["loading"])
                     elif state in ("rendering", "done", "failed"):
                         color = QtGui.QColor(C[state])
                     else:  # stopped, closed, retired: the chunk went back to the queue
@@ -2643,6 +2669,227 @@ class Gantt(QtWidgets.QWidget):
                 QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), text, self)
                 return
         QtWidgets.QToolTip.hideText()
+
+
+class ScriptTest(QtWidgets.QDialog):
+    """Settings > Test this script: the render's script rendered with a few Processes x Threads x Nuke cache setups
+    on this PC, frames per minute measured once no more processes start. It recommends the fastest; Use these
+    settings puts it into Settings. Nothing changes unless you press it. The frames go to a test folder, deleted
+    after each setup; the render's own files stay as they are."""
+
+    SECONDS = 90  # measured per setup, and at least FRAMES frames, up to LIMIT in all (a heavy script ramps up slowly)
+    FRAMES = 10
+    LIMIT = 360
+
+    def __init__(self, window, engine):
+        super().__init__(window)
+        self.window, self.src = window, engine
+        self.setWindowTitle("Test this script: %s" % engine.name)
+        self.resize(760, 420)
+        cpu = os.cpu_count() or 8
+        m = window.manager
+        cur = (m.total, m.threads, m.ram)
+        setups = {(max(1, min(cpu // 2, cpu // t)), t, m.ram) for t in (4, 6, 8)}
+        setups.add(cur)
+        if m.ram >= 4:
+            setups.add((max(1, min(cpu // 2, cpu // 4)), 4, m.ram // 2))  # half the cache: more processes fit
+        self.setups = sorted(setups, key=lambda pt: (-pt[2], pt[1], -pt[0]))
+        self.current = cur
+        frames = engine.frame_list()
+        self.frames = frames[len(frames) // 4:] if len(frames) >= 16 else frames  # from inside the shot
+        lay = QtWidgets.QVBoxLayout(self)
+        intro = QtWidgets.QLabel(
+            "Renders frames %s of this script with each setup below, 2-6 minutes each, and measures frames per minute.\n"
+            "The frames go to a test folder and are deleted; your render's files stay as they are.\n"
+            "Nothing else should render meanwhile." % frames_to_spec(self.frames))
+        intro.setObjectName("dim")
+        lay.addWidget(intro)
+        self.table = QtWidgets.QTableWidget(len(self.setups), 8)
+        self.table.setHorizontalHeaderLabels(["Setup", "Ran", "Frames / min", "Frame", "RAM max", "VRAM max", "Fell", "State"])
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for i, (n, t, c) in enumerate(self.setups):
+            self._cell(i, 0, "%d processes x %d threads, cache %d GB%s" % (n, t, c, "  (yours)" if (n, t, c) == cur else ""))
+            self._cell(i, 7, "waiting")
+        self.table.resizeColumnsToContents()
+        lay.addWidget(self.table, 1)
+        self.verdict = QtWidgets.QLabel("")
+        self.verdict.setWordWrap(True)
+        lay.addWidget(self.verdict)
+        buttons = QtWidgets.QHBoxLayout()
+        self.b_start = QtWidgets.QPushButton("Start")
+        self.b_start.setObjectName("primary")
+        self.b_stop = QtWidgets.QPushButton("Stop")
+        self.b_use = QtWidgets.QPushButton("Use these settings")
+        self.b_use.setEnabled(False)
+        self.b_stop.setEnabled(False)
+        for b in (self.b_start, self.b_stop, self.b_use):
+            buttons.addWidget(b)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
+        self.b_start.clicked.connect(self.start)
+        self.b_stop.clicked.connect(self.stop)
+        self.b_use.clicked.connect(self.use)
+        self.results = {}
+        self.index = -1
+        self.run = None
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.tick)
+
+    def _cell(self, row, col, text):
+        item = self.table.item(row, col)
+        if item is None:
+            item = QtWidgets.QTableWidgetItem()
+            self.table.setItem(row, col, item)
+        item.setText(text)
+
+    def start(self):
+        if self.src.movie:
+            QtWidgets.QMessageBox.information(self, "JKrender", "A movie renders in one process from start to end: "
+                                              "there is nothing to compare.")
+            return
+        if any(e.state in ("rendering", "paused", "finishing", "waiting") for e in self.window.manager.engines):
+            QtWidgets.QMessageBox.information(self, "JKrender", "A render is going: the test would only measure the two "
+                                              "fighting over the PC. Start it when nothing renders.")
+            return
+        self.b_start.setEnabled(False)
+        self.b_stop.setEnabled(True)
+        self.b_use.setEnabled(False)
+        self.verdict.setText("")
+        self.results = {}
+        self.index = -1
+        self._next()
+        self.timer.start(1000)
+
+    def _next(self):
+        self.index += 1
+        if self.index >= len(self.setups):
+            self._finish()
+            return
+        n, t, c = self.setups[self.index]
+        settings = dict(self.window.settings)
+        settings.update(processes=n, threads=t, ram=c, max_renders=1, _test=True)
+        settings.pop("script_ram", None)  # what the script took with another cache would keep processes out
+        root = TEST_DIR / ("%s_%dx%d_%d" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c))
+        out = root / "out"
+        out.mkdir(parents=True, exist_ok=True)
+        job = copy.deepcopy(self.src.job)
+        for w in job.get("writes", []):
+            w["output"] = str(out / os.path.basename(w.get("output") or "test_####.exr")).replace("\\", "/")
+        job["test_out"] = str(out).replace("\\", "/")
+        manager = RenderManager(settings)
+        e = manager.add(job, root)
+        e.set_range(frames_to_spec(self.frames))
+        manager.request_start(e)
+        self.run = {"manager": manager, "engine": e, "root": root, "t0": time.time(), "first": None, "n0": 0,
+                    "ram": 0.0, "vram": 0.0, "busy": [], "stopping": False}
+        self._cell(self.index, 7, "rendering")
+
+    def tick(self):
+        r = self.run
+        if r is None:
+            return
+        m, e = r["manager"], r["engine"]
+        m.vram = self.window._gpu
+        m.gpu_mem = self.window._gpu_procs or {}
+        m.tick()
+        now = time.time()
+        done = e.counts()["done"]
+        if r["first"] is None and done and now - e.last_spawn >= 8:
+            # measured from when no more processes start: script loads and the ramp-up are behind
+            r["first"], r["n0"] = now, done
+        r["ram"] = max(r["ram"], psutil.virtual_memory().percent if psutil else 0)
+        if m.vram:
+            r["vram"] = max(r["vram"], m.vram[1] / 1024.0)
+        r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
+        rate = (done - r["n0"]) / ((now - r["first"]) / 60.0) if r["first"] and now - r["first"] > 5 else None
+        self._show(self.index, r, rate, done)
+        enough = r["first"] and now - r["first"] >= self.SECONDS and done - r["n0"] >= self.FRAMES
+        if not r["stopping"] and (enough or now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
+            r["stopping"] = True
+            r["rate"] = rate if rate is not None else (done / ((now - r["t0"]) / 60.0))
+            r["frame"] = statistics.median([sec for w in e.workers.values() for sec in w.frame_secs] or [0])
+            r["fell"] = sum("closed now" in x[1] for x in e.log) + e.crashes
+            if e.state in ("rendering", "paused", "finishing", "waiting"):
+                e.stop("Test setup done")
+        if r["stopping"] and all(w.state == "gone" for w in e.workers.values()):
+            self.results[self.setups[self.index]] = r
+            self._show(self.index, r, r["rate"], done, final=True)
+            self._drop(r)
+            self.run = None
+            self._next()
+
+    @staticmethod
+    def _drop(r):
+        """The setup's processes and its folder: frames, and logs once JKrender has let go of them."""
+        r["manager"].shutdown()
+        for w in r["engine"].workers.values():
+            try:
+                w.log.close()
+            except Exception:
+                pass
+        shutil.rmtree(r["root"], ignore_errors=True)
+
+    def _show(self, i, r, rate, done, final=False):
+        busy = r["busy"][len(r["busy"]) // 3:] or r["busy"]  # once it has settled
+        self._cell(i, 1, "%.1f processes" % (sum(busy) / float(len(busy))) if busy else "")
+        self._cell(i, 2, "%.1f" % rate if rate is not None else "")
+        if final:
+            self._cell(i, 3, "%.1f s" % r["frame"] if r.get("frame") else "")
+        self._cell(i, 4, "%.0f %%" % r["ram"])
+        self._cell(i, 5, "%.1f GB" % r["vram"] if r["vram"] else "")
+        self._cell(i, 6, str(r.get("fell", "")) if final else "")
+        self._cell(i, 7, "done" if final else "rendering, %d frames" % done)
+
+    def stop(self):
+        self.timer.stop()
+        r = self.run
+        if r is not None:
+            if r["engine"].state in ("rendering", "paused", "finishing", "waiting"):
+                r["engine"].stop("Test stopped")
+            self._drop(r)
+            self._cell(self.index, 7, "stopped")
+            self.run = None
+        self.b_start.setEnabled(True)
+        self.b_stop.setEnabled(False)
+        if self.results:
+            self._finish(partial=True)
+
+    def _finish(self, partial=False):
+        self.timer.stop()
+        shutil.rmtree(TEST_DIR, ignore_errors=True)  # its test renders; a folder Windows still held is gone now
+        self.b_start.setEnabled(True)
+        self.b_stop.setEnabled(False)
+        if not self.results:
+            return
+        best = max(self.results, key=lambda k: self.results[k]["rate"])
+        self.best = best
+        rate = self.results[best]["rate"]
+        mine = self.results.get(self.current)
+        if best == self.current:
+            text = "Your settings (Processes %d, Threads %d, Nuke cache %d GB) are the fastest of these for this script: " \
+                   "%.1f frames / min." % (best[0], best[1], best[2], rate)
+        else:
+            gain = " — %.0f %% faster than yours (%.1f)" % ((rate / mine["rate"] - 1) * 100, mine["rate"]) if mine and mine["rate"] else ""
+            text = "Fastest for this script on this PC: Processes %d, Threads %d, Nuke cache %d GB, %.1f frames / min%s." % (
+                best[0], best[1], best[2], rate, gain)
+            self.b_use.setEnabled(True)
+        if partial:
+            text = "(Stopped before all setups were tested.) " + text
+        self.verdict.setText(text)
+
+    def use(self):
+        n, t, c = self.best
+        self.window.s_workers.setValue(n)
+        self.window.s_threads.setValue(t)
+        self.window.s_ram.setValue(c)
+        self.verdict.setText(self.verdict.text() + "  Set: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c))
+        self.b_use.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.stop()
+        super().closeEvent(event)
 
 
 class TotalCard(QtWidgets.QFrame):
@@ -3727,6 +3974,19 @@ class MainWindow(QtWidgets.QMainWindow):
         row(procs, "Processes", [self.s_workers])
         row(procs, "Threads", [self.s_threads])
         row(procs, "Nuke cache", [self.s_ram])
+        self.s_start = QtWidgets.QSpinBox()
+        self.s_start.setRange(1, 64)
+        self.s_start.setValue(int(self.settings.get("start_at_once", 6)))
+        self.s_start.valueChanged.connect(lambda v: self._save_setting("start_at_once", v))
+        row(procs, "Start at once", [self.s_start],
+            "GPU processes a render starts right away, before it has seen how much VRAM one takes.\n"
+            "The others start once one has finished its first chunk. A script that takes a lot of VRAM\n"
+            "may fill the card with too many at once. Processes above still is the most that run.")
+        self.b_test = QtWidgets.QPushButton("Test this script…")
+        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Nuke cache setups\n"
+                               "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
+        self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
+        row(procs, "Test", [self.b_test])
         self.l_ram_need = note(procs, QtWidgets.QLabel(""))
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")
@@ -3836,7 +4096,7 @@ class MainWindow(QtWidgets.QMainWindow):
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
-                           (self.s_vram, 95)):
+                           (self.s_vram, 95), (self.s_start, 6)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
