@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.63.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.63.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.63.1 alpha"
+APP_VERSION = "0.63.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2729,7 +2729,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
         super().__init__(window)
         self.window, self.src = window, engine
         self.setWindowTitle("Analyze script: %s" % engine.name)
-        self.resize(1060, 540)
+        self.resize(1060, 640)
         self.lay = QtWidgets.QVBoxLayout(self)
         self.lay.setSpacing(10)
         self.waiting = QtWidgets.QWidget()
@@ -2789,8 +2789,10 @@ class ScriptAnalysis(QtWidgets.QDialog):
             log.setReadOnly(True)
             self.lay.addWidget(log, 1)
             return
-        # what renders running now take is theirs to give back: the recommendation is for this script alone
-        free = ScriptTest._free_gb(self) + sum(w.rss for e in self.window.manager.engines for w in e.workers.values() if w.state != "gone")
+        # for this script on this PC, not for this moment: what runs now (renders, a Nuke's viewer cache) says nothing about it.
+        # The RAM limit, less what Windows and other programs usually hold.
+        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else float(self.window.manager.ram * self.window.manager.total)
+        free = total * float(self.window.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2)
         n, t, c, why = self.advise(result, os.cpu_count() or 8, free)
         self.best = (n, t, c)
         m = self.window.manager
@@ -2815,11 +2817,11 @@ class ScriptAnalysis(QtWidgets.QDialog):
         """Processes, threads, Nuke cache and why: what the scripts measured so far did best, for Start to confirm."""
         if info["above"] < 60:
             n, floor = 8, 4
-            why = "A light script: many small processes render it fastest (1.nk: 8 x 4 ahead of 4 x 8)."
+            why = "Few nodes: several smaller processes usually make the best use of the CPU."
         else:
             n, floor = 4, 8
-            why = "A heavy script: a heavy comp was best with 4-6 processes and collapsed with under 7-8 GB of cache per process, " \
-                  "so as many processes as keep 8 GB of cache."
+            why = "Many nodes: a script like this needs a big cache, and with too little it can slow down a lot. So as many " \
+                  "processes as still keep at least 8 GB of cache each."
         n = max(1, min(n, cpu // 4))
         while n > 1 and free_gb / n - BESIDE_CACHE < floor:
             n -= 1
@@ -2869,39 +2871,52 @@ class ScriptAnalysis(QtWidgets.QDialog):
         """First what to set and why, then what the script is made of."""
         n, t, c = self.best
         m = self.window.manager
+        writes = ", ".join(w.get("name", "") for w in self.src.job.get("writes", []))
+        title = QtWidgets.QLabel("%s  ·  %s" % (self.src.name, writes))
+        title.setStyleSheet("font-size: 12pt; font-weight: 600;")
+        title.setToolTip("The render picked on the cards, as it was saved when it was sent to JKrender")
+        self.lay.addWidget(title)
         frame, box = self._card("Recommended to start from")
         row = QtWidgets.QHBoxLayout()
-        for title, value, now in (("Processes", str(n), str(m.total)), ("Threads", str(t), str(m.threads)),
-                                  ("Nuke cache", "%d GB" % c, "%d GB" % m.ram)):
-            tile = Tile(title)
+        for name, value, now, meaning in (
+                ("Processes", str(n), str(m.total), "Nuke processes rendering at once."),
+                ("Threads", str(t), str(m.threads), "CPU threads each process may use."),
+                ("Nuke cache", "%d GB" % c, "%d GB" % m.ram, "RAM cache of each process. A process takes about %d GB more." % BESIDE_CACHE)):
+            tile = Tile(name)
             tile.set(value, "now %s" % now)
             tile.value.setStyleSheet("color: %s; font-size: 20pt; font-weight: 600;" % C["accent"])
-            row.addWidget(tile)
+            tile.layout().addWidget(self._text(meaning, dim=True))
+            row.addWidget(tile, 1)
         row.addWidget(self.b_use, 0, QtCore.Qt.AlignVCenter)
         box.addLayout(row)
         box.addWidget(self._text(why))
-        box.addWidget(self._text("A guess from the number of nodes and a few measured scripts. Nodes do not show everything: sh0070 "
-                                 "looks heavy like this too, yet was fastest with 1 process. Test this script measures it.", dim=True))
+        box.addWidget(self._text("A starting point from the number of nodes only: it cannot see how heavy each node is. "
+                                 "Test this script measures what is really fastest for this script.", dim=True))
         self.lay.addWidget(frame)
-        if {"VectorBlur2", "LensDistortion2"} & set(info["gpu"]):
-            warn = self._text("VectorBlur or LensDistortion on the GPU: of the scripts measured only sh0070 has them, and only there "
-                              "VRAM kept growing. Suspects, not proven: test 1 x all threads too.")
+        if info["gpu"]:
+            warn = self._text("This script runs nodes on the GPU. If the VRAM fills up or keeps growing while it renders, "
+                              "fewer processes with more threads may be faster: try that in Test this script.")
             warn.setStyleSheet("color: %s;" % C["small"])
             self.lay.addWidget(warn)
         tiles = QtWidgets.QHBoxLayout()
-        for title, value, sub in (("Nodes doing the work", str(info["above"]), "of %d in the script" % info["all"]),
-                                  ("Format", info.get("format") or "unknown", ""),
-                                  ("Reads", str(info["reads"]), "largest %.1f MP" % (info["largest_read"] / 1e6)),
-                                  ("Blurs of 100 px or more", str(info["big_blurs"]), "")):
-            tile = Tile(title)
+        for name, value, sub, meaning in (
+                ("Nodes doing the work", str(info["above"]), "of %d in the script" % info["all"],
+                 "Only nodes that reach this Write. Disabled branches do not count."),
+                ("Format", info.get("format") or "unknown", "", "More pixels take more RAM and time."),
+                ("Reads", str(info["reads"]), "largest %.1f MP" % (info["largest_read"] / 1e6), "Files read to make a frame."),
+                ("Blurs of 100 px or more", str(info["big_blurs"]), "", "Big Blurs can take a lot of CPU time.")):
+            tile = Tile(name)
             tile.set(value, sub)
+            tile.layout().addWidget(self._text(meaning, dim=True))
             tiles.addWidget(tile, 1)
         self.lay.addLayout(tiles)
         lists = QtWidgets.QHBoxLayout()
-        lists.addWidget(self._node_list("On the GPU", "Take VRAM, and every process shares one card.", list(info["gpu"].items())), 1)
-        lists.addWidget(self._node_list("Look at other frames", "Read neighbouring frames too: more RAM and reading.",
+        lists.addWidget(self._node_list("On the GPU", "Use the graphics card and its memory (VRAM). All processes share one card.",
+                                        list(info["gpu"].items())), 1)
+        lists.addWidget(self._node_list("Look at other frames", "Need neighbouring frames too, so usually more RAM and reading.",
                                         list(info["temporal"].items())), 1)
-        lists.addWidget(self._node_list("Most used", "The script's biggest groups of nodes.", [tuple(kv) for kv in info["top"]]), 1)
+        lists.addWidget(self._node_list("Most used", "The most common nodes feeding this Write. The count does not say how heavy they are.",
+                                        [tuple(kv) for kv in info["top"]]), 1)
         self.lay.addLayout(lists, 1)
 
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.63.2 alpha — 2026-11-02
+
+- Analyze script names the script and Write at the top, and its texts fit any script instead of naming measured ones. Every number has a short explanation.
+- The recommendation no longer depends on the RAM free at that moment, which could give 1 process with 1 GB of cache while something else was running. It counts from the PC's RAM, the RAM limit and what Windows and other programs usually hold.
+
 ## 0.63.1 alpha — 2026-11-02
 
 - The Analyze script window is laid out to read: the recommended Processes, Threads and Nuke cache big at the top, next to your current ones, with the reason and Use these settings. Below it tiles for nodes, format, Reads and big Blurs, then lists of nodes on the GPU, nodes that look at other frames and the most used ones.
