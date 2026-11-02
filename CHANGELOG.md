@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.57.2 alpha — 2026-11-02
+
+- Settings > Processes goes up to the CPU's thread count (32 here), not half of it.
+
 ## 0.57.1 alpha — 2026-11-02
 
 - System: the CPU, RAM and GPU tiles show the average while rendering ("average 62 %", the GPU tile also VRAM). A pause does not count; the numbers stay after the renders end, until the next ones start.

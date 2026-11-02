@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.57.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.57.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.57.1 alpha"
+APP_VERSION = "0.57.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -3731,7 +3731,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cpu = os.cpu_count() or 8
         ram = int(psutil.virtual_memory().total / 1024 ** 3) if psutil else 64
         e, m = self.engine, self.manager
-        self.s_workers = spin("Processes", 1, max(1, cpu // 2), m.total, "",
+        self.s_workers = spin("Processes", 1, cpu, m.total, "",
                               "Nuke processes for all renders together. One render gets them all;\n"
                               "renders side by side share them (8 -> 4 + 4 -> 3 + 3 + 2).")
         self.s_threads = spin("Threads", 1, cpu, m.threads, "",
