@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.58 alpha — 2026-11-02
+
+- Test this script tests 1x32, 32x1, 2x16, 16x2, 4x8, 8x4, 6x6 and 10x3 (processes x threads, scaled to the CPU), and your own settings. The Nuke cache of each comes from the PC's RAM: what is free up to the RAM limit, split by the number of processes, less 4 GB per process.
+- Every setup renders the same frames from the middle of the render: a quarter of it, at least 30. At most 6 minutes a setup.
+- The table shows average CPU, RAM, GPU and VRAM, with the most RAM and VRAM in brackets.
+
 ## 0.57.2 alpha — 2026-11-02
 
 - Settings > Processes goes up to the CPU's thread count (32 here), not half of it.
