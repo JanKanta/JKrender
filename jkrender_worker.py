@@ -129,9 +129,24 @@ def main():
         writes.append(node)
     test_out = os.environ.get("JKRENDER_TEST_OUT")
     if test_out:
-        # Settings > Test this script: the frames go to its test folder, never over the render's own files
+        # Settings > Test this script: the frames go to its test folder, never over the render's own files.
+        # A studio's render hooks must not run: a beforeRender hook sets the real path again just
+        # before the render, and an afterRender hook writes a csv and a CDL next to the delivery.
+        paths = {}
         for node in writes:
-            node["file"].setValue(test_out + "/" + os.path.basename(node["file"].value()))
+            paths[node.fullName()] = test_out + "/" + os.path.basename(node["file"].value())
+            node["file"].setValue(paths[node.fullName()])
+            for hook in ("beforeRender", "beforeFrameRender", "afterFrameRender", "afterRender"):
+                if node.knob(hook):
+                    node[hook].setValue("")
+
+        def keep_in_test():
+            # added last, so it has the last word over callbacks a pipeline added at start-up
+            node = nuke.thisNode()
+            if node.fullName() in paths:
+                node["file"].setValue(paths[node.fullName()])
+
+        nuke.addBeforeRender(keep_in_test, nodeClass="Write")
     say("READY", "%.2f" % (time.time() - opened))
     while True:
         line = sys.stdin.readline()

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.60.3 alpha — 2026-11-02
+
+Test this script wrote its frames to the render's own folder on scripts whose Write has a beforeRender hook that sets the path again (a heavy comp: 0 of 20 frames, and a recommendation at 0.0 frames / min).
+
+- In a test, the Write's render hooks do not run and its frames stay in the test folder, also against a callback the pipeline adds at start-up. Only in the test's own Nuke processes: nothing is saved, and real renders still run the hooks.
+- A frame that does not arrive in the test folder stops the test at once, with a warning to check the render's folder.
+- A setup with no frames is never recommended.
+- The test table's columns fit their content all the time and the window grows to show them, with shorter texts.
+
 ## 0.60.2 alpha — 2026-11-02
 
 - Test this script: Frames per setup is 20 by default and can be set to any number, also fewer.
