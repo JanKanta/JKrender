@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.57 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.57.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.57 alpha"
+APP_VERSION = "0.57.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -3192,13 +3192,22 @@ class Tile(QtWidgets.QFrame):
         self.value.setObjectName("tileValue")
         self.sub = QtWidgets.QLabel("")
         self.sub.setObjectName("dim")
+        self.avg = QtWidgets.QLabel("")  # the average while rendering (CPU, RAM, GPU)
+        self.avg.setObjectName("dim")
+        self.avg.setToolTip("Average while rendering, from when the renders started until the last one ended")
+        self.avg.hide()
         lay.addWidget(t)
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
+        lay.addWidget(self.avg)
 
     def set(self, value, sub=""):
         self.value.setText(value)
         self.sub.setText(sub)
+
+    def set_avg(self, text):
+        self.avg.setText(text)
+        self.avg.setVisible(bool(text))
 
 
 class ZoomView(QtWidgets.QWidget):
@@ -4863,8 +4872,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.m_gpu.set("%.0f %%" % gpu[0], "VRAM %.1f / %.0f GB" % (gpu[1] / 1024, gpu[2] / 1024))
         else:
             self.m_gpu.set("—", "no NVIDIA GPU" if not shutil.which("nvidia-smi") else "")
-        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu[0] if gpu else 0,
-                         "vram": gpu[1] / gpu[2] * 100 if gpu and gpu[2] else 0})
+        vram = gpu[1] / gpu[2] * 100 if gpu and gpu[2] else None
+        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu[0] if gpu else 0, "vram": vram or 0})
+        self._update_averages(now, cpu, vm.percent, gpu[0] if gpu else None, vram)
         self.g_io.add({"dw": dw, "dr": dr, "net": nmb})
         self.cores.set_values(per)
         t = self.worker_table
@@ -4909,6 +4919,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(v)
                 item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
                 item.setToolTip("")
+
+    def _update_averages(self, now, cpu, ram, gpu, vram):
+        """Average CPU, RAM, GPU and VRAM use while rendering, in the tiles: from when renders start (a pause does
+        not count) until the next ones start after all have ended."""
+        states = [e.state for e in self.manager.engines]
+        if not any(x in ("rendering", "paused", "finishing", "waiting") for x in states):
+            self._avg_going = False
+        elif "rendering" in states:
+            if not getattr(self, "_avg_going", False):
+                self._avg_going = True
+                self._avg = {}
+            if now - getattr(self, "_avg_last", 0.0) >= 1.0:  # this also runs on clicks; samples stay even
+                self._avg_last = now
+                for key, value in (("cpu", cpu), ("ram", ram), ("gpu", gpu), ("vram", vram)):
+                    if value is not None:
+                        total, n = self._avg.get(key, (0.0, 0))
+                        self._avg[key] = (total + value, n + 1)
+        values = {k: t / n for k, (t, n) in getattr(self, "_avg", {}).items()}
+        self.m_cpu.set_avg("average %.0f %%" % values["cpu"] if "cpu" in values else "")
+        self.m_ram.set_avg("average %.0f %%" % values["ram"] if "ram" in values else "")
+        self.m_gpu.set_avg("average %.0f %%  ·  VRAM %.0f %%" % (values["gpu"], values.get("vram", 0)) if "gpu" in values else "")
 
     def _empty_place_state(self):
         """State of a place no process has: why nothing runs there now."""

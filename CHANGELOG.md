@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.57.1 alpha — 2026-11-02
+
+- System: the CPU, RAM and GPU tiles show the average while rendering ("average 62 %", the GPU tile also VRAM). A pause does not count; the numbers stay after the renders end, until the next ones start.
+
 ## 0.57 alpha — 2026-11-02
 
 - Settings > Processes and Chunks > Test this script: the selected render's script rendered with a few Processes x Threads x Nuke cache setups, 2-6 minutes each. A table shows the processes that ran, frames per minute, frame time, RAM, VRAM and how many fell; it recommends the fastest, and Use these settings takes it. The frames go to a test folder and are deleted; the render's own files stay as they are.
