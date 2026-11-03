@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.66.1 alpha — 2026-11-03
+
+- Rendering a card again starts all its processes at once. Since 0.65 it started one, and the others about 10 s apart, each after the one before had rendered a frame: the render still knew the single place it had on its last chunks, so the rule for processes coming back took over from the start.
+- A render starting when nothing runs no longer inherits the lower process count and the waiting from the one before.
+- A render that gets more places later, when another ends, takes them without waiting. The rule for coming back starts when a process falls.
+
 ## 0.66 alpha — 2026-11-03
 
 - Analyze script recommends from a short render instead of the number of nodes: a few frames in one Nuke to a test folder, 11 to 56 s on the scripts tried. As many processes as fit in the VRAM, counting one that keeps growing, and in the RAM with the cache the script takes.

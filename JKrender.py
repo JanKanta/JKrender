@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.66 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.66.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.66 alpha"
+APP_VERSION = "0.66.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -895,6 +895,8 @@ class RenderEngine:
         if self.state in ("rendering", "starting", "finishing"):
             return
         self.filling = True  # all its processes still to start (see _may_spawn)
+        if self.manager is not None and self.manager.live_count() == 0:
+            self.manager.fresh_start()
         self.size_seen = 0.0
         self.crashes = self.load_failures = 0  # a new run: the last one's crashes must not stop it at its first
         self.ever_ready = False
@@ -1356,8 +1358,9 @@ class RenderEngine:
         if self.restart_ids or self.hand_wids:
             return True
         if self.filling:
-            # Render starts all its processes straight away; from then on one that fell comes back when it fits
-            self.filling = len(self._live()) + 1 < self.workers_target
+            # Render starts all its processes straight away, also ones it has a place for only later (the renders share
+            # the places). The rule for coming back starts when one falls: _fell, _on_exit.
+            self.filling = len(self._live()) + 1 < m.total
             return True
         why = m.no_room(self)
         if why and time.time() - getattr(self, "_no_room_noted", 0) > 60:
@@ -1628,6 +1631,7 @@ class RenderEngine:
                 self.state = "failed"
         else:
             self.crashes += 1
+            self.filling = False
             self.note("!! %s exited unexpectedly (code %s): %s" % (w.name, code, classify_error(tail)), "err")
             if self.crashes > 3 * max(1, self.workers_target) + 3:
                 self.error = "Nuke keeps crashing (%d times). See the worker logs." % self.crashes
@@ -2020,8 +2024,17 @@ class RenderManager:
         one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
         return max(0, int(room // max(0.5, one)))
 
+    def fresh_start(self):
+        """Nothing runs and a render starts: limits a render before ran into say nothing about this one."""
+        self.ram_cap = self.vram_cap = self._vram_lowered_at = None
+        self._ram_ok_since = self._vram_ok_since = None
+        self.falls.clear()
+        self.vram_falls.clear()
+
     def _fell(self):
         self.falls.append(time.time())
+        for e in self.engines:
+            e.filling = False
 
     def _fell_vram(self):
         """One closed for VRAM. Twice in 5 minutes: the renders say so, once a run. It changes nothing by itself."""
