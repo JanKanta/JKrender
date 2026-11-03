@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.65.1 alpha.** It works in tests; expect rough edges.
+**Version 0.65.2 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -45,7 +45,7 @@ on disk.
 - **RAM limit** (on by default, 90 %): over the limit fewer Nuke processes run, so Windows never swaps.
   The Nuke cache setting is Nuke's cache limit per process (`-c`); a process takes more than that.
 - **Starting and falling.** A render starts all its processes at once. Over a limit, the process started last closes first:
-  at once if it is still opening the script, otherwise after its chunk. A process that fell or closed comes back by itself
+  at once if it is still opening the script, otherwise after its chunk. Only when the card is nearly full (97 %) does the process taking the most VRAM close at once. A process that fell or closed comes back by itself
   when it fits: the RAM left under the limit, less a 2 % margin and what the running processes are still going to take, must hold
   one process of the size seen this run (before that, its cache + 4 GB), and there must be room in the VRAM. They come back one at a time,
   each after the one before has rendered a frame. After an overload the next waits 30 s, then 60, 120 and 300 s if it happens again within 10 minutes.

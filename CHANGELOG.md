@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.65.2 alpha — 2026-11-03
+
+- With the card nearly full (97 %), the process taking the most VRAM closes at once, not the last one started, which frees little next to one that has grown to 15 GB. Measured on a script whose VRAM keeps growing, 4 x 8: 4.1 frames / min against 4.3, so no faster, 4 such closes against 5. One process with all threads stays far the fastest for it (15.7).
+- Tested with the RAM really full: another program pushed the PC to 97 % during a render. Two processes closed, the page file did not grow, nothing crashed, all frames rendered, and they came back within about 20 s of the memory coming free.
+
 ## 0.65.1 alpha — 2026-11-03
 
 - Processes closing one after another within a minute count as one overload. Each counted on its own, so one overload made the next wait 5 minutes with the RAM free. Measured: 5 processes back to 8 about 30 s after the memory came free, one at a time.

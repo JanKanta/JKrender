@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.65.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.65.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.65.1 alpha"
+APP_VERSION = "0.65.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2205,7 +2205,7 @@ class RenderManager:
         or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
-        About to spill into the RAM (97 %), the last one started closes at once."""
+        About to spill into the RAM (97 %), the one taking the most closes at once."""
         now = time.time()
         if now - self._vram_checked < 2:
             return
@@ -2268,8 +2268,9 @@ class RenderManager:
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
                 if len(running) > 1:
-                    e, w = self._close_first(running)
-                    e.note("!! VRAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
+                    # the one taking the most: a new one frees little while an old one keeps 11-15 GB. By hand last.
+                    e, w = max(running, key=lambda ew: (not ew[1].pinned, vram_of(ew[1])))
+                    e.note("!! VRAM %.0f %%: %s (%.1f GB) closed now%s" % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._fell()
@@ -4426,7 +4427,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "the process that grew the most gets a fresh Nuke after its chunk.\n"
             "Over the limit, fewer processes, like the RAM limit: the last one started closes first (after its chunk,\n"
             "or now if it is still opening the script), one at a time; places come back when one more fits.\n"
-            "About to spill into the RAM (97 %), the last one started closes at once.\n"
+            "About to spill into the RAM (97 %), the one taking the most VRAM closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
