@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.67 alpha — 2026-11-03
+
+- Output check looks at the pixels: NaN and inf in every frame, and frames exactly the same as another anywhere in the sequence. Duplicates are found by the pixels, as an EXR's header differs from frame to frame.
+- It runs in the background when a render ends (Settings > General > Check pixels when a render ends, on by default) and with the Check pixels button in Output: about 0.1 s a 4K frame, 702 frames in about a minute. It only reports: Problems lists the frames, the chunk map marks them, the Log has them. EXR needs numpy and OpenEXR.
+
 ## 0.66.1 alpha — 2026-11-03
 
 - Rendering a card again starts all its processes at once. Since 0.65 it started one, and the others about 10 s apart, each after the one before had rendered a frame: the render still knew the single place it had on its last chunks, so the rule for processes coming back took over from the start.

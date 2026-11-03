@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.66.1 alpha.** It works in tests; expect rough edges.
+**Version 0.67 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -22,6 +22,7 @@ on disk.
   The disk cache stays, and Resume clears nothing. A Nuke has to be restarted once after an update to take part.
 - **Output check.**
   - Image sequences: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames.
+  - Pixels, when a render ends or with Check pixels: NaN and inf in every frame, and frames exactly the same as another anywhere in the sequence. In the background, it only reports (Settings > General).
   - Movies (MOV / MP4 / MXF): codec, profile, fps, resolution, timecode and frame count against the Write's settings.
     The movie has a looping player with zoom.
   - Rendered frames: a frame bar with Play and a slider under the preview, and an enlarged view over the panes.

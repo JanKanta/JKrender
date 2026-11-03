@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.66.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.67 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -11,6 +11,7 @@ truncated EXR / PNG / JPEG / DPX, suspiciously small).
 
 import collections
 import concurrent.futures
+import hashlib
 import copy
 import datetime
 import json
@@ -49,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.66.1 alpha"
+APP_VERSION = "0.67 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -67,7 +68,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_pixels": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -454,6 +455,38 @@ def check_file(path):
     return "ok", size, ""
 
 
+def check_pixels(paths):
+    """What only the pixels can tell, for one frame: {"nan", "inf", "hash"}, or {"error"}. The hash is of the pixels of an
+    EXR, not of the file: its header holds the time it was written, so two identical frames have different files."""
+    digest = hashlib.blake2b(digest_size=16)
+    nan = inf = 0
+    try:
+        for path in paths:
+            if path.lower().endswith(".exr"):
+                import numpy as np
+                import OpenEXR
+
+                with OpenEXR.File(path) as f:
+                    channels = f.channels()
+                    for name in sorted(channels):
+                        pixels = channels[name].pixels
+                        digest.update(pixels.tobytes())
+                        if pixels.dtype.kind == "f":
+                            broken = ~np.isfinite(pixels)
+                            if broken.any():
+                                n = int(np.isnan(pixels).sum())
+                                nan += n
+                                inf += int(broken.sum()) - n
+            else:
+                with open(path, "rb") as f:
+                    digest.update(f.read())
+    except ImportError:
+        return {"error": "needs numpy and OpenEXR"}
+    except Exception as exc:
+        return {"error": str(exc)[:120]}
+    return {"nan": nan, "inf": inf, "hash": digest.hexdigest()}
+
+
 def _exr_rgb(path):
     import numpy as np
     import OpenEXR
@@ -657,7 +690,7 @@ class Chunk:
 
 
 class Frame:
-    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk")
+    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as")
 
     def __init__(self):
         self.state = "queued"  # queued / rendering / done / failed / bad / skipped
@@ -667,6 +700,8 @@ class Frame:
         self.checks = {}  # output index -> (status, size, note)
         self.small = False
         self.chunk = None
+        self.pixels = None  # check_pixels of the frame
+        self.same_as = None  # the first frame with exactly the same pixels
 
 
 class Worker:
@@ -740,6 +775,9 @@ class RenderEngine:
         self.settings = settings
         self.events = pyqueue.Queue()
         self.checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pixel_checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pixels_pending = 0
+        self.pixels_total = 0
         self.outputs = []  # [(write name, path pattern)]
         for w in job.get("writes", []):
             pattern = w.get("output") or ""
@@ -915,7 +953,7 @@ class RenderEngine:
                     self.frames[f].state = "queued"
         for fr in self.frames.values():
             if fr.state == "queued":  # a check from an earlier run says nothing about the frame about to be rendered
-                fr.checks, fr.small = {}, False
+                fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
         if not everything:
             self.scan_disk()  # frames already on disk and passing the check are never rendered twice
         if all(w.state == "gone" for w in self.workers.values()):
@@ -1129,7 +1167,7 @@ class RenderEngine:
                 c.frames = [f for f in c.frames if f not in frames]
         for f in frames:
             fr = self.frames[f]
-            fr.state, fr.secs, fr.checks, fr.small, fr.worker = "queued", None, {}, False, None
+            fr.state, fr.secs, fr.checks, fr.small, fr.worker, fr.pixels, fr.same_as = "queued", None, {}, False, None, None, None
         self.chunks = [c for c in self.chunks if c.state != "queued" or c.frames]
         made = self._chunk(frames)
         self.note("Queued %d frame(s) again in %d chunk(s)%s" % (len(frames), len(made),
@@ -1449,6 +1487,8 @@ class RenderEngine:
                 self._on_exit(ev[1], ev[2])
             elif kind == "check":
                 self._on_check(*ev[1:])
+            elif kind == "pixels":
+                self._on_pixels(*ev[1:])
         self._end_stuck()
         if self._small_dirty:
             self._flag_small()
@@ -1698,6 +1738,51 @@ class RenderEngine:
             self.note("!! frame %d: %s %s %s" % (frame, result[0], os.path.basename(self.output_files(frame)[idx]), result[2]), "err")
         self._small_dirty = True
 
+    def check_all_pixels(self):
+        """Settings > Check pixels when a render ends, and the button: NaN and inf in every frame, and frames that are
+        exactly the same anywhere in the sequence. In the background, whatever else goes on. Not for a movie."""
+        if self.movie or self.pixels_pending:
+            return
+        frames = [f for f, fr in sorted(self.frames.items()) if fr.state in ("done", "skipped", "bad")]
+        self.pixels_pending = self.pixels_total = len(frames)
+        for f in frames:
+            try:
+                fut = self.pixel_checker.submit(check_pixels, self.output_files(f))
+            except RuntimeError:  # closing
+                self.pixels_pending = 0
+                return
+            fut.add_done_callback(lambda fu, f=f: fu.cancelled() or self.events.put(("pixels", f, fu.result())))
+
+    def _on_pixels(self, frame, result):
+        self.pixels_pending -= 1
+        if frame in self.frames:
+            self.frames[frame].pixels = result
+        if self.pixels_pending > 0:
+            return
+        first, broken, same, errors = {}, [], [], {}
+        for f, fr in sorted(self.frames.items()):
+            fr.same_as = None
+            if not fr.pixels:
+                continue
+            if "error" in fr.pixels:
+                errors.setdefault(fr.pixels["error"], []).append(f)
+                continue
+            if fr.pixels["nan"] or fr.pixels["inf"]:
+                broken.append(f)
+            if fr.pixels["hash"] in first:
+                fr.same_as = first[fr.pixels["hash"]]
+                same.append(f)
+            else:
+                first[fr.pixels["hash"]] = f
+        if broken:
+            self.note("!! NaN or inf pixels in %d frame(s): %s" % (len(broken), frames_to_spec(broken)), "err")
+        if same:
+            self.note("! %d frame(s) exactly the same as an earlier one: %s. Fine if it is meant to hold." % (len(same), frames_to_spec(same)), "warn")
+        for text, frames in errors.items():
+            self.note("! Pixels not checked in %d frame(s): %s" % (len(frames), text), "warn")
+        if not broken and not same and not errors:
+            self.note("Pixels checked in %d frames: no NaN, no inf, no frame the same as another" % self.pixels_total, "ok")
+
     def _flag_small(self):
         """A frame far smaller than the median of its sequence is often black or half empty."""
         self._small_dirty = False
@@ -1847,6 +1932,8 @@ class RenderEngine:
             "finished" if not failed else "ended with failures", fmt_secs(self.elapsed()), len(self.frames), len(bad)),
             "err" if failed or bad else "ok")
         self.write_report()
+        if self.settings.get("check_pixels", True) and not self.job.get("test_out"):
+            self.check_all_pixels()
 
     # ---- numbers ------------------------------------------------------------
     def elapsed(self):
@@ -1926,6 +2013,7 @@ class RenderEngine:
             if w.state != "gone":
                 self._kill(w, requeue=False, note="closed")
         self.checker.shutdown(wait=False, cancel_futures=True)
+        self.pixel_checker.shutdown(wait=False, cancel_futures=True)
 
 
 class RenderManager:
@@ -2512,8 +2600,25 @@ QLabel#tileValue { font-size: 14pt; font-weight: 600; }
 """ % C
 
 
+def pixels_broken(fr):
+    return bool(fr.pixels and (fr.pixels.get("nan") or fr.pixels.get("inf")))
+
+
+def pixels_note(fr):
+    """Words for what the pixel check found in a frame, or ""."""
+    notes = []
+    if pixels_broken(fr):
+        notes += ["%d NaN" % fr.pixels["nan"]] if fr.pixels["nan"] else []
+        notes += ["%d inf" % fr.pixels["inf"]] if fr.pixels["inf"] else []
+    if fr.same_as is not None:
+        notes.append("same as %d" % fr.same_as)
+    return ", ".join(notes)
+
+
 def frame_color(fr):
-    if fr.state == "done" and fr.small:
+    if pixels_broken(fr):
+        return QtGui.QColor(C["failed"])
+    if fr.state == "done" and (fr.small or fr.same_as is not None):
         return QtGui.QColor(C["small"])
     return QtGui.QColor(C.get(fr.state, C["queued"]))
 
@@ -2602,6 +2707,8 @@ class FrameMap(QtWidgets.QWidget):
             lines.append("%s  %s  %s" % (chk[0], fmt_size(chk[1]), chk[2]))
         if fr.small:
             lines.append("Much smaller than the other frames")
+        if pixels_note(fr):
+            lines.append(pixels_note(fr))
         QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
 
     def mousePressEvent(self, event):
@@ -4126,7 +4233,7 @@ class FramesModel(QtCore.QAbstractTableModel):
 
     @staticmethod
     def _problem(fr):
-        return fr.state in ("bad", "failed") or fr.small
+        return fr.state in ("bad", "failed") or fr.small or pixels_broken(fr) or fr.same_as is not None
 
     def touch(self):
         if self.mode == "Problems":
@@ -4171,16 +4278,17 @@ class FramesModel(QtCore.QAbstractTableModel):
                 sizes = [c[1] for c in fr.checks.values() if c[1] is not None]
                 return fmt_size(sum(sizes)) if sizes else ""
             if col == 6:
+                note = pixels_note(fr)
                 if not fr.checks:
-                    return ""
+                    return note
                 bad = [c for c in fr.checks.values() if c[0] != "ok"]
                 if bad:
                     return "%s %s" % (bad[0][0], bad[0][2])
-                return "small (check it)" if fr.small else "ok"
+                return note or ("small (check it)" if fr.small else "ok")
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
-            if fr.state in ("bad", "failed"):
+            if fr.state in ("bad", "failed") or pixels_broken(fr):
                 return QtGui.QColor(C["failed"])
-            if fr.small:
+            if fr.small or fr.same_as is not None:
                 return QtGui.QColor(C["small"])
             if fr.state in ("done", "skipped"):
                 return QtGui.QColor(C["done"])
@@ -4678,6 +4786,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Go on after a crash", [self.c_resume],
             "If JKrender went down while rendering, its cards come back the next time it opens, with what is on disk counted.\n"
             "On: the renders that were going start again by themselves. Off: they wait for Render.")
+        self.c_pixels = toggle("check_pixels", True)
+        row(gen, "Check pixels when a render ends", [self.c_pixels],
+            "NaN and inf in every frame, and frames exactly the same as another anywhere in the sequence, in the background.\n"
+            "About 0.1 s a 4K frame. It needs numpy and OpenEXR for EXR files, and only reports: nothing renders again by itself.")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -4899,7 +5011,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_pixels, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -5038,11 +5150,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_filter.addItems(["All", "Rendered", "Problems"])
         self.out_filter.currentTextChanged.connect(self._out_filter)
         bar.addWidget(self.out_filter)
-        for text, fn in (("Check all again", self._verify), ("Open folder", self._open_folder),
+        for text, fn in (("Check all again", self._verify), ("Check pixels", self._check_pixels), ("Open folder", self._open_folder),
                          ("Delete", self._delete_dialog)):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
+            if text == "Check pixels":
+                b.setToolTip("Looks at every pixel of every rendered frame, in the background: NaN and inf,\n"
+                             "and frames exactly the same as another anywhere in the sequence.")
         self.b_delete = b
         self.b_delete.setToolTip("Delete rendered frames of this render from disk: a frame range, or all of them")
         bar.addStretch(1)
@@ -5586,17 +5701,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.t_check.value.setStyleSheet("color: %s;" % color)
             self._update_movie()
         else:
-            self.t_check.set("%d bad" % bad if bad else ("ok" if checked else "—"),
+            broken_pixels = sum(pixels_broken(fr) for fr in e.frames.values())
+            self.t_check.set("%d bad" % (bad + broken_pixels) if bad or broken_pixels else ("ok" if checked else "—"),
                              "%d checked · %d small" % (len(checked), small))
-            self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad else (C["done"] if checked else C["text"])))
+            self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad or broken_pixels else (C["done"] if checked else C["text"])))
         self._update_chunks()
         self._update_system()
         self.frames_model.touch()
         total_size = sum(ch[1] or 0 for fr in e.frames.values() for ch in fr.checks.values())
         missing = sum(1 for fr in checked if any(ch[0] == "missing" for ch in fr.checks.values()))
         broken = sum(1 for fr in checked if any(ch[0] in ("empty", "truncated", "unreadable") for ch in fr.checks.values()))
-        self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small · %s on disk"
-                                 % (len(e.frames), len(checked), missing, broken, small, fmt_size(total_size)))
+        pixels = ""
+        if e.pixels_pending:
+            pixels = " · checking pixels %d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total)
+        elif any(fr.pixels and "error" in fr.pixels for fr in e.frames.values()):
+            pixels = " · pixels not checked, see the Log"
+        elif any(fr.pixels for fr in e.frames.values()):
+            pixels = " · %d with NaN or inf · %d same as another" % (sum(pixels_broken(fr) for fr in e.frames.values()),
+                                                                    sum(fr.same_as is not None for fr in e.frames.values()))
+        self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small%s · %s on disk"
+                                 % (len(e.frames), len(checked), missing, broken, small, pixels, fmt_size(total_size)))
         self.gantt.update()
         if self._details_shown():
             self._update_details()
@@ -5945,6 +6069,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _verify(self):
         self.engine.verify_all()
+
+    def _check_pixels(self):
+        self.engine.check_all_pixels()
 
     def _out_filter(self, text):
         self.frames_model.mode = text
