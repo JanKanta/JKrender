@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.65.4 alpha — 2026-11-03
+
+- Measure nodes no longer looks at VRAM: it shows the frame time and the slowest nodes.
+
 ## 0.65.3 alpha — 2026-11-03
 
 - Settings > Measure nodes, under Analyze script: 6 frames in one Nuke to a test folder, then the slowest nodes from Nuke's timers and whether the VRAM keeps growing. Nothing is saved or changed.

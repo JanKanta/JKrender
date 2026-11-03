@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.65.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.65.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.65.3 alpha"
+APP_VERSION = "0.65.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2943,7 +2943,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
 
 class NodeMeasure(QtWidgets.QDialog):
     """Settings > Measure nodes: a few frames from the middle of the render in one Nuke, to a test folder. Nuke's timers give
-    each node's time, and the process's VRAM shows whether it keeps growing. Nothing is saved, and the frames are deleted."""
+    each node's time. Nothing is saved, and the frames are deleted."""
 
     FRAMES = 6
     LIMIT = 300  # seconds for one run
@@ -3000,14 +3000,13 @@ class NodeMeasure(QtWidgets.QDialog):
                                 + gpu + ["-t", str(WORKER_SCRIPT)], **kwargs)
 
     def _once(self):
-        """One Nuke, the frames, and what its VRAM did: {"secs": [...], "vram": [GB after each frame], "nodes": ...}."""
+        """One Nuke and the frames: {"secs": [...], "nodes": ...}."""
         self.proc = proc = self._nuke()
         if self.stopping:  # closed in the moment it started
             proc.kill()
         killer = threading.Timer(self.LIMIT, proc.kill)
         killer.start()
-        got = {"secs": [], "vram": [], "failed": "", "nodes": []}
-        vram = lambda: (self.main._gpu_procs or {}).get(proc.pid, (0, 0))[1] / 1024.0 ** 3
+        got = {"secs": [], "failed": "", "nodes": []}
         def until(*kinds):
             for line in proc.stdout:
                 m = re.search(r"JKR (FRAME|CHUNK|FAIL|ERROR|INFO) ?(.*)$", line.rstrip())
@@ -3021,14 +3020,9 @@ class NodeMeasure(QtWidgets.QDialog):
             return None
 
         try:
-            for frame in self.frames:  # one at a time, with a pause: the counters read every 2 s
-                proc.stdin.write("RENDER M %d\n" % frame)
-                proc.stdin.flush()
-                if until("CHUNK") is None:
-                    break
-                time.sleep(2.2)
-                got["vram"].append(vram())
-            else:
+            proc.stdin.write("RENDER M %s\n" % frames_to_spec(self.frames))
+            proc.stdin.flush()
+            if until("CHUNK") is not None:
                 proc.stdin.write("PROFILE\n")
                 proc.stdin.flush()
                 info = until("INFO")
@@ -3071,17 +3065,6 @@ class NodeMeasure(QtWidgets.QDialog):
             return
         self._show(self.outcome)
 
-    @staticmethod
-    def growth(run):
-        """GB of VRAM per frame from the third frame on: a Nuke warming up over its first frames is not growth."""
-        v = run["vram"][2:]
-        return (v[-1] - v[0]) / max(1, len(v) - 1) if len(v) >= 2 else 0.0
-
-    def _verdict(self, run):
-        grow = self.growth(run)
-        return "VRAM %s: %.1f GB after %d frames, %.2f GB per frame. Frame time %.2f s." % (
-            "keeps growing" if grow >= 0.15 else "does not keep growing", run["vram"][-1], len(self.frames), grow, sum(run["secs"]) / len(run["secs"]))
-
     def _table(self, heads, rows):
         table = QtWidgets.QTableWidget(len(rows), len(heads))
         table.setHorizontalHeaderLabels(heads)
@@ -3096,7 +3079,7 @@ class NodeMeasure(QtWidgets.QDialog):
         return table
 
     def _show(self, run):
-        verdict = self._verdict(run)
+        verdict = "Frame time %.2f s, %d frames in one Nuke." % (sum(run["secs"]) / len(run["secs"]), len(self.frames))
         self.status.setText(verdict)
         self.status.setStyleSheet("font-weight: 600;")
         total = sum(n[2] for n in run["nodes"]) or 1
@@ -4654,8 +4637,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
         row(procs, "Analyze", [self.b_analyze])
         self.b_measure = QtWidgets.QPushButton("Measure nodes…")
-        self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes,\n"
-                                  "and what the VRAM does. Nothing else should render. Nothing is saved or changed.")
+        self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes.\n"
+                                  "Nothing else should render. Nothing is saved or changed.")
         self.b_measure.clicked.connect(self._measure_nodes)
         row(procs, "Measure", [self.b_measure])
         self.l_ram_need = note(procs, QtWidgets.QLabel(""))
