@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.68 alpha — 2026-11-03
+
+- Check pixels also finds black, empty and one-colour frames, and frames whose size, channels, bit depth or compression differ from the rest of the sequence. All shown in red; it only reports.
+- Measured: 702 frames at 4K in 55 s, with no false finding of these. Every 8th pixel is looked at first, so a normal frame costs next to nothing more.
+
 ## 0.67.1 alpha — 2026-11-03
 
 - Duplicate frames show in red, like NaN and inf: in the chunk map, the frame list, the Output check tile and the Log.

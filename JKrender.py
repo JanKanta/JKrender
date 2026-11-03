@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.67.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.68 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.67.1 alpha"
+APP_VERSION = "0.68 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -455,11 +455,49 @@ def check_file(path):
     return "ok", size, ""
 
 
+def _one_value(pixels):
+    """The value of every channel if the whole image holds just one, else None. Every 8th pixel first: min and max of a whole
+    4K frame take 0.14 s, and nearly every frame shows at once that it is not one colour."""
+    import numpy as np
+
+    for image in (pixels[::8, ::8], pixels):
+        low, high = image.min(axis=(0, 1)), image.max(axis=(0, 1))
+        if not np.all(low == high):
+            return None
+    return np.atleast_1d(low)
+
+
+def _blank(channels):
+    """"empty", "black" or "one colour" for a frame like that, else None. A frame without RGB channels is not judged."""
+    rgb, alpha = [], None
+    for name, channel in channels.items():
+        pixels = channel.pixels
+        if name in ("RGB", "RGBA") and pixels.ndim == 3:
+            rgb.append(pixels[:, :, :3])
+            alpha = pixels[:, :, 3] if name == "RGBA" else alpha
+        elif name in ("R", "G", "B"):
+            rgb.append(pixels)
+        elif name == "A":
+            alpha = pixels
+    if not rgb:
+        return None
+    values = [_one_value(p) for p in rgb]
+    if any(v is None for v in values):
+        return None
+    if any(v.any() for v in values):
+        return "one colour"
+    if alpha is None:
+        return "black"
+    one = _one_value(alpha)
+    return "empty" if one is not None and not one.any() else "black"
+
+
 def check_pixels(paths):
-    """What only the pixels can tell, for one frame: {"nan", "inf", "hash"}, or {"error"}. The hash is of the pixels of an
-    EXR, not of the file: its header holds the time it was written, so two identical frames have different files."""
+    """What only the pixels can tell, for one frame: {"nan", "inf", "hash", "blank", "props"}, or {"error"}. The hash is of the
+    pixels of an EXR, not of the file: its header holds the time it was written, so two identical frames have different files."""
     digest = hashlib.blake2b(digest_size=16)
     nan = inf = 0
+    blank, props = None, {}
     try:
         for path in paths:
             if path.lower().endswith(".exr"):
@@ -468,6 +506,12 @@ def check_pixels(paths):
 
                 with OpenEXR.File(path) as f:
                     channels = f.channels()
+                    header = f.header()
+                    (x0, y0), (x1, y1) = header["displayWindow"]
+                    props = {"size": "%dx%d" % (x1 - x0 + 1, y1 - y0 + 1), "channels": " ".join(sorted(channels)),
+                             "bit depth": " ".join(sorted({str(c.pixels.dtype) for c in channels.values()})),
+                             "compression": str(header.get("compression", "")).split(".")[-1].replace("_COMPRESSION", "")}
+                    blank = blank or _blank(channels)
                     for name in sorted(channels):
                         pixels = channels[name].pixels
                         digest.update(pixels.tobytes())
@@ -484,7 +528,7 @@ def check_pixels(paths):
         return {"error": "needs numpy and OpenEXR"}
     except Exception as exc:
         return {"error": str(exc)[:120]}
-    return {"nan": nan, "inf": inf, "hash": digest.hexdigest()}
+    return {"nan": nan, "inf": inf, "hash": digest.hexdigest(), "blank": blank, "props": props}
 
 
 def _exr_rgb(path):
@@ -1759,7 +1803,13 @@ class RenderEngine:
             self.frames[frame].pixels = result
         if self.pixels_pending > 0:
             return
-        first, broken, same, errors = {}, [], [], {}
+        first, broken, same, errors, blank, differs = {}, [], [], {}, {}, {}
+        # what most frames have: a frame with something else was rendered another way
+        usual = {}
+        for fr in self.frames.values():
+            for key, value in ((fr.pixels or {}).get("props") or {}).items():
+                usual.setdefault(key, collections.Counter())[value] += 1
+        usual = {key: counts.most_common(1)[0][0] for key, counts in usual.items()}
         for f, fr in sorted(self.frames.items()):
             fr.same_as = None
             if not fr.pixels:
@@ -1769,7 +1819,12 @@ class RenderEngine:
                 continue
             if fr.pixels["nan"] or fr.pixels["inf"]:
                 broken.append(f)
-            if fr.pixels["hash"] in first:
+            fr.pixels["differs"] = ["%s %s, the rest %s" % (key, value, usual[key]) for key, value in fr.pixels["props"].items() if value != usual[key]]
+            if fr.pixels["differs"]:
+                differs[f] = fr.pixels["differs"]
+            if fr.pixels["blank"]:
+                blank.setdefault(fr.pixels["blank"], []).append(f)
+            elif fr.pixels["hash"] in first:
                 fr.same_as = first[fr.pixels["hash"]]
                 same.append(f)
             else:
@@ -1778,10 +1833,14 @@ class RenderEngine:
             self.note("!! NaN or inf pixels in %d frame(s): %s" % (len(broken), frames_to_spec(broken)), "err")
         if same:
             self.note("!! %d frame(s) exactly the same as an earlier one: %s. Fine if it is meant to hold." % (len(same), frames_to_spec(same)), "err")
+        for kind, frames in blank.items():
+            self.note("!! %d frame(s) %s: %s. Fine if it is meant to be." % (len(frames), kind, frames_to_spec(frames)), "err")
+        for f, notes in sorted(differs.items()):
+            self.note("!! frame %d differs from the sequence: %s" % (f, "; ".join(notes)), "err")
         for text, frames in errors.items():
             self.note("! Pixels not checked in %d frame(s): %s" % (len(frames), text), "warn")
-        if not broken and not same and not errors:
-            self.note("Pixels checked in %d frames: no NaN, no inf, no frame the same as another" % self.pixels_total, "ok")
+        if not broken and not same and not errors and not blank and not differs:
+            self.note("Pixels checked in %d frames: no NaN, no inf, no blank frame, none the same as another, all alike" % self.pixels_total, "ok")
 
     def _flag_small(self):
         """A frame far smaller than the median of its sequence is often black or half empty."""
@@ -2601,15 +2660,17 @@ QLabel#tileValue { font-size: 14pt; font-weight: 600; }
 
 
 def pixels_broken(fr):
-    return bool(fr.pixels and (fr.pixels.get("nan") or fr.pixels.get("inf")))
+    return bool(fr.pixels and (fr.pixels.get("nan") or fr.pixels.get("inf") or fr.pixels.get("blank") or fr.pixels.get("differs")))
 
 
 def pixels_note(fr):
     """Words for what the pixel check found in a frame, or ""."""
     notes = []
     if pixels_broken(fr):
-        notes += ["%d NaN" % fr.pixels["nan"]] if fr.pixels["nan"] else []
-        notes += ["%d inf" % fr.pixels["inf"]] if fr.pixels["inf"] else []
+        notes += ["%d NaN" % fr.pixels["nan"]] if fr.pixels.get("nan") else []
+        notes += ["%d inf" % fr.pixels["inf"]] if fr.pixels.get("inf") else []
+        notes += [fr.pixels["blank"]] if fr.pixels.get("blank") else []
+        notes += fr.pixels.get("differs") or []
     if fr.same_as is not None:
         notes.append("same as %d" % fr.same_as)
     return ", ".join(notes)
@@ -4788,7 +4849,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "On: the renders that were going start again by themselves. Off: they wait for Render.")
         self.c_pixels = toggle("check_pixels", True)
         row(gen, "Check pixels when a render ends", [self.c_pixels],
-            "NaN and inf in every frame, and frames exactly the same as another anywhere in the sequence, in the background.\n"
+            "NaN and inf, black, empty or one-colour frames, frames exactly the same as another, and a size, channels, bit depth\n"
+            "or compression unlike the rest of the sequence, in the background.\n"
             "About 0.1 s a 4K frame. It needs numpy and OpenEXR for EXR files, and only reports: nothing renders again by itself.")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
@@ -5156,8 +5218,8 @@ class MainWindow(QtWidgets.QMainWindow):
             b.clicked.connect(fn)
             bar.addWidget(b)
             if text == "Check pixels":
-                b.setToolTip("Looks at every pixel of every rendered frame, in the background: NaN and inf,\n"
-                             "and frames exactly the same as another anywhere in the sequence.")
+                b.setToolTip("Looks at every pixel of every rendered frame, in the background: NaN and inf, black, empty or one-colour frames,\n"
+                             "frames exactly the same as another anywhere in the sequence, and a size, channels, bit depth or compression unlike the rest.")
         self.b_delete = b
         self.b_delete.setToolTip("Delete rendered frames of this render from disk: a frame range, or all of them")
         bar.addStretch(1)
@@ -5717,8 +5779,8 @@ class MainWindow(QtWidgets.QMainWindow):
         elif any(fr.pixels and "error" in fr.pixels for fr in e.frames.values()):
             pixels = " · pixels not checked, see the Log"
         elif any(fr.pixels for fr in e.frames.values()):
-            pixels = " · %d with NaN or inf · %d same as another" % (sum(pixels_broken(fr) for fr in e.frames.values()),
-                                                                    sum(fr.same_as is not None for fr in e.frames.values()))
+            pixels = " · %d with faults in the pixels · %d same as another" % (sum(pixels_broken(fr) for fr in e.frames.values()),
+                                                                              sum(fr.same_as is not None for fr in e.frames.values()))
         self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small%s · %s on disk"
                                  % (len(e.frames), len(checked), missing, broken, small, pixels, fmt_size(total_size)))
         self.gantt.update()
