@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.65 alpha — 2026-11-03
+
+- A process comes back only if it really fits. The old count took a process just restarted at 2 GB as full size, so three restarts let 8 back where 1 fitted. Now the RAM left under the limit, less a 2 % margin and what the running processes will still take, must hold one process of the size seen this run (before that, its cache + 4 GB).
+- They come back one at a time, each after the one before has rendered a frame. After one closes for memory the next waits 30 s, then 60, 120 and 300 s if they keep closing; after 10 minutes without one it is forgotten.
+- After a crash the cards come back the next time JKrender opens, or with JKrender > Reopen Renders After a Crash in Nuke (a Nuke needs a restart for the menu). What is on disk counts, and Nuke processes left behind are ended, only ones with the noted start time.
+- Settings > General > Go on after a crash (off by default): the renders that were going start again by themselves. Off, they wait for Render.
+
 ## 0.64.5 alpha — 2026-11-02
 
 - One more project detail out of this changelog.

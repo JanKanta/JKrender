@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.64.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.65 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,11 +49,12 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.64.5 alpha"
+APP_VERSION = "0.65 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
 TEST_RESULTS = HOME_DIR / "test_results"  # and its tables, kept
+QUEUE_FILE = HOME_DIR / "queue.json"  # the cards while the window is open; still there on opening means it did not close properly
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
 
 # Movie containers are one file for the whole range, so they render in one piece on one worker.
@@ -66,7 +67,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -98,6 +99,31 @@ def write_settings(settings):
         os.replace(temp, SETTINGS_FILE)
     except Exception:
         pass
+
+
+def read_queue():
+    try:
+        return json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def end_leftovers(pids):
+    """The Nuke processes of a JKrender that went down: they would keep the memory and write over the same files.
+    Only a Nuke with the very start time noted, never another process that got the same number."""
+    if not psutil:
+        return 0
+    ended = []
+    for pid, created in pids:
+        try:
+            proc = psutil.Process(pid)
+            if abs(proc.create_time() - created) < 1 and "nuke" in proc.name().lower():
+                proc.kill()
+                ended.append(proc)
+        except Exception:
+            pass
+    psutil.wait_procs(ended, timeout=10)  # Windows keeps their files locked until they are gone
+    return len(ended)
 
 
 def is_secret_env(name):
@@ -659,6 +685,7 @@ class Worker:
         self.ready_at = None
         self.load_secs = None
         self.frames_done = 0
+        self.frames_here = 0  # by this very Nuke; frames_done and frame_secs go on from the one it replaced
         self.frame_secs = []
         self.segments = []  # [kind, label, t0, t1 or None, state]
         self.tail = collections.deque(maxlen=200)
@@ -742,6 +769,7 @@ class RenderEngine:
         self.workers = {}
         self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
         self.filling = True  # all its processes still to start (see _may_spawn)
+        self.size_seen = 0.0  # GB of the largest process of this run that has rendered a few frames
         self.preferred_wids = []  # names moved here with Work on, taken by the next processes started
         self.hand_wids = set()  # of those, the ones you started by hand: they go past the RAM and VRAM limits
         self.scope = None  # set of frames: only these render (Render this frame / batch); None = everything
@@ -867,6 +895,7 @@ class RenderEngine:
         if self.state in ("rendering", "starting", "finishing"):
             return
         self.filling = True  # all its processes still to start (see _may_spawn)
+        self.size_seen = 0.0
         self.crashes = self.load_failures = 0  # a new run: the last one's crashes must not stop it at its first
         self.ever_ready = False
         self.scope = None  # Render renders everything still to render
@@ -1431,6 +1460,8 @@ class RenderEngine:
                 try:
                     w.rss = w.ps.memory_info().rss / 1024 ** 3
                     w.rss_peak = max(w.rss_peak, w.rss)
+                    if w.frames_here >= 2:
+                        self.size_seen = max(self.size_seen, w.rss)
                 except Exception:
                     pass
         return changed
@@ -1481,6 +1512,7 @@ class RenderEngine:
             secs = max(0.0, secs - self.paused_between(now - secs, now))  # Nuke's clock ran on while frozen
             w.frame = None
             w.frames_done += 1
+            w.frames_here += 1
             w.frame_secs.append(secs)
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
@@ -1690,6 +1722,11 @@ class RenderEngine:
         self.settings["script_ram"] = need
         if not self.settings.get("_test"):
             write_settings(self.settings)
+
+    def size_gb(self):
+        """GB one Nuke process of this render takes: the largest seen this run once one has rendered a few frames;
+        before that its cache and what a process takes besides it. A process just loaded is far smaller than it will be."""
+        return self.size_seen or self.ram + BESIDE_CACHE
 
     def ram_need(self):
         """GB per Nuke process this script took last time, or None."""
@@ -1913,6 +1950,7 @@ class RenderManager:
         self._vram_others_noted = 0.0
         self.vram_idle = None  # MB of VRAM in use while none of our Nuke processes ran
         self._vram_lowered_at = None  # VRAM % when the VRAM limit last took a process away
+        self.falls = collections.deque(maxlen=20)  # when a process last closed for memory (see fall_wait)
         self._running = set()  # renders running at the last tick, to see one end (see _start_next)
         self.started_by_hand = 0.0  # until then the RAM and VRAM limits leave a process started by hand alone
         self._vram_ok_since = None
@@ -1968,32 +2006,30 @@ class RenderManager:
         return psutil.virtual_memory().percent if psutil else 0.0
 
     def _more_fit(self, pct, limit):
-        """How many more Nuke processes fit under the limit: the RAM left, split by what one process takes. It counts
-        the RAM that processes still loading or on their first frame are about to take (what their script took
-        last time, or else their cache and what a process takes besides it)."""
+        """How many more Nuke processes fit: the RAM left under the limit, less a margin and what the processes running
+        now are still going to take, split by the size of one process."""
         if not psutil:
             return 0
         total = psutil.virtual_memory().total / 1024 ** 3
-        growing = 0.0
+        room = total * (limit - 2 - pct) / 100.0
         for e in self.engines:
-            need = e.ram_need()
             for w in e.workers.values():
-                if w.state != "gone":
-                    growing += max(0.0, (need or (0.0 if w.frame_secs else e.ram + BESIDE_CACHE)) - w.rss) / total * 100
-        return max(0, int((limit - 2 - pct - growing) // max(0.5, self._process_ram_percent())))
+                if w.state in ("loading", "idle", "busy"):
+                    room -= max(0.0, e.size_gb() - w.rss)
+        one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
+        return max(0, int(room // max(0.5, one)))
 
-    def _process_ram_percent(self):
-        """RAM one Nuke process of these renders takes, as % of the PC's RAM (the largest one, to be safe)."""
-        sizes = [w.rss for e in self.engines for w in e.workers.values() if w.state != "gone" and w.rss]
-        # still-loading processes are small; what the script took last time is the better guess
-        sizes += [e.ram_need() for e in self.engines if e.state == "rendering" and e.ram_need()]
-        # nothing rendered yet: its cache and what a process takes besides it
-        sizes += [e.ram + BESIDE_CACHE for e in self.engines if e.state == "rendering"
-                  and not any(w.frame_secs for w in e.workers.values())]
-        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 0
-        if not sizes or not total:
-            return 8.0
-        return max(sizes) / total * 100
+    def _fell(self):
+        self.falls.append(time.time())
+
+    def fall_wait(self):
+        """Seconds until a process may come back after one closed for memory: 30, then 60, 120 and 300 as they keep
+        closing within 10 minutes, so a script that does not fit does not go round and round."""
+        now = time.time()
+        recent = [t for t in self.falls if now - t < 600]
+        if not recent:
+            return 0.0
+        return max(0.0, recent[-1] + (30, 60, 120, 300)[min(len(recent), 4) - 1] - now)
 
     def _vram_idle_update(self):
         """VRAM in use while no Nuke process of JKrender runs: Windows, other programs. The rest is ours, including
@@ -2045,6 +2081,16 @@ class RenderManager:
         only push the PC over a limit, and a process would be closed again. The first one always starts."""
         if self.live_count() == 0:
             return ""
+        now = time.time()
+        if self.settings.get("ram_guard", True) or self.settings.get("vram_guard", True):
+            wait = self.fall_wait()
+            if wait:
+                return "one closed for memory, the next can try in %d s" % math.ceil(wait)
+            # one at a time: how much one really takes shows only once it has rendered
+            first = next((w for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")
+                          and not w.frames_here and now - w.spawned < 300), None)
+            if first is not None:
+                return "%s has not rendered its first frame yet" % first.name
         if psutil and self.settings.get("ram_guard", True):
             limit = float(self.settings.get("ram_limit", 90))
             pct = self.ram_percent()
@@ -2109,6 +2155,7 @@ class RenderManager:
             cap = max(1, min(self.budget(), live) - 1)
             if (self.ram_cap is None or (live <= self.ram_cap and cap < self.ram_cap)) and now >= self.started_by_hand:
                 self.ram_cap = cap
+                self._fell()
                 self._note_running("!! RAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                    % (pct, limit, cap), "warn")
             self._ram_ok_since = None
@@ -2120,13 +2167,14 @@ class RenderManager:
                     e.note("!! RAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
                     w.closed_why = "RAM limit"
                     e._kill(w, requeue=True, note="stopped")
+                    self._fell()
                     self._last_kill = now
         elif self.ram_cap is not None and self._more_fit(pct, limit) > 0:
             # Only processes that fit under the limit; one more would just push RAM over again and one
             # process would be closed and another started, round and round.
             if self._ram_ok_since is None:
                 self._ram_ok_since = now
-            elif now - self._ram_ok_since >= 15:
+            elif now - self._ram_ok_since >= 15 and not self.fall_wait():
                 self.ram_cap += self._more_fit(pct, limit)
                 self._ram_ok_since = now
                 if self.ram_cap >= self.total:
@@ -2208,6 +2256,7 @@ class RenderManager:
                 cap = max(1, min(self.budget(), live) - 1)
                 if (self.vram_cap is None or (live <= self.vram_cap and cap < self.vram_cap)) and now >= self.started_by_hand:
                     self.vram_cap = cap
+                    self._fell()
                     self._vram_lowered_at = pct
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
@@ -2221,12 +2270,13 @@ class RenderManager:
                     e.note("!! VRAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM limit"
                     e._kill(w, requeue=True, note="stopped")
+                    self._fell()
                     self._last_vram_kill = now
         elif self.vram_cap is not None:
             if pct + one < limit - 2:
                 if self._vram_ok_since is None:
                     self._vram_ok_since = now
-                elif now - self._vram_ok_since >= 15:
+                elif now - self._vram_ok_since >= 15 and not self.fall_wait():
                     self.vram_cap += 1
                     self._vram_ok_since = now
                     self._vram_lowered_at = None
@@ -3818,8 +3868,9 @@ class FramesModel(QtCore.QAbstractTableModel):
 # Window
 # ----------------------------------------------------------------------------
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, job_path, exit_when_done=False):
+    def __init__(self, job_path, exit_when_done=False, restoring=False):
         super().__init__()
+        self._queue_saved = None
         self.settings = read_settings()
         self.manager = RenderManager(self.settings)
         self.exit_when_done = exit_when_done
@@ -3856,7 +3907,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.slow = QtCore.QTimer(self)
         self.slow.timeout.connect(self._slow_tick)
         self.slow.start(1000)
-        if self.settings.get("auto_start", False) and not self.engine.nothing_to_render():
+        if self.settings.get("auto_start", False) and not self.engine.nothing_to_render() and not restoring:
             QtCore.QTimer.singleShot(300, self._start)
 
     # ---- renders ------------------------------------------------------------
@@ -3888,7 +3939,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if job_path:
             QtCore.QTimer.singleShot(0, lambda: self.add_job(job_path))
 
-    def add_job(self, job_path):
+    def add_job(self, job_path, auto=True):
         job_path = Path(job_path)
         job = json.loads(job_path.read_text(encoding="utf-8"))
         outputs = sorted(w.get("output") or "" for w in job.get("writes", []))
@@ -3905,9 +3956,53 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_card(e)
         self.select(e)
         self._bring_to_front()
-        if self.settings.get("auto_start", False) and not e.nothing_to_render():
+        if auto and self.settings.get("auto_start", False) and not e.nothing_to_render():
             self.manager.request_start(e)
             self._sync_controls()
+
+    def _save_queue(self):
+        """The cards and the Nuke processes, whole or not at all, whenever they change."""
+        if self.exit_when_done:
+            return
+        renders = [{"job": str(e.dir / "job.json"), "state": e.state, "range": e.range_text, "started": e.started} for e in self.manager.engines]
+        pids = []
+        for e in self.manager.engines:
+            for w in e.workers.values():
+                if w.state != "gone" and w.ps:
+                    try:
+                        pids.append([w.proc.pid, w.ps.create_time()])
+                    except Exception:
+                        pass
+        data = {"renders": renders, "pids": sorted(pids)}
+        if data == self._queue_saved:
+            return
+        try:
+            HOME_DIR.mkdir(parents=True, exist_ok=True)
+            temp = QUEUE_FILE.with_suffix(".tmp")
+            temp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            os.replace(temp, QUEUE_FILE)
+            self._queue_saved = data
+        except OSError:
+            pass
+
+    def restore(self, e, saved):
+        """A card as it was when JKrender went down. What the disk has counts; a render that was going is left
+        stopped, for Render to go on from the rest. True if it was going."""
+        if saved.get("range") and saved["range"] != e.range_text:
+            e.set_range(saved["range"])
+            e.scan_disk()
+            e.done_if_on_disk()
+        if saved.get("started"):
+            e.started = saved["started"]  # Nuke's temp files of that run go by this
+            e._clean_temp()
+            e.started = None
+        going = saved.get("state") in ("rendering", "paused", "finishing", "waiting")
+        if e.state != "done" and (going or saved.get("state") in ("stopped", "failed")):
+            e.state = "stopped"
+        if going:
+            e.note("!! Interrupted: JKrender went down while this rendered. What is on disk counts; Render goes on from the rest.", "err")
+        self._last_states.pop(e, None)
+        return going and e.state != "done"
 
     def _bring_to_front(self):
         if self.isMinimized():
@@ -4252,6 +4347,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Start next render when one ends", [self.c_next],
             "When a render finishes, the next render still waiting to be started starts by itself, in the order of the\n"
             "cards, and so on. A render you stopped stays stopped and does not start the next one.")
+        self.c_resume = toggle("resume_after_crash", False)
+        row(gen, "Go on after a crash", [self.c_resume],
+            "If JKrender went down while rendering, its cards come back the next time it opens, with what is on disk counted.\n"
+            "On: the renders that were going start again by themselves. Off: they wait for Render.")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -4468,7 +4567,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -5040,6 +5139,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     self._sync_controls()  # shared controls follow every render
                 self._refresh_cards()
+                self._save_queue()
                 if prev is not None and e.state in ("done", "failed"):
                     QtWidgets.QApplication.alert(self)
         if self.exit_when_done and self.manager.engines and all(
@@ -5100,6 +5200,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _slow_tick(self):
         self._feed_vram()
+        self._save_queue()
         self._refresh_cards()
         e = self.engine
         if self._preview_frame is None and not e.movie and self.side_tabs.currentWidget() is self.output_page:
@@ -5958,6 +6059,10 @@ class MainWindow(QtWidgets.QMainWindow):
             e.write_report()
         self._save_headers()  # every table's column widths and order, for the next window
         self.manager.shutdown()
+        try:
+            QUEUE_FILE.unlink()  # closed properly: nothing to bring back
+        except OSError:
+            pass
         event.accept()
 
 
@@ -6003,14 +6108,27 @@ def hand_to_running(job_path):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    if not args:
-        raise SystemExit("Usage: JKrender.py <job.json> [<job.json> ...]   (the JKrender menu in Nuke creates them)")
     alone = "--exit-when-done" in sys.argv  # scripted runs keep to themselves
     if not alone:
         # One render per Write: hand each to the JKrender already open; whatever is left opens a window here.
-        args = [job for job in args if not hand_to_running(job)]
-        if not args:
-            return
+        if not args:  # Reopen Renders: nothing to do if a window is open
+            try:
+                socket.create_connection(("127.0.0.1", APP_PORT), timeout=1.0).close()
+                return
+            except OSError:
+                pass
+        else:
+            sent = len(args)
+            args = [job for job in args if not hand_to_running(job)]
+            if sent and not args:
+                return
+    saved = read_queue() if not alone else None
+    restored = []
+    if saved:
+        end_leftovers(saved.get("pids") or [])
+        restored = [r for r in saved.get("renders") or [] if Path(r.get("job") or "").is_file()]
+    if not args and not restored:
+        raise SystemExit("Usage: JKrender.py <job.json> [<job.json> ...]   (the JKrender menu in Nuke creates them)")
     if sys.platform.startswith("win"):
         try:
             import ctypes
@@ -6024,10 +6142,24 @@ def main():
     app.setWindowIcon(make_icon())
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
-    win = MainWindow(args[0], exit_when_done=alone)
-    for job in args[1:]:
+    win = MainWindow(restored[0]["job"] if restored else args[0], exit_when_done=alone, restoring=bool(restored))
+    going = []
+    for i, saved_card in enumerate(restored):
+        if i:
+            win.add_job(saved_card["job"], auto=False)
+        if win.restore(win.engine, saved_card):
+            going.append(win.engine)
+    for job in args[0 if restored else 1:]:
         win.add_job(job)
+    missing = len(saved.get("renders") or []) - len(restored) if saved else 0
+    if missing:
+        win.engine.note("!! %d render(s) from before the crash could not come back: their folders are gone" % missing, "err")
     win.select(win.manager.engines[0])
+    going = [e for e in going if e in win.manager.engines]
+    if going and win.settings.get("resume_after_crash", False):
+        clear_open_nukes()
+        for e in going:
+            win.manager.request_start(e)
     if not alone:
         win.listen()
     win.show()
