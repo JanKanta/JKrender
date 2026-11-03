@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.67.1 alpha — 2026-11-03
+
+- Duplicate frames show in red, like NaN and inf: in the chunk map, the frame list, the Output check tile and the Log.
+
 ## 0.67 alpha — 2026-11-03
 
 - Output check looks at the pixels: NaN and inf in every frame, and frames exactly the same as another anywhere in the sequence. Duplicates are found by the pixels, as an EXR's header differs from frame to frame.

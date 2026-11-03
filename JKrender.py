@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.67 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.67.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.67 alpha"
+APP_VERSION = "0.67.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -1777,7 +1777,7 @@ class RenderEngine:
         if broken:
             self.note("!! NaN or inf pixels in %d frame(s): %s" % (len(broken), frames_to_spec(broken)), "err")
         if same:
-            self.note("! %d frame(s) exactly the same as an earlier one: %s. Fine if it is meant to hold." % (len(same), frames_to_spec(same)), "warn")
+            self.note("!! %d frame(s) exactly the same as an earlier one: %s. Fine if it is meant to hold." % (len(same), frames_to_spec(same)), "err")
         for text, frames in errors.items():
             self.note("! Pixels not checked in %d frame(s): %s" % (len(frames), text), "warn")
         if not broken and not same and not errors:
@@ -2616,9 +2616,9 @@ def pixels_note(fr):
 
 
 def frame_color(fr):
-    if pixels_broken(fr):
+    if pixels_broken(fr) or fr.same_as is not None:
         return QtGui.QColor(C["failed"])
-    if fr.state == "done" and (fr.small or fr.same_as is not None):
+    if fr.state == "done" and fr.small:
         return QtGui.QColor(C["small"])
     return QtGui.QColor(C.get(fr.state, C["queued"]))
 
@@ -4286,9 +4286,9 @@ class FramesModel(QtCore.QAbstractTableModel):
                     return "%s %s" % (bad[0][0], bad[0][2])
                 return note or ("small (check it)" if fr.small else "ok")
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
-            if fr.state in ("bad", "failed") or pixels_broken(fr):
+            if fr.state in ("bad", "failed") or pixels_broken(fr) or fr.same_as is not None:
                 return QtGui.QColor(C["failed"])
-            if fr.small or fr.same_as is not None:
+            if fr.small:
                 return QtGui.QColor(C["small"])
             if fr.state in ("done", "skipped"):
                 return QtGui.QColor(C["done"])
@@ -5701,7 +5701,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.t_check.value.setStyleSheet("color: %s;" % color)
             self._update_movie()
         else:
-            broken_pixels = sum(pixels_broken(fr) for fr in e.frames.values())
+            broken_pixels = sum(pixels_broken(fr) or fr.same_as is not None for fr in e.frames.values())
             self.t_check.set("%d bad" % (bad + broken_pixels) if bad or broken_pixels else ("ok" if checked else "—"),
                              "%d checked · %d small" % (len(checked), small))
             self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad or broken_pixels else (C["done"] if checked else C["text"])))
