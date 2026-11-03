@@ -118,7 +118,7 @@ NOT_WORK = {"Dot", "Input", "Output", "Viewer", "BackdropNode", "StickyNote", "N
 def analyze(writes):
     """What feeds the Writes, for Settings > Test this script > Analyze script. Only reads the script.
     A disabled node does no work, but what is above it (through its first input) still counts."""
-    seen, stack, classes, gpu, reads, big_blurs = set(), list(writes), {}, {}, [], 0
+    seen, stack, classes, gpu, reads, big_blurs, nodes = set(), list(writes), {}, {}, [], 0, []
     while stack:
         n = stack.pop()
         if n is None or n.fullName() in seen:
@@ -129,6 +129,7 @@ def analyze(writes):
         if not disabled:
             if cls not in NOT_WORK:
                 classes[cls] = classes.get(cls, 0) + 1
+                nodes.append(n.fullName())
             if cls in ("Read", "DeepRead"):
                 reads.append(n.width() * n.height())
             # a node runs on the GPU only if it has this knob, and it is on
@@ -155,8 +156,23 @@ def analyze(writes):
             pass
     return {"all": len(nuke.allNodes(recurseGroups=True)), "above": sum(classes.values()),
             "reads": len(reads), "largest_read": max(reads or [0]), "big_blurs": big_blurs,
-            "gpu": gpu, "temporal": {k: v for k, v in classes.items() if k in TEMPORAL},
+            "gpu": gpu, "nodes": nodes, "temporal": {k: v for k, v in classes.items() if k in TEMPORAL},
             "top": sorted(classes.items(), key=lambda kv: -kv[1])[:8]}
+
+
+def profile(writes):
+    """Settings > Measure nodes: what the performance timers counted for the nodes that feed the Writes."""
+    rows = []
+    for name in analyze(writes)["nodes"]:
+        node = nuke.toNode(name)
+        if node.Class() == "Group":  # its time is that of the nodes inside, listed themselves
+            continue
+        try:
+            info = node.performanceInfo()
+            rows.append([name, node.Class(), info["timeTakenCPU"], info["callCount"]])
+        except Exception:
+            pass
+    return {"nodes": sorted(rows, key=lambda r: -r[2])}
 
 
 def main():
@@ -199,6 +215,8 @@ def main():
                 node["file"].setValue(paths[node.fullName()])
 
         nuke.addBeforeRender(keep_in_test, nodeClass="Write")
+    if os.environ.get("JKRENDER_TIMERS"):  # Settings > Measure nodes
+        nuke.startPerformanceTimers()
     say("READY", "%.2f" % (time.time() - opened))
     while True:
         line = sys.stdin.readline()
@@ -213,6 +231,8 @@ def main():
             render_frames(writes, cmd[1], parse_frames(cmd[2]))
         elif cmd[0] == "RANGE":
             render_range(writes, cmd[1], int(cmd[2]), int(cmd[3]))
+        elif cmd[0] == "PROFILE":
+            say("INFO", json.dumps(profile(writes)))
     say("BYE")
     return 0
 

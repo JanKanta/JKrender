@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.65.3 alpha — 2026-11-03
+
+- Settings > Measure nodes, under Analyze script: 6 frames in one Nuke to a test folder, then the slowest nodes from Nuke's timers and whether the VRAM keeps growing. Nothing is saved or changed.
+- When 2 processes close for VRAM within 5 minutes, the render says that fewer processes with more threads may be much faster. It changes nothing by itself.
+
 ## 0.65.2 alpha — 2026-11-03
 
 - With the card nearly full (97 %), the process taking the most VRAM closes at once, not the last one started, which frees little next to one that has grown to 15 GB. Measured on a script whose VRAM keeps growing, 4 x 8: 4.1 frames / min against 4.3, so no faster, 4 such closes against 5. One process with all threads stays far the fastest for it (15.7).
