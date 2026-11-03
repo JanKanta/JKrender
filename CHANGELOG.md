@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.66 alpha — 2026-11-03
+
+- Analyze script recommends from a short render instead of the number of nodes: a few frames in one Nuke to a test folder, 11 to 56 s on the scripts tried. As many processes as fit in the VRAM, counting one that keeps growing, and in the RAM with the cache the script takes.
+- On the 3 scripts compared it now picks the fastest setup measured: 8 x 4 at 262 frames / min on a light script, 1 x 32 at 15.7 on one whose VRAM keeps growing (4 x 8: 4.3), 4 x 8 at 16 on a heavy one (1 x 32: 15.7, 5 x 6: 11.9). With a render going it uses the number of nodes.
+
 ## 0.65.4 alpha — 2026-11-03
 
 - Measure nodes no longer looks at VRAM: it shows the frame time and the slowest nodes.

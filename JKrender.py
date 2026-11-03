@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.65.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.66 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -49,7 +49,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.65.4 alpha"
+APP_VERSION = "0.66 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2744,7 +2744,13 @@ class Gantt(QtWidgets.QWidget):
 
 class ScriptAnalysis(QtWidgets.QDialog):
     """Settings > Analyze script: a Nuke opens the script in this render's environment, reports what feeds the Write and
-    closes. No render. It recommends processes, threads and Nuke cache to start from; Test this script measures them."""
+    closes. Then one Nuke with all threads renders a few frames to a test folder, about a minute at most: how many threads it
+    really uses, what RAM and VRAM it takes. It recommends processes, threads and Nuke cache from that; Test this script measures them."""
+
+    PROBE_SECONDS = 45  # no new frame after this; a frame already going may finish, up to PROBE_MOST
+    PROBE_MOST = 120
+    PROBE_LIGHT = 6  # a light script keeps rendering for this long, so its numbers are not from one instant
+    PROBE_CACHE = 16  # GB: the same for every script, so its RAM says what it wants, not what the settings allow
 
     def __init__(self, window, engine):
         super().__init__(window)
@@ -2756,7 +2762,8 @@ class ScriptAnalysis(QtWidgets.QDialog):
         self.waiting = QtWidgets.QWidget()
         wait = QtWidgets.QVBoxLayout(self.waiting)
         wait.addStretch(1)
-        text = QtWidgets.QLabel("Opening the script in Nuke. Nothing renders.")
+        text = QtWidgets.QLabel("Opening the script in Nuke…")
+        self.wait_text = text
         text.setObjectName("dim")
         text.setAlignment(QtCore.Qt.AlignCenter)
         wait.addWidget(text)
@@ -2772,6 +2779,9 @@ class ScriptAnalysis(QtWidgets.QDialog):
         self.b_use.setEnabled(False)
         self.b_use.clicked.connect(self.use)
         self._analysis = self._analysis_proc = None
+        self.stage = ""
+        # with a render going, or for a movie, the numbers would say nothing: the nodes only
+        self.probing = not engine.movie and not window.manager.running()
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._analysis_tick)
         threading.Thread(target=self._analysis_run, daemon=True).start()
@@ -2796,11 +2806,109 @@ class ScriptAnalysis(QtWidgets.QDialog):
             self._analysis = "Could not analyze the script: %s" % exc
             return
         found = re.search(r"JKR INFO (\{.*\})", out)
-        self._analysis = dict(json.loads(found.group(1)), format=e.job.get("format", "")) if found \
-            else "Nuke did not report on the script:\n" + out[-600:]
+        if not found:
+            self._analysis = "Nuke did not report on the script:\n" + out[-600:]
+            return
+        info = dict(json.loads(found.group(1)), format=e.job.get("format", ""))
+        if self.probing:
+            self.stage = "Rendering a few frames to a test folder: about a minute at most, less on a light script…"
+            try:
+                info["probe"] = self._probe()
+            except Exception as exc:
+                info["probe"] = {"failed": str(exc)}
+        self._analysis = info
+
+    def _probe(self):
+        """A few frames in one Nuke with all threads, stopped when time is up: {"threads", "rss", "vram", "growth", "secs"}."""
+        e = self.src
+        cpu = os.cpu_count() or 8
+        out = TEST_DIR / ("analyze_%s" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+        out.mkdir(parents=True, exist_ok=True)
+        env = nuke_render_env(e.job.get("env"))
+        env["JKRENDER_ARGS"] = json.dumps(e._worker_args())
+        env["JKRENDER_TEST_OUT"] = str(out).replace("\\", "/")
+        kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=env)
+        kwargs.update(hidden())
+        script_dir = Path(e.job.get("script") or "").parent
+        if script_dir.is_dir():
+            kwargs["cwd"] = str(script_dir)
+        gpu = ["--gpu", "0"] if self.main.settings.get("use_gpu", True) else []
+        self._analysis_proc = proc = subprocess.Popen([e.job.get("nuke_exe") or "Nuke", "-i", "-m", str(cpu), "-c", "%dG" % self.PROBE_CACHE] + gpu + ["-t", str(WORKER_SCRIPT)], **kwargs)
+        lines = pyqueue.Queue()
+
+        def read():
+            for line in proc.stdout:
+                lines.put(line)
+            lines.put(None)
+
+        threading.Thread(target=read, daemon=True).start()
+        vram = lambda: (self.main._gpu_procs or {}).get(proc.pid, (0, 0))[1] / 1024.0 ** 3
+        frames = e.frame_list()
+        frames = frames[max(0, (len(frames) - 12) // 2):][:12]
+        secs, vrams, cpus, rss, started, first = [], [], [], 0.0, time.time(), None
+        ps = psutil.Process(proc.pid) if psutil else None
+        failed = ""
+        try:
+            for frame in frames:
+                busy = time.time() - (first or time.time())
+                if secs and (time.time() - started >= self.PROBE_SECONDS or (len(secs) >= 3 and busy >= self.PROBE_LIGHT)):
+                    break
+                proc.stdin.write("RENDER P %d\n" % frame)
+                proc.stdin.flush()
+                done = False
+                while not done:
+                    if time.time() - started > self.PROBE_MOST:
+                        failed = failed or ("no frame in %d s" % self.PROBE_MOST if not secs else "")
+                        done = True
+                        break
+                    try:
+                        line = lines.get(timeout=0.5)
+                    except pyqueue.Empty:
+                        line = ""
+                    if line is None:
+                        failed = "Nuke closed"
+                        done = True
+                        break
+                    if "JKR START" in line and first is None:
+                        first = time.time()
+                        if ps:
+                            ps.cpu_percent(None)
+                    if "JKR FRAME" in line:
+                        secs.append(float(line.split("JKR FRAME", 1)[1].split()[1]))
+                    if "JKR FAIL" in line or "JKR ERROR" in line:
+                        failed = line.split("JKR", 1)[1].strip()[:160]
+                        done = True
+                    if "JKR CHUNK" in line:
+                        done = True
+                    if ps and first is not None and not line:
+                        cpus.append(ps.cpu_percent(None) / 100.0)
+                        rss = max(rss, ps.memory_info().rss / 1024.0 ** 3)
+                if failed or time.time() - started > self.PROBE_MOST:
+                    break
+                if ps:
+                    cpus.append(ps.cpu_percent(None) / 100.0)
+                    rss = max(rss, ps.memory_info().rss / 1024.0 ** 3)
+                if sum(secs) >= 2.5:  # the counters read every 2 s
+                    vrams.append(vram())
+            time.sleep(2.2)
+            vrams.append(vram())
+        finally:
+            try:
+                proc.kill()
+                proc.wait(timeout=10)
+            except Exception:
+                pass
+            shutil.rmtree(out, ignore_errors=True)
+        # all threads busy at their best, not while it reads files between frames
+        cpus = sorted(cpus)[len(cpus) // 2:] or [0.0]
+        steps = max(1, len(vrams) - 2)  # the last reading is the same frame's, later
+        return {"failed": failed if not secs else "", "frames": len(secs), "secs": sum(secs) / max(1, len(secs)), "threads": sum(cpus) / len(cpus),
+                "rss": rss, "vram": max(vrams or [0.0]), "growth": max(0.0, (vrams[-1] - vrams[0]) / steps) if len(vrams) >= 3 else 0.0}
 
     def _analysis_tick(self):
         result = self._analysis
+        if self.stage and self.wait_text.text() != self.stage:
+            self.wait_text.setText(self.stage)
         if result is None:
             return
         self.timer.stop()
@@ -2814,7 +2922,9 @@ class ScriptAnalysis(QtWidgets.QDialog):
         # The RAM limit, less what Windows and other programs usually hold.
         total = psutil.virtual_memory().total / 1024 ** 3 if psutil else float(self.main.manager.ram * self.main.manager.total)
         free = total * float(self.main.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2)
-        n, t, c, why = self.advise(result, os.cpu_count() or 8, free)
+        gpu = self.main._gpu or [0, 0, 0]
+        card = (float(gpu[2]) * float(self.main.settings.get("vram_limit", 95)) / 100 - float(gpu[1])) / 1024.0 if self.main.settings.get("use_gpu", True) and gpu[2] else None
+        n, t, c, why = self.advise(result, os.cpu_count() or 8, free, card)
         self.best = (n, t, c)
         m = self.main.manager
         self.b_use.setEnabled((n, t, c) != (m.total, m.threads, m.ram) and self.main.s_workers.isEnabled())
@@ -2834,19 +2944,39 @@ class ScriptAnalysis(QtWidgets.QDialog):
         super().closeEvent(event)
 
     @staticmethod
-    def advise(info, cpu, free_gb):
-        """Processes, threads, Nuke cache and why: what the scripts measured so far did best, for Start to confirm."""
-        if info["above"] < 60:
-            n, floor = 8, 4
-            why = "Few nodes: several smaller processes usually make the best use of the CPU."
-        else:
-            n, floor = 4, 8
-            why = "Many nodes: a script like this needs a big cache, and with too little it can slow down a lot. So as many " \
-                  "processes as still keep at least 8 GB of cache each."
-        n = max(1, min(n, cpu // 4))
-        while n > 1 and free_gb / n - BESIDE_CACHE < floor:
-            n -= 1
-        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), why
+    def advise(info, cpu, free_gb, card_gb=None):
+        """Processes, threads, Nuke cache and why. As many processes of 4 threads as fit in the graphics card and the RAM, from
+        what one Nuke did in the short render. Measured, several small processes beat one big one as long as they fit, also
+        when one process uses all its threads: what stops them is memory. Without the render, from the number of nodes."""
+        probe = info.get("probe") or {}
+        floor = 4 if info["above"] < 60 else 8  # GB of cache: a heavy script slows down a lot under about that
+        n = max(1, cpu // 4)
+        n = min(n, 8)
+        why = []
+        if probe.get("frames") and card_gb and probe["vram"] > 0.3:
+            # a process that keeps growing is a lot bigger after a few more frames
+            grown = probe["vram"] + probe["growth"] * 10
+            fit = max(1, int(card_gb // grown))
+            if fit < n:
+                n = fit
+                why.append("Its VRAM %s, %.1f GB%s: the card holds %d such process%s." % (
+                    "keeps growing" if probe["growth"] >= 0.3 else "is high", probe["vram"],
+                    " and %.1f GB more per frame" % probe["growth"] if probe["growth"] >= 0.3 else "", n, "" if n == 1 else "es"))
+        # less than a script wants slows it down far more than one process fewer: measured 5 x 6 with 10 GB 12 frames / min,
+        # 4 x 8 with 14 GB 16. So what the short render took, less a little, and only numbers of processes measured.
+        size = max(floor, probe.get("rss", 0.0) - 2)
+        fit = n
+        while fit > 1 and free_gb / fit - BESIDE_CACHE < size:
+            fit -= 1
+        fit = max(x for x in (1, 2, 4, 6, 8) if x <= fit)
+        if fit < n:
+            why.append("The RAM holds %d with at least %.0f GB of cache each, and a script with too little cache slows down a lot." % (fit, size))
+            n = fit
+        if not why:
+            why.append("It fits in the RAM and the graphics card, so as many small processes as the CPU takes." if probe.get("frames") else
+                       ("Few nodes: several smaller processes usually make the best use of the CPU." if info["above"] < 60 else
+                        "Many nodes: a script like this needs a big cache, and with too little it can slow down a lot."))
+        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), " ".join(why)
 
     def _card(self, title, hint=""):
         frame = QtWidgets.QFrame()
@@ -2911,8 +3041,10 @@ class ScriptAnalysis(QtWidgets.QDialog):
         row.addWidget(self.b_use, 0, QtCore.Qt.AlignVCenter)
         box.addLayout(row)
         box.addWidget(self._text(why))
-        box.addWidget(self._text("A starting point from the number of nodes only: it cannot see how heavy each node is. "
-                                 "Test this script measures what is really fastest for this script.", dim=True))
+        probe = info.get("probe") or {}
+        box.addWidget(self._text("From %d frames in one Nuke, a quick estimate. Test this script measures what is really fastest for this script." % probe["frames"] if probe.get("frames")
+                                 else "From the number of nodes only%s. Test this script measures what is really fastest for this script."
+                                 % (", because a render is going" if not self.probing and not self.src.movie else (": the short render failed, %s" % probe["failed"] if probe.get("failed") else "")), dim=True))
         self.lay.addWidget(frame)
         if info["gpu"]:
             warn = self._text("This script runs nodes on the GPU. If the VRAM fills up or keeps growing while it renders, "
@@ -2925,7 +3057,9 @@ class ScriptAnalysis(QtWidgets.QDialog):
                  "Only nodes that reach this Write. Disabled branches do not count."),
                 ("Format", info.get("format") or "unknown", "", "More pixels take more RAM and time."),
                 ("Reads", str(info["reads"]), "largest %.1f MP" % (info["largest_read"] / 1e6), "Files read to make a frame."),
-                ("Blurs of 100 px or more", str(info["big_blurs"]), "", "Big Blurs can take a lot of CPU time.")):
+                ("Blurs of 100 px or more", str(info["big_blurs"]), "", "Big Blurs can take a lot of CPU time."))[:None if not probe.get("frames") else 2] + (() if not probe.get("frames") else (
+                ("Threads it uses", "%.0f of %d" % (probe["threads"], os.cpu_count() or 8), "%.1f s a frame" % probe["secs"], "One process with all threads."),
+                ("Memory of one process", "%.1f GB RAM" % probe["rss"], "%.1f GB VRAM%s" % (probe["vram"], ", +%.1f per frame" % probe["growth"] if probe["growth"] >= 0.3 else ""), "After these frames."))):
             tile = Tile(name)
             tile.set(value, sub)
             tile.layout().addWidget(self._text(meaning, dim=True))
