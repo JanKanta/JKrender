@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.69 alpha — 2026-11-03
+
+- Measure nodes shows which nodes have GPU on, and the GPU use, VRAM peak and RAM peak of the whole test. Nuke counts these for no node, and its timers hold no time for work on the GPU, so they are not given per node.
+
 ## 0.68 alpha — 2026-11-03
 
 - Check pixels also finds black, empty and one-colour frames, and frames whose size, channels, bit depth or compression differ from the rest of the sequence. All shown in red; it only reports.

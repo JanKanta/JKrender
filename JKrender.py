@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.68 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.69 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.68 alpha"
+APP_VERSION = "0.69 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -3258,7 +3258,8 @@ class ScriptAnalysis(QtWidgets.QDialog):
 
 class NodeMeasure(QtWidgets.QDialog):
     """Settings > Measure nodes: a few frames from the middle of the render in one Nuke, to a test folder. Nuke's timers give
-    each node's time. Nothing is saved, and the frames are deleted."""
+    each node's time; the counters the GPU, VRAM and RAM of that Nuke, for the whole test: Nuke counts them for no node.
+    Nothing is saved, and the frames are deleted."""
 
     FRAMES = 6
     LIMIT = 300  # seconds for one run
@@ -3314,17 +3315,34 @@ class NodeMeasure(QtWidgets.QDialog):
         return subprocess.Popen([e.job.get("nuke_exe") or "Nuke", "-i", "-m", str(os.cpu_count() or 8), "-c", "%dG" % self.main.manager.ram]
                                 + gpu + ["-t", str(WORKER_SCRIPT)], **kwargs)
 
+    def _watch(self, proc, got):
+        """While this Nuke lives: its RAM and VRAM at their highest, and its GPU use while it renders."""
+        ps = psutil.Process(proc.pid) if psutil else None
+        while proc.poll() is None:
+            try:
+                got["ram"] = max(got["ram"], ps.memory_info().rss / 1024.0 ** 3) if ps else 0.0
+            except Exception:
+                pass
+            use, vram = (self.main._gpu_procs or {}).get(proc.pid, (0, 0))
+            got["vram"] = max(got["vram"], vram / 1024.0 ** 3)
+            if got["rendering"]:
+                got["gpu"].append(use)
+            time.sleep(0.5)
+
     def _once(self):
-        """One Nuke and the frames: {"secs": [...], "nodes": ...}."""
+        """One Nuke and the frames: {"secs": [...], "nodes": ..., "gpu": [...], "vram": GB, "ram": GB}."""
         self.proc = proc = self._nuke()
         if self.stopping:  # closed in the moment it started
             proc.kill()
         killer = threading.Timer(self.LIMIT, proc.kill)
         killer.start()
-        got = {"secs": [], "failed": "", "nodes": []}
+        got = {"secs": [], "failed": "", "nodes": [], "gpu": [], "vram": 0.0, "ram": 0.0, "rendering": False}
+        threading.Thread(target=self._watch, args=(proc, got), daemon=True).start()
         def until(*kinds):
             for line in proc.stdout:
-                m = re.search(r"JKR (FRAME|CHUNK|FAIL|ERROR|INFO) ?(.*)$", line.rstrip())
+                m = re.search(r"JKR (START|FRAME|CHUNK|FAIL|ERROR|INFO) ?(.*)$", line.rstrip())
+                if m and m.group(1) == "START":
+                    got["rendering"] = True
                 if m and m.group(1) in ("FAIL", "ERROR"):
                     got["failed"] = m.group(2)[:200]
                     return None
@@ -3338,10 +3356,12 @@ class NodeMeasure(QtWidgets.QDialog):
             proc.stdin.write("RENDER M %s\n" % frames_to_spec(self.frames))
             proc.stdin.flush()
             if until("CHUNK") is not None:
+                got["rendering"] = False
                 proc.stdin.write("PROFILE\n")
                 proc.stdin.flush()
                 info = until("INFO")
                 got["nodes"] = json.loads(info)["nodes"] if info else []
+                time.sleep(2.2)  # the counters read every 2 s: the VRAM of the last frame
             proc.stdin.write("QUIT\n")
             proc.stdin.flush()
         except (OSError, ValueError) as exc:
@@ -3397,16 +3417,22 @@ class NodeMeasure(QtWidgets.QDialog):
         verdict = "Frame time %.2f s, %d frames in one Nuke." % (sum(run["secs"]) / len(run["secs"]), len(self.frames))
         self.status.setText(verdict)
         self.status.setStyleSheet("font-weight: 600;")
+        gpu_on = self.main.settings.get("use_gpu", True)
+        gpu = "off in Settings" if not gpu_on else "%.0f %% on average" % (sum(run["gpu"]) / len(run["gpu"])) if run["gpu"] else "not read"
+        use = "GPU %s  ·  VRAM peak %s  ·  RAM peak %s" % (gpu, "%.1f GB" % run["vram"] if gpu_on and run["vram"] else "—", "%.1f GB" % run["ram"] if run["ram"] else "—")
+        whole, box = self._card("The whole test", "One Nuke with all threads and the Nuke cache from Settings. Nuke counts these for no node, so they are for the test as a whole.")
+        box.addWidget(self._text(use))
+        self.lay.insertWidget(self.lay.count() - 1, whole)
         total = sum(n[2] for n in run["nodes"]) or 1
-        slow = [[n[0], re.sub(r"\d+$", "", n[1]), "%.1f s" % (n[2] / 1e6 / len(self.frames)), "%.0f %%" % (n[2] * 100.0 / total), ""] for n in run["nodes"][:20]]
+        slow = [[n[0], re.sub(r"\d+$", "", n[1]), "on" if gpu_on and n[4] else "", "%.1f s" % (n[2] / 1e6 / len(self.frames)), "%.0f %%" % (n[2] * 100.0 / total), ""] for n in run["nodes"][:20]]
         frame, box = self._card("Slowest nodes", "Nuke's timers, %d frames in one Nuke with all threads: CPU time on each node per frame, over all threads, and its share. "
-                                "Rough on Windows, and work on the GPU counts little here, so use it to compare nodes." % len(self.frames))
-        box.addWidget(self._table(["Node", "Class", "CPU per frame", "Share", ""], slow), 1)
+                                "Rough on Windows. Work on the GPU is not in this time: a node with GPU on can take longer than it shows." % len(self.frames))
+        box.addWidget(self._table(["Node", "Class", "GPU", "CPU per frame", "Share", ""], slow), 1)
         self.lay.insertWidget(self.lay.count() - 1, frame, 1)
         try:
             TEST_RESULTS.mkdir(parents=True, exist_ok=True)
             path = TEST_RESULTS / ("%s_nodes_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
-            path.write_text("\n".join([verdict, ""] + [" | ".join(r) for r in slow]) + "\n", encoding="utf-8")
+            path.write_text("\n".join([verdict, use, ""] + [" | ".join(r) for r in slow]) + "\n", encoding="utf-8")
         except OSError:
             pass
 
@@ -4958,7 +4984,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
         row(procs, "Analyze", [self.b_analyze])
         self.b_measure = QtWidgets.QPushButton("Measure nodes…")
-        self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes.\n"
+        self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes, which ones have GPU on,\n"
+                                  "and the GPU use, VRAM peak and RAM peak of the whole test.\n"
                                   "Nothing else should render. Nothing is saved or changed.")
         self.b_measure.clicked.connect(self._measure_nodes)
         row(procs, "Measure", [self.b_measure])

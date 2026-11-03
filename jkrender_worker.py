@@ -169,7 +169,8 @@ def profile(writes):
             continue
         try:
             info = node.performanceInfo()
-            rows.append([name, node.Class(), info["timeTakenCPU"], info["callCount"]])
+            use_gpu = node.knob("useGPUIfAvailable")
+            rows.append([name, node.Class(), info["timeTakenCPU"], info["callCount"], bool(use_gpu is not None and use_gpu.value())])
         except Exception:
             pass
     return {"nodes": sorted(rows, key=lambda r: -r[2])}
