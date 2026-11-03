@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.65.1 alpha — 2026-11-03
+
+- Processes closing one after another within a minute count as one overload. Each counted on its own, so one overload made the next wait 5 minutes with the RAM free. Measured: 5 processes back to 8 about 30 s after the memory came free, one at a time.
+
 ## 0.65 alpha — 2026-11-03
 
 - A process comes back only if it really fits. The old count took a process just restarted at 2 GB as full size, so three restarts let 8 back where 1 fitted. Now the RAM left under the limit, less a 2 % margin and what the running processes will still take, must hold one process of the size seen this run (before that, its cache + 4 GB).

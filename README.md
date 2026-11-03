@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.65 alpha.** It works in tests; expect rough edges.
+**Version 0.65.1 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -48,7 +48,7 @@ on disk.
   at once if it is still opening the script, otherwise after its chunk. A process that fell or closed comes back by itself
   when it fits: the RAM left under the limit, less a 2 % margin and what the running processes are still going to take, must hold
   one process of the size seen this run (before that, its cache + 4 GB), and there must be room in the VRAM. They come back one at a time,
-  each after the one before has rendered a frame. After one closes for memory the next waits 30 s, then 60, 120 and 300 s if they keep closing.
+  each after the one before has rendered a frame. After an overload the next waits 30 s, then 60, 120 and 300 s if it happens again within 10 minutes.
 - **After a crash.** If JKrender goes down, its cards come back the next time it opens, or with **JKrender → Reopen Renders After a Crash** in Nuke.
   What is on disk counts, and Nuke processes left behind are ended. A render that was going waits for Render, unless
   **Go on after a crash** (Settings > General, off by default) is on. Closing the window properly brings nothing back.
