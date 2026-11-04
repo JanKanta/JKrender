@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.2 alpha"
+APP_VERSION = "0.70.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2933,6 +2933,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
     PROBE_MOST = 120
     PROBE_LIGHT = 6  # a light script keeps rendering for this long, so its numbers are not from one instant
     PROBE_CACHE = 16  # GB: the same for every script, so its RAM says what it wants, not what the settings allow
+    ENOUGH_CACHE = 13  # GB a process needs at most, for the recommendation
 
     def __init__(self, window, engine):
         super().__init__(window)
@@ -3146,7 +3147,9 @@ class ScriptAnalysis(QtWidgets.QDialog):
                     " and %.1f GB more per frame" % probe["growth"] if probe["growth"] >= 0.3 else "", n, "" if n == 1 else "es"))
         # less than a script wants slows it down far more than one process fewer: measured 5 x 6 with 10 GB 12 frames / min,
         # 4 x 8 with 14 GB 16. So what the short render took, less a little, and only numbers of processes measured.
-        size = max(floor, probe.get("rss", 0.0) - 2)
+        # A script that fills the short render's cache only shows it takes all it gets, so past ENOUGH_CACHE more says nothing:
+        # a heavy comp, 2 x 16 with 30 GB 17.7 frames / min, 4 x 8 with 13 GB 23.6.
+        size = max(floor, min(ScriptAnalysis.ENOUGH_CACHE, probe.get("rss", 0.0) - 2))
         fit = n
         while fit > 1 and free_gb / fit - BESIDE_CACHE < size:
             fit -= 1
