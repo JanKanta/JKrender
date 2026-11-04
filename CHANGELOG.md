@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.9 alpha — 2026-11-04
+
+- System table: what a closed process waits for is shorter, like next try 5 s or wait: RAM 99 % / 95 %. The tooltip has it in full.
+
 ## 0.70.8 alpha — 2026-11-04
 
 - System table: a closed process that will start again no longer just says closed. In yellow, State says it is trying to come back and what it waits for: the seconds to the next try, RAM or VRAM against the limit, that the memory stays free, or the process before it. The column grows to show it. A process you closed by hand, or with no chunks left, stays closed.

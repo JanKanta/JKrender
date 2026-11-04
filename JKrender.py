@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.8 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.9 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.8 alpha"
+APP_VERSION = "0.70.9 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -6065,7 +6065,7 @@ class MainWindow(QtWidgets.QMainWindow):
             state = x.worker_state(w)
             waits = (x, w) in coming_back
             if waits:
-                state = "trying to come back: %s" % memory_why if memory_why else "coming back"
+                state = self._short_why(memory_why)
             values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), state,
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
@@ -6082,12 +6082,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(v)
                 waiting_here = waits and col == 3
                 item.setForeground(QtGui.QColor(C["small"] if waiting_here else C["dim"] if gone or x is not self.engine else C["text"]))
-                item.setToolTip("%s, %s" % (x.worker_state(w), v) if waiting_here else "")
+                item.setToolTip("%s, trying to come back: %s" % (x.worker_state(w), memory_why or "now") if waiting_here else "")
         if coming_back:  # why it waits is the point of it: the column grows to show it, never shrinks
-            text = "trying to come back: %s" % memory_why
-            needed = t.fontMetrics().horizontalAdvance(text) + 24
+            needed = t.fontMetrics().horizontalAdvance(self._short_why(memory_why)) + 24
             if t.columnWidth(3) < needed:
                 t.setColumnWidth(3, needed)
+
+    @staticmethod
+    def _short_why(why):
+        """_memory_why for the State column; the tooltip has it whole."""
+        if not why:
+            return "coming back"
+        if why.startswith("next try"):
+            return why.replace(" in ", " ")
+        why = re.sub(r" and \d+ still starting", "", why.split(";")[0])
+        return "wait: " + why.replace(", limit ", " / ").replace(", checking it stays free", ", checking").replace(
+            " has not rendered its first frame yet", " first frame")
 
     def _coming_back(self, rows):
         """The closed processes that start again as soon as memory lets them, in the order they would: only as many as
