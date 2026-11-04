@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.5 alpha — 2026-11-04
+
+- After a process closes for memory, the next may come back after 10 s instead of 30. When it happens again the wait is still 60, 120 and 300 s.
+
 ## 0.70.4 alpha — 2026-11-04
 
 - Render no longer clears the cache of open Nukes without asking. With a Nuke open it asks Yes or No, No by default, and the render starts either way. With no Nuke open it does not ask.
