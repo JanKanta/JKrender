@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.1 alpha — 2026-11-04
+
+- A movie shows one Check video tile, and its button is Check video.
+
 ## 0.70 alpha — 2026-11-04
 
 - Check all again is now Check frames.

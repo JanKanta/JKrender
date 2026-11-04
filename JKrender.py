@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70 alpha"
+APP_VERSION = "0.70.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -4126,7 +4126,7 @@ class Tile(QtWidgets.QFrame):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(0)
-        t = QtWidgets.QLabel(title)
+        self.title = t = QtWidgets.QLabel(title)
         t.setObjectName("dim")
         self.value = QtWidgets.QLabel("—")
         self.value.setObjectName("tileValue")
@@ -4155,7 +4155,7 @@ class Tile(QtWidgets.QFrame):
 
 
 class TwoTiles(QtWidgets.QFrame):
-    """Two tiles in the place of one, with a line between them."""
+    """Two tiles in the place of one, with a line between them. The right one can go, for a movie."""
 
     def __init__(self, left, right):
         super().__init__()
@@ -4163,12 +4163,17 @@ class TwoTiles(QtWidgets.QFrame):
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        line = QtWidgets.QFrame()
+        self.right = right
+        self.line = line = QtWidgets.QFrame()
         line.setFixedWidth(1)
         line.setStyleSheet("QFrame { background: %s; border-radius: 0; }" % C["dim"])
         lay.addWidget(left, 1)
         lay.addWidget(line)
         lay.addWidget(right, 1)
+
+    def show_right(self, on):
+        self.line.setVisible(on)
+        self.right.setVisible(on)
 
 
 class ZoomView(QtWidgets.QWidget):
@@ -4692,7 +4697,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_check_pixels = Tile("Check pixels")
         for t in (self.t_frames, self.t_elapsed, self.t_eta, self.t_speed, self.t_avg, self.t_workers):
             stats.addWidget(t, 1)
-        stats.addWidget(TwoTiles(self.t_check_frames, self.t_check_pixels), 2)
+        self.check_tiles = TwoTiles(self.t_check_frames, self.t_check_pixels)
+        stats.addWidget(self.check_tiles, 2)
         lay.addLayout(stats)
 
         self.frame_map = FrameMap(self.engine)
@@ -5198,7 +5204,7 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         left = QtWidgets.QVBoxLayout()
         bar = QtWidgets.QHBoxLayout()
-        for text, fn in (("Check again", self._movie_check), ("Open folder", self._open_folder),
+        for text, fn in (("Check video", self._movie_check), ("Open folder", self._open_folder),
                          ("Delete video", lambda: self._delete_all())):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(lambda _=False, fn=fn: fn())  # clicked(checked) must not reach fn
@@ -5817,12 +5823,13 @@ class MainWindow(QtWidgets.QMainWindow):
         checked = [fr for fr in e.frames.values() if fr.checks]
         bad = sum(1 for fr in e.frames.values() if fr.state == "bad")
         small = sum(1 for fr in e.frames.values() if fr.small)
+        self.t_check_frames.title.setText("Check video" if e.movie else "Check frames")
+        self.check_tiles.show_right(not e.movie)
         if e.movie:
             verdict = e.movie_verdict() if e.state not in ("rendering", "paused", "finishing") else None
             words = {"ok": ("ok", C["done"]), "warn": ("check it", C["small"]), "bad": ("broken", C["failed"])}
             text, color = words.get(verdict, ("—", C["text"]))
             self.t_check_frames.show_state(text, "one movie file", color)
-            self.t_check_pixels.show_state("—", "not for a movie", C["text"])
             self._update_movie()
         else:
             looking = e.pending_checks > 0 and e.state not in ("rendering", "paused", "finishing")
