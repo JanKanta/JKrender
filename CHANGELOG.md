@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.7 alpha — 2026-11-04
+
+- A process that closed for memory comes back sooner: the wait after the first fall is 5 s instead of 10, and RAM or VRAM has to stay free for 5 s instead of 15. When it happens again the wait is still 60, 120 and 300 s, and processes still come back one at a time.
+
 ## 0.70.6 alpha — 2026-11-04
 
 - Check pixels when a render opens: a new setting, on by default. Frames already on disk get the pixel check in the background as soon as the card opens. The frame check already ran at that moment.

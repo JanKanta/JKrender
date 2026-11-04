@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.6 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.7 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.6 alpha"
+APP_VERSION = "0.70.7 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -76,6 +76,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
+RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 
 
@@ -2238,7 +2239,7 @@ class RenderManager:
                 e.note("!! %d processes closed for VRAM within 5 minutes. %s" % (recent, e.notice[0]), "warn")
 
     def fall_wait(self):
-        """Seconds until a process may come back after one closed for memory: 10, then 60, 120 and 300 as it happens
+        """Seconds until a process may come back after one closed for memory: RETURN_CHECK, then 60, 120 and 300 as it happens
         again within 10 minutes, so a script that does not fit does not go round and round. Processes closing one
         after another within a minute are one overload, not several."""
         now = time.time()
@@ -2246,7 +2247,7 @@ class RenderManager:
         if not recent:
             return 0.0
         times = 1 + sum(1 for a, b in zip(recent, recent[1:]) if b - a >= 60)
-        return max(0.0, recent[-1] + (10, 60, 120, 300)[min(times, 4) - 1] - now)
+        return max(0.0, recent[-1] + (RETURN_CHECK, 60, 120, 300)[min(times, 4) - 1] - now)
 
     def _vram_idle_update(self):
         """VRAM in use while no Nuke process of JKrender runs: Windows, other programs. The rest is ours, including
@@ -2391,7 +2392,7 @@ class RenderManager:
             # process would be closed and another started, round and round.
             if self._ram_ok_since is None:
                 self._ram_ok_since = now
-            elif now - self._ram_ok_since >= 15 and not self.fall_wait():
+            elif now - self._ram_ok_since >= RETURN_CHECK and not self.fall_wait():
                 self.ram_cap += self._more_fit(pct, limit)
                 self._ram_ok_since = now
                 if self.ram_cap >= self.total:
@@ -2494,7 +2495,7 @@ class RenderManager:
             if pct + one < limit - 2:
                 if self._vram_ok_since is None:
                     self._vram_ok_since = now
-                elif now - self._vram_ok_since >= 15 and not self.fall_wait():
+                elif now - self._vram_ok_since >= RETURN_CHECK and not self.fall_wait():
                     self.vram_cap += 1
                     self._vram_ok_since = now
                     self._vram_lowered_at = None
