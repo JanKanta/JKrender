@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.7 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.8 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.7 alpha"
+APP_VERSION = "0.70.8 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -6045,6 +6045,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker_rows = rows
         gpus = self._gpu_procs or {}
         idle_why = self._empty_place_state() if empty else ""
+        coming_back = self._coming_back(rows)
+        memory_why = self._memory_why() if coming_back else ""
         for row, (x, w) in enumerate(rows):
             if x is None:
                 values = ["W%02d" % w, "", "", idle_why] + [""] * (t.columnCount() - 4)
@@ -6060,7 +6062,11 @@ class MainWindow(QtWidgets.QMainWindow):
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
             gpu = gpus.get(w.proc.pid)
-            values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), x.worker_state(w),
+            state = x.worker_state(w)
+            waits = (x, w) in coming_back
+            if waits:
+                state = "trying to come back: %s" % memory_why if memory_why else "coming back"
+            values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), state,
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
@@ -6074,8 +6080,40 @@ class MainWindow(QtWidgets.QMainWindow):
                     item = QtWidgets.QTableWidgetItem()
                     t.setItem(row, col, item)
                 item.setText(v)
-                item.setForeground(QtGui.QColor(C["dim"] if gone or x is not self.engine else C["text"]))
-                item.setToolTip("")
+                waiting_here = waits and col == 3
+                item.setForeground(QtGui.QColor(C["small"] if waiting_here else C["dim"] if gone or x is not self.engine else C["text"]))
+                item.setToolTip("%s, %s" % (x.worker_state(w), v) if waiting_here else "")
+        if coming_back:  # why it waits is the point of it: the column grows to show it, never shrinks
+            text = "trying to come back: %s" % memory_why
+            needed = t.fontMetrics().horizontalAdvance(text) + 24
+            if t.columnWidth(3) < needed:
+                t.setColumnWidth(3, needed)
+
+    def _coming_back(self, rows):
+        """The closed processes that start again as soon as memory lets them, in the order they would: only as many as
+        there are free places, in a render with chunks left, and none you closed by hand."""
+        m = self.manager
+        closed = [(x, w) for x, w in rows if x is not None and w.state == "gone" and x.state == "rendering"
+                  and queued_left_for(x) and w.id not in x.held]
+        return closed[:max(0, m.total - m.live_count())]
+
+    def _memory_why(self):
+        """What a closed process waits for, in numbers: the same rules as coming back itself, or "" when nothing holds it."""
+        m = self.manager
+        wait = m.fall_wait() if m.settings.get("ram_guard", True) or m.settings.get("vram_guard", True) else 0
+        if wait:
+            return "next try in %d s" % math.ceil(wait)
+        if m.live_count() >= m.budget():
+            if m.vram_bound() and m.vram and m.vram[2]:
+                pct, limit, name, free = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95)), "VRAM", m._vram_ok_since
+            elif m.ram_cap is not None:
+                pct, limit, name, free = m.ram_percent(), float(m.settings.get("ram_limit", 90)), "RAM", m._ram_ok_since
+            else:
+                return ""
+            if free is not None:
+                return "%s %.0f %%, checking it stays free" % (name, pct)
+            return "%s %.0f %%, limit %.0f %%" % (name, pct, limit)
+        return m.no_room()
 
     def _update_averages(self, now, cpu, ram, gpu, vram):
         """Average CPU, RAM, GPU and VRAM use while rendering, in the tiles: from when renders start (a pause does

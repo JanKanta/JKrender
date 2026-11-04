@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.8 alpha — 2026-11-04
+
+- System table: a closed process that will start again no longer just says closed. In yellow, State says it is trying to come back and what it waits for: the seconds to the next try, RAM or VRAM against the limit, that the memory stays free, or the process before it. The column grows to show it. A process you closed by hand, or with no chunks left, stays closed.
+
 ## 0.70.7 alpha — 2026-11-04
 
 - A process that closed for memory comes back sooner: the wait after the first fall is 5 s instead of 10, and RAM or VRAM has to stay free for 5 s instead of 15. When it happens again the wait is still 60, 120 and 300 s, and processes still come back one at a time.
