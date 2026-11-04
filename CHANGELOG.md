@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.70 alpha — 2026-11-04
+
+- Check all again is now Check frames.
+- Settings > General: Check frames as they render, on by default. Off, a broken frame counts as done until you press Check frames; Render still checks what is on disk before it starts.
+- The Output check tile is split into Check frames and Check pixels, each with its own state.
+
 ## 0.69.1 alpha — 2026-11-04
 
 - Check pixels shows a progress bar under the Output summary while it runs, and its progress in the Output check tile.

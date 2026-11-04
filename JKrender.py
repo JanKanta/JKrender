@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.69.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.69.1 alpha"
+APP_VERSION = "0.70 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -68,7 +68,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_pixels": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_frames": True, "check_pixels": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -1606,7 +1606,8 @@ class RenderEngine:
             fr = self.frames.get(f)
             if fr is not None:
                 fr.state, fr.secs, fr.worker = "done", secs, w.name
-                self._submit_check(f)
+                if self.settings.get("check_frames", True) or self.job.get("test_out"):  # Test this script counts its frames by this
+                    self._submit_check(f)
             if w.chunk and w.chunk.whole_range:
                 nxt = f + 1
                 if nxt in self.frames:
@@ -4148,6 +4149,27 @@ class Tile(QtWidgets.QFrame):
         self.avg.setText(text)
         self.avg.setVisible(bool(text))
 
+    def show_state(self, value, sub, color):
+        self.set(value, sub)
+        self.value.setStyleSheet("color: %s;" % color)
+
+
+class TwoTiles(QtWidgets.QFrame):
+    """Two tiles in the place of one, with a line between them."""
+
+    def __init__(self, left, right):
+        super().__init__()
+        self.setStyleSheet("QFrame { background: %s; border-radius: 4px; }" % C["panel2"])
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        line = QtWidgets.QFrame()
+        line.setFixedWidth(1)
+        line.setStyleSheet("QFrame { background: %s; border-radius: 0; }" % C["dim"])
+        lay.addWidget(left, 1)
+        lay.addWidget(line)
+        lay.addWidget(right, 1)
+
 
 class ZoomView(QtWidgets.QWidget):
     """An image fitted to the widget. Mouse wheel zooms around the cursor, drag pans, double-click fits again.
@@ -4666,9 +4688,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.t_speed = Tile("Speed")
         self.t_avg = Tile("Frame time")
         self.t_workers = Tile("Nuke processes")
-        self.t_check = Tile("Output check")
-        for t in (self.t_frames, self.t_elapsed, self.t_eta, self.t_speed, self.t_avg, self.t_workers, self.t_check):
+        self.t_check_frames = Tile("Check frames")
+        self.t_check_pixels = Tile("Check pixels")
+        for t in (self.t_frames, self.t_elapsed, self.t_eta, self.t_speed, self.t_avg, self.t_workers):
             stats.addWidget(t, 1)
+        stats.addWidget(TwoTiles(self.t_check_frames, self.t_check_pixels), 2)
         lay.addLayout(stats)
 
         self.frame_map = FrameMap(self.engine)
@@ -4873,6 +4897,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Go on after a crash", [self.c_resume],
             "If JKrender went down while rendering, its cards come back the next time it opens, with what is on disk counted.\n"
             "On: the renders that were going start again by themselves. Off: they wait for Render.")
+        self.c_frames = toggle("check_frames", True)
+        row(gen, "Check frames as they render", [self.c_frames],
+            "Each frame right after it renders: is the file there, not empty, whole and readable, and is it far smaller than the rest.\n"
+            "Off: a frame that came out broken counts as done until you press Check frames. Render still checks what is on disk before it starts.")
         self.c_pixels = toggle("check_pixels", True)
         row(gen, "Check pixels when a render ends", [self.c_pixels],
             "NaN and inf, black, empty or one-colour frames, frames exactly the same as another, and a size, channels, bit depth\n"
@@ -5239,11 +5267,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_filter.addItems(["All", "Rendered", "Problems"])
         self.out_filter.currentTextChanged.connect(self._out_filter)
         bar.addWidget(self.out_filter)
-        for text, fn in (("Check all again", self._verify), ("Check pixels", self._check_pixels), ("Open folder", self._open_folder),
+        for text, fn in (("Check frames", self._verify), ("Check pixels", self._check_pixels), ("Open folder", self._open_folder),
                          ("Delete", self._delete_dialog)):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
+            if text == "Check frames":
+                b.setToolTip("Looks at the files of all frames again: there, not empty, whole and readable, and not far smaller than the rest.")
             if text == "Check pixels":
                 b.setToolTip("Looks at every pixel of every rendered frame, in the background: NaN and inf, black, empty or one-colour frames,\n"
                              "frames exactly the same as another anywhere in the sequence, and a size, channels, bit depth or compression unlike the rest.")
@@ -5791,15 +5821,34 @@ class MainWindow(QtWidgets.QMainWindow):
             verdict = e.movie_verdict() if e.state not in ("rendering", "paused", "finishing") else None
             words = {"ok": ("ok", C["done"]), "warn": ("check it", C["small"]), "bad": ("broken", C["failed"])}
             text, color = words.get(verdict, ("—", C["text"]))
-            self.t_check.set(text, "one movie file")
-            self.t_check.value.setStyleSheet("color: %s;" % color)
+            self.t_check_frames.show_state(text, "one movie file", color)
+            self.t_check_pixels.show_state("—", "not for a movie", C["text"])
             self._update_movie()
         else:
+            looking = e.pending_checks > 0 and e.state not in ("rendering", "paused", "finishing")
+            sub = "%d checked%s" % (len(checked), " · %d small" % small if small else "")
+            if not checked and not self.settings.get("check_frames", True):
+                sub = "off in Settings"
+            if bad:
+                self.t_check_frames.show_state("%d bad" % bad, sub, C["failed"])
+            elif looking:
+                self.t_check_frames.show_state("checking", sub, C["text"])
+            else:
+                self.t_check_frames.show_state("ok" if checked else "—", sub, C["done"] if checked else C["text"])
+            read = [fr for fr in e.frames.values() if fr.pixels and "error" not in fr.pixels]
+            not_read = sum(1 for fr in e.frames.values() if fr.pixels and "error" in fr.pixels)
             broken_pixels = sum(pixels_broken(fr) or fr.same_as is not None for fr in e.frames.values())
-            self.t_check.set("%d bad" % (bad + broken_pixels) if bad or broken_pixels else "checking" if e.pixels_pending else ("ok" if checked else "—"),
-                             "checking pixels %d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total) if e.pixels_pending
-                             else "%d checked · %d small" % (len(checked), small))
-            self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad or broken_pixels else C["text"] if e.pixels_pending else (C["done"] if checked else C["text"])))
+            sub = "%d checked" % len(read)
+            if not read and not not_read and not self.settings.get("check_pixels", True):
+                sub = "off in Settings"
+            if e.pixels_pending:
+                self.t_check_pixels.show_state("checking", "%d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total), C["text"])
+            elif broken_pixels:
+                self.t_check_pixels.show_state("%d bad" % broken_pixels, sub, C["failed"])
+            elif not_read:
+                self.t_check_pixels.show_state("not read", "%d frames, see the Log" % not_read, C["small"])
+            else:
+                self.t_check_pixels.show_state("ok" if read else "—", sub, C["done"] if read else C["text"])
         self._update_chunks()
         self._update_system()
         self.frames_model.touch()
