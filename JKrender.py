@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.69 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.69.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.69 alpha"
+APP_VERSION = "0.69.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -5254,6 +5254,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.out_summary = QtWidgets.QLabel("")
         self.out_summary.setObjectName("dim")
         left.addWidget(self.out_summary)
+        self.pixels_bar = QtWidgets.QProgressBar()
+        self.pixels_bar.setTextVisible(False)
+        self.pixels_bar.setMaximumHeight(6)
+        self.pixels_bar.hide()
+        left.addWidget(self.pixels_bar)
         self.frames_model = FramesModel(self.engine)
         self.frames_view = QtWidgets.QTableView()
         self.frames_view.setModel(self.frames_model)
@@ -5791,9 +5796,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_movie()
         else:
             broken_pixels = sum(pixels_broken(fr) or fr.same_as is not None for fr in e.frames.values())
-            self.t_check.set("%d bad" % (bad + broken_pixels) if bad or broken_pixels else ("ok" if checked else "—"),
-                             "%d checked · %d small" % (len(checked), small))
-            self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad or broken_pixels else (C["done"] if checked else C["text"])))
+            self.t_check.set("%d bad" % (bad + broken_pixels) if bad or broken_pixels else "checking" if e.pixels_pending else ("ok" if checked else "—"),
+                             "checking pixels %d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total) if e.pixels_pending
+                             else "%d checked · %d small" % (len(checked), small))
+            self.t_check.value.setStyleSheet("color: %s;" % (C["failed"] if bad or broken_pixels else C["text"] if e.pixels_pending else (C["done"] if checked else C["text"])))
         self._update_chunks()
         self._update_system()
         self.frames_model.touch()
@@ -5808,6 +5814,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif any(fr.pixels for fr in e.frames.values()):
             pixels = " · %d with faults in the pixels · %d same as another" % (sum(pixels_broken(fr) for fr in e.frames.values()),
                                                                               sum(fr.same_as is not None for fr in e.frames.values()))
+        self.pixels_bar.setVisible(bool(e.pixels_pending))
+        self.pixels_bar.setRange(0, max(1, e.pixels_total))
+        self.pixels_bar.setValue(e.pixels_total - e.pixels_pending)
         self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small%s · %s on disk"
                                  % (len(e.frames), len(checked), missing, broken, small, pixels, fmt_size(total_size)))
         self.gantt.update()

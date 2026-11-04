@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.69.1 alpha — 2026-11-04
+
+- Check pixels shows a progress bar under the Output summary while it runs, and its progress in the Output check tile.
+
 ## 0.69 alpha — 2026-11-03
 
 - Measure nodes shows which nodes have GPU on, and the GPU use, VRAM peak and RAM peak of the whole test. Nuke counts these for no node, and its timers hold no time for work on the GPU, so they are not given per node.
