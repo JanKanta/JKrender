@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.70.2 alpha — 2026-11-04
+
+- The Check column of the frame list is split into Check frames and Check pixels. The widths saved for that list start afresh once.
+
 ## 0.70.1 alpha — 2026-11-04
 
 - A movie shows one Check video tile, and its button is Check video.

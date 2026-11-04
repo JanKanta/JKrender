@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.1 alpha"
+APP_VERSION = "0.70.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -4326,7 +4326,7 @@ def nav_icon(kind):
 
 
 class FramesModel(QtCore.QAbstractTableModel):
-    COLS = ["Frame", "State", "Chunk", "Worker", "Time", "Size", "Check"]
+    COLS = ["Frame", "State", "Chunk", "Worker", "Time", "Size", "Check frames", "Check pixels"]
 
     def __init__(self, engine):
         super().__init__()
@@ -4392,15 +4392,26 @@ class FramesModel(QtCore.QAbstractTableModel):
                 sizes = [c[1] for c in fr.checks.values() if c[1] is not None]
                 return fmt_size(sum(sizes)) if sizes else ""
             if col == 6:
-                note = pixels_note(fr)
                 if not fr.checks:
-                    return note
+                    return ""
                 bad = [c for c in fr.checks.values() if c[0] != "ok"]
                 if bad:
                     return "%s %s" % (bad[0][0], bad[0][2])
-                return note or ("small (check it)" if fr.small else "ok")
+                return "small (check it)" if fr.small else "ok"
+            if col == 7:
+                if not fr.pixels:
+                    return ""
+                return "not read" if "error" in fr.pixels else pixels_note(fr) or "ok"
+        if role == QtCore.Qt.ForegroundRole and col == 6 and not fr.checks:
+            return None
+        if role == QtCore.Qt.ForegroundRole and col == 7:
+            if not fr.pixels:
+                return None
+            if "error" in fr.pixels:
+                return QtGui.QColor(C["small"])
+            return QtGui.QColor(C["failed"] if pixels_broken(fr) or fr.same_as is not None else C["done"])
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
-            if fr.state in ("bad", "failed") or pixels_broken(fr) or fr.same_as is not None:
+            if fr.state in ("bad", "failed") or (col == 1 and (pixels_broken(fr) or fr.same_as is not None)):
                 return QtGui.QColor(C["failed"])
             if fr.small:
                 return QtGui.QColor(C["small"])
@@ -5090,7 +5101,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_controls()
 
     def _tables(self):
-        return {"system": self.worker_table, "chunks": self.chunk_table, "frames": self.frames_view}
+        # A new name when a table gets a column: restoreState takes an older layout whole, with its widths on the wrong columns
+        return {"system": self.worker_table, "chunks": self.chunk_table, "frames_checks": self.frames_view}
 
     def _restore_headers(self):
         """Column widths and order of every table as they were when the window last closed."""
@@ -5303,7 +5315,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_view.setAlternatingRowColors(True)
         self.frames_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.frames_view.horizontalHeader().setStretchLastSection(True)
-        for col, width in enumerate((60, 66, 54, 64, 64, 70)):  # narrow, so Check (last) fits in the pane
+        for col, width in enumerate((60, 66, 54, 64, 64, 70, 110)):  # narrow, so the checks (last) fit in the pane
             self.frames_view.setColumnWidth(col, width)
         self.frames_view.selectionModel().currentRowChanged.connect(
             lambda cur, prev: self._show_frame(self.frames_model.rows[cur.row()]) if cur.isValid() else None)
