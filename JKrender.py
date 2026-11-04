@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.3 alpha"
+APP_VERSION = "0.70.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -230,8 +230,27 @@ def clean_render_folders(root, days, keep=()):
     return deleted, freed
 
 
+def open_nukes():
+    """How many open Nukes listen. All ports at once, as the window waits for the answer and an empty port takes a moment."""
+    found = []
+
+    def knock(port):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                found.append(port)
+        except OSError:
+            pass
+
+    threads = [threading.Thread(target=knock, args=(port,), daemon=True) for port in NUKE_PORTS]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(0.4)
+    return len(found)
+
+
 def clear_open_nukes():
-    """Every open Nuke frees its RAM cache and Blink cache, for the render about to start. In the background: a port
+    """Every open Nuke frees its RAM cache and Blink cache, when you say yes to it on Render. In the background: a port
     nobody listens on takes a moment to answer. A Nuke started before this version just ignores it."""
     def send():
         for port in NUKE_PORTS:
@@ -2552,8 +2571,6 @@ class RenderManager:
         if not ended or not self.settings.get("auto_next", False):
             return False
         ready = sorted((e for e in self.engines if e.state == "ready" and not e.nothing_to_render()), key=lambda e: e.number)
-        if ready:
-            clear_open_nukes()
         for e in ready[:len(ended)]:
             e.note("Started by itself: the render before it finished", "ok")
             self.request_start(e)
@@ -5646,10 +5663,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings[key] = value
         write_settings(self.settings)
 
+    def _ask_clear_cache(self):
+        """Render: an open Nuke's cache is someone's work in progress, so it goes only on a yes. The render starts either way."""
+        count = open_nukes()
+        if not count:
+            return
+        what = "the open Nuke" if count == 1 else "the %d open Nukes" % count
+        ask = QtWidgets.QMessageBox.question(
+            self, "JKrender", "Clear the cache of %s?\n\nRAM cache and Blink cache, so the render has the memory. "
+            "The disk cache stays. The render starts either way." % what,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if ask == QtWidgets.QMessageBox.Yes:
+            clear_open_nukes()
+
     def _start(self):
         targets = self._targets()
-        if any(e.state != "paused" for e in targets):
-            clear_open_nukes()
+        if len(targets) == 1:
+            starts = targets[0].state != "paused"
+        else:
+            starts = any(e.state in ("ready", "stopped", "failed") and not e.nothing_to_render() for e in targets)
+        if starts:
+            self._ask_clear_cache()
         for e in targets:
             if e.state == "paused":
                 e.resume()
@@ -6794,7 +6828,6 @@ def main():
     win.select(win.manager.engines[0])
     going = [e for e in going if e in win.manager.engines]
     if going and win.settings.get("resume_after_crash", False):
-        clear_open_nukes()
         for e in going:
             win.manager.request_start(e)
     if not alone:

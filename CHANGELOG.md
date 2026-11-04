@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.70.4 alpha — 2026-11-04
+
+- Render no longer clears the cache of open Nukes without asking. With a Nuke open it asks Yes or No, No by default, and the render starts either way. With no Nuke open it does not ask.
+- The next render starting by itself and a render resuming after a crash no longer clear anything: nobody is there to answer.
+
 ## 0.70.3 alpha — 2026-11-04
 
 - Analyze no longer takes a script that fills the cache of its short render as needing all of it: past 13 GB per process more cache does not cut the recommended processes. That gave 2 x 16 where 4 x 8 is faster.
