@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.70.6 alpha — 2026-11-04
+
+- Check pixels when a render opens: a new setting, on by default. Frames already on disk get the pixel check in the background as soon as the card opens. The frame check already ran at that moment.
+- Render stops a pixel check that is under way, as some of those frames may be about to be written. The check at the end covers them all.
+- Reset to defaults now also covers Check frames as they render.
+
 ## 0.70.5 alpha — 2026-11-04
 
 - After a process closes for memory, the next may come back after 10 s instead of 30. When it happens again the wait is still 60, 120 and 300 s.

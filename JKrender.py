@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.70.6 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.5 alpha"
+APP_VERSION = "0.70.6 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -68,7 +68,7 @@ SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_frames": True, "check_pixels": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -839,6 +839,8 @@ class RenderEngine:
         self.events = pyqueue.Queue()
         self.checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.pixel_checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pixel_futures = []
+        self.pixels_run = 0  # results of a check that was stopped are not counted
         self.pixels_pending = 0
         self.pixels_total = 0
         self.outputs = []  # [(write name, path pattern)]
@@ -995,6 +997,7 @@ class RenderEngine:
         """everything=True renders the whole range again, including frames already on disk."""
         if self.state in ("rendering", "starting", "finishing"):
             return
+        self._stop_pixels()
         self.filling = True  # all its processes still to start (see _may_spawn)
         if self.manager is not None and self.manager.live_count() == 0:
             self.manager.fresh_start()
@@ -1809,15 +1812,32 @@ class RenderEngine:
             return
         frames = [f for f, fr in sorted(self.frames.items()) if fr.state in ("done", "skipped", "bad")]
         self.pixels_pending = self.pixels_total = len(frames)
+        self.pixels_run += 1
+        self.pixel_futures = []
         for f in frames:
             try:
                 fut = self.pixel_checker.submit(check_pixels, self.output_files(f))
             except RuntimeError:  # closing
                 self.pixels_pending = 0
                 return
-            fut.add_done_callback(lambda fu, f=f: fu.cancelled() or self.events.put(("pixels", f, fu.result())))
+            self.pixel_futures.append(fut)
+            fut.add_done_callback(lambda fu, f=f, run=self.pixels_run: fu.cancelled() or self.events.put(("pixels", run, f, fu.result())))
 
-    def _on_pixels(self, frame, result):
+    def _stop_pixels(self):
+        """A render starts: no reading frames next to it, some of them about to be written. When it ends the check runs on all of them."""
+        if not self.pixels_pending:
+            return
+        for fut in self.pixel_futures:
+            fut.cancel()
+        self.pixels_pending = 0
+        self.pixels_run += 1
+        for fr in self.frames.values():
+            fr.pixels, fr.same_as = None, None
+        self.note("Pixel check stopped: a render started")
+
+    def _on_pixels(self, run, frame, result):
+        if run != self.pixels_run:
+            return
         self.pixels_pending -= 1
         if frame in self.frames:
             self.frames[frame].pixels = result
@@ -4597,6 +4617,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cards_row.insertWidget(self.cards_row.count() - 2, card)  # before the stretch and All renders
         self.cards[e] = card
         self._refresh_cards()
+        QtCore.QTimer.singleShot(300, lambda: self._check_on_open(e))  # after a card from before a crash got its range back
+
+    def _check_on_open(self, e):
+        """Settings > Check pixels when a render opens. The frame check already ran: it is how the card knows what is on disk."""
+        if (self.settings.get("check_on_open", True) and e in self.manager.engines and not e.job.get("test_out")
+                and e.state in ("ready", "stopped", "done", "failed")):
+            e.check_all_pixels()
 
     def _card_clicked(self, e, shift):
         """A click picks one render; Shift+click adds it to (or takes it from) the renders picked, and Render,
@@ -4943,6 +4970,10 @@ class MainWindow(QtWidgets.QMainWindow):
             "NaN and inf, black, empty or one-colour frames, frames exactly the same as another, and a size, channels, bit depth\n"
             "or compression unlike the rest of the sequence, in the background.\n"
             "About 0.1 s a 4K frame. It needs numpy and OpenEXR for EXR files, and only reports: nothing renders again by itself.")
+        self.c_open = toggle("check_on_open", True)
+        row(gen, "Check pixels when a render opens", [self.c_open],
+            "The same check on the frames already on disk, in the background, as soon as a render opens here.\n"
+            "Render stops it, and a render that ends checks them all anyway. Frames on disk are always checked for missing, empty or cut-off files when a render opens.")
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -5166,7 +5197,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_pixels, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
