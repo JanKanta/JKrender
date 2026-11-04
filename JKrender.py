@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.70.9 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.71 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.70.9 alpha"
+APP_VERSION = "0.71 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -2833,7 +2833,7 @@ class Gantt(QtWidgets.QWidget):
         self.dim_others = True  # False: every render's chunks equally bright
         self.hide_old_done = True  # a render started again: the done chunks of its earlier run are not drawn
         self.setMouseTracking(True)
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(70)
         self._blocks = []
 
     def paintEvent(self, event):
@@ -4059,7 +4059,7 @@ class Graph(QtWidgets.QWidget):
         self.max_value = max_value
         self.unit = unit
         self.data = {k: collections.deque(maxlen=300) for k, _, _ in series}
-        self.setMinimumHeight(130)
+        self.setMinimumHeight(70)
 
     def add(self, values):
         for k in self.data:
@@ -4104,7 +4104,7 @@ class CoreGrid(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.values = []
-        self.setMinimumHeight(56)
+        self.setMinimumHeight(32)
 
     def set_values(self, values):
         self.values = values
@@ -4177,6 +4177,8 @@ class Tile(QtWidgets.QFrame):
         self.avg.setObjectName("dim")
         self.avg.setToolTip("Average while rendering, from when the renders started until the last one ended")
         self.avg.hide()
+        for label in (t, self.value, self.sub, self.avg):
+            label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         lay.addWidget(t)
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
@@ -4185,6 +4187,7 @@ class Tile(QtWidgets.QFrame):
     def set(self, value, sub=""):
         self.value.setText(value)
         self.sub.setText(sub)
+        self.setToolTip("%s: %s%s" % (self.title.text(), value, "\n" + sub if sub else ""))  # in a narrow window it may not all fit
 
     def set_avg(self, text):
         self.avg.setText(text)
@@ -4193,6 +4196,62 @@ class Tile(QtWidgets.QFrame):
     def show_state(self, value, sub, color):
         self.set(value, sub)
         self.value.setStyleSheet("color: %s;" % color)
+
+
+class CardsScroll(QtWidgets.QScrollArea):
+    """The render cards: as many as you like in a window of any width. It is as high as the cards, and a bar only when they do not fit."""
+
+    def __init__(self, host, beside):
+        super().__init__()
+        self.host, self.beside = host, beside
+        self.setWidget(host)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def fit(self):
+        high = max(self.host.minimumSizeHint().height(), self.beside.sizeHint().height())
+        if self.host.minimumSizeHint().width() > self.width():
+            high += self.horizontalScrollBar().sizeHint().height()
+        if self.height() != high:
+            self.setFixedHeight(high)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+
+class ReflowScroll(QtWidgets.QScrollArea):
+    """Settings cards: side by side as far as they fit, the rest under them, and it scrolls."""
+
+    def __init__(self, inner, grid, cards):
+        super().__init__()
+        self.grid, self.cards, self.columns = grid, cards, 0
+        self.setWidget(inner)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+    def resizeEvent(self, event):
+        self.reflow(event.size().width())
+        super().resizeEvent(event)
+
+    def reflow(self, width):
+        m = self.grid.contentsMargins()
+        wide = max(c.minimumSizeHint().width() for c in self.cards) + self.grid.horizontalSpacing()
+        columns = max(1, min(len(self.cards), (width - m.left() - m.right() + self.grid.horizontalSpacing()) // wide))
+        if columns == self.columns:
+            return
+        self.columns = columns
+        for c in self.cards:
+            self.grid.removeWidget(c)
+        for i, c in enumerate(self.cards):
+            self.grid.addWidget(c, i // columns, i % columns)
+        for col in range(len(self.cards)):
+            self.grid.setColumnStretch(col, 1 if col < columns else 0)
+        rows = (len(self.cards) + columns - 1) // columns
+        for row in range(len(self.cards) + 1):
+            self.grid.setRowStretch(row, 0 if row < rows else 1)
 
 
 class TwoTiles(QtWidgets.QFrame):
@@ -4231,7 +4290,7 @@ class ZoomView(QtWidgets.QWidget):
         self.center = QtCore.QPointF(0.5, 0.5)
         self._drag = None
         self.setMouseTracking(True)
-        self.setMinimumSize(420, 260)
+        self.setMinimumSize(200, 120)
 
     def set_image(self, image):
         self.image = image if image is not None and not image.isNull() else None
@@ -4484,7 +4543,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._net_last = None
         self.server = None
         self.setWindowTitle("JKrender %s" % APP_VERSION)
-        self.resize(1320, 900)
+        room = QtWidgets.QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1320, room.width()), min(900, room.height() - 40))
         job_path = Path(job_path)
         # Before the window shows: frames the Write already rendered appear as done.
         self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
@@ -4615,9 +4675,10 @@ class MainWindow(QtWidgets.QMainWindow):
         card = RenderCard(e)
         card.clicked.connect(self._card_clicked)
         card.closeRequested.connect(self._close_card)
-        self.cards_row.insertWidget(self.cards_row.count() - 2, card)  # before the stretch and All renders
+        self.cards_row.insertWidget(self.cards_row.count() - 1, card)  # before the stretch
         self.cards[e] = card
         self._refresh_cards()
+        QtCore.QTimer.singleShot(100, lambda: self.cards_scroll.ensureWidgetVisible(card))  # once the row has made room for it
         QtCore.QTimer.singleShot(300, lambda: self._check_on_open(e))  # after a card from before a crash got its range back
 
     def _check_on_open(self, e):
@@ -4658,6 +4719,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for e, card in self.cards.items():
             card.refresh(e is self.engine or e in picked, len(self.cards) > 1)
         self.total_card.refresh(self.manager.engines)
+        self.cards_scroll.fit()
 
     def _close_card(self, e):
         if e.state in ("rendering", "paused", "finishing", "waiting"):
@@ -4732,12 +4794,18 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.setSpacing(8)
 
         # one card per render; click a card to look at that render
-        self.cards_row = QtWidgets.QHBoxLayout()
+        host = QtWidgets.QWidget()
+        self.cards_row = QtWidgets.QHBoxLayout(host)
+        self.cards_row.setContentsMargins(0, 0, 0, 0)
         self.cards_row.setSpacing(8)
         self.cards_row.addStretch(1)
-        self.total_card = TotalCard()  # stays last, after the stretch
-        self.cards_row.addWidget(self.total_card)
-        lay.addLayout(self.cards_row)
+        self.total_card = TotalCard()  # stays where it is when the cards scroll
+        self.cards_scroll = CardsScroll(host, self.total_card)
+        top = QtWidgets.QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(self.cards_scroll, 1)
+        top.addWidget(self.total_card)
+        lay.addLayout(top)
 
         # controls (Render, Pause, Stop, frame range, and the render's result right after them) go here
         head = QtWidgets.QHBoxLayout()
@@ -4768,6 +4836,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("queued", "queued"), ("rendering", "rendering"), ("done", "done"),
                 ("small", "suspiciously small"), ("failed", "failed / broken"))))
         legend.setObjectName("dim")
+        legend.setWordWrap(True)
         lay.addWidget(legend)
 
         # controls
@@ -4818,6 +4887,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addWidget(self.range_edit)
         ctl.addSpacing(14)
         self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
+        self.banner.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         self.banner.hide()
         ctl.addWidget(self.banner, 1)  # runs to the right edge of the window
         ctl.addStretch(0)  # keeps the buttons on the left while there is no result to show
@@ -4890,9 +4960,10 @@ class MainWindow(QtWidgets.QMainWindow):
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
         w = QtWidgets.QWidget()
-        outer = QtWidgets.QHBoxLayout(w)
+        outer = QtWidgets.QGridLayout(w)
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(12)
+        cards = []
         FIELD = 96  # every value box the same width
 
         def card(title):
@@ -4913,7 +4984,7 @@ class MainWindow(QtWidgets.QMainWindow):
             grid.setColumnStretch(2, 1)
             v.addLayout(grid)
             v.addStretch(1)
-            outer.addWidget(frame, 1)
+            cards.append(frame)
             frame.grid, frame.box = grid, v
             return frame
 
@@ -5128,7 +5199,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: every chunk keeps the size set under Chunk.")
         note(procs, "Every process finishes at about the same time.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
-        return w
+        scroll = ReflowScroll(w, outer, cards)
+        scroll.reflow(10000)
+        return scroll
 
     def _chunk_mode_changed(self, auto, save=True):
         if save:
@@ -5353,6 +5426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addLayout(bar)
         self.out_summary = QtWidgets.QLabel("")
         self.out_summary.setObjectName("dim")
+        self.out_summary.setWordWrap(True)
         left.addWidget(self.out_summary)
         self.pixels_bar = QtWidgets.QProgressBar()
         self.pixels_bar.setTextVisible(False)
@@ -5380,7 +5454,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview.setAlignment(QtCore.Qt.AlignCenter)
         # Small minimum and an ignored size hint: in a low panel the picture shrinks instead of
         # being drawn over the frame info under it.
-        self.preview.setMinimumSize(320, 120)
+        self.preview.setMinimumSize(200, 120)
         self.preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
         self.preview.setStyleSheet("background: #0d0e10; color: %s;" % C["dim"])
         self.preview_info = QtWidgets.QLabel("")
@@ -5858,6 +5932,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _banner(self, text, color):
         self.banner.setText(text)
+        self.banner.setToolTip(text)
         self.banner.setStyleSheet("background: %s; color: #0e0f11; padding: 3px 10px; border-radius: 3px; font-weight: 600;" % color)
         self.banner.show()
 

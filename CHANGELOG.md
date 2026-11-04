@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.71 alpha — 2026-11-04
+
+- The window shrinks: its smallest size went from about 1740 x 990 to about 780 x 755, so it fits a Full HD monitor with room to spare, with any number of renders.
+- Settings: the cards stand side by side as far as they fit, the rest under them, and the tab scrolls.
+- The render cards scroll sideways when they do not fit, and a new one scrolls into view.
+- Tiles take the width they get; what does not fit is in the tooltip. The preview, graphs and timeline can get smaller.
+
 ## 0.70.9 alpha — 2026-11-04
 
 - System table: what a closed process waits for is shorter, like next try 5 s or wait: RAM 99 % / 95 %. The tooltip has it in full.
