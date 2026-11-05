@@ -161,7 +161,7 @@ def analyze(writes):
 
 
 def profile(writes):
-    """Settings > Measure nodes: what the performance timers counted for the nodes that feed the Writes."""
+    """Analyze script: what the performance timers counted for the nodes that feed the Writes."""
     rows = []
     for name in analyze(writes)["nodes"]:
         node = nuke.toNode(name)
@@ -217,7 +217,7 @@ def main():
                 node["file"].setValue(paths[node.fullName()])
 
         nuke.addBeforeRender(keep_in_test, nodeClass="Write")
-    if os.environ.get("JKRENDER_TIMERS"):  # Settings > Measure nodes
+    if os.environ.get("JKRENDER_TIMERS"):  # Analyze script
         nuke.startPerformanceTimers()
     say("READY", "%.2f" % (time.time() - opened))
     while True:
@@ -233,6 +233,12 @@ def main():
             render_frames(writes, cmd[1], parse_frames(cmd[2]))
         elif cmd[0] == "RANGE":
             render_range(writes, cmd[1], int(cmd[2]), int(cmd[3]))
+        elif cmd[0] == "ANALYZE":  # Analyze script: what feeds the Writes, from the same Nuke that renders its frames next
+            say("INFO", json.dumps(analyze(writes)))
+        elif cmd[0] == "TIMERS":  # Analyze script: Nuke's timers for the next frame only
+            if hasattr(nuke, "resetPerformanceTimers"):
+                nuke.resetPerformanceTimers()
+            nuke.startPerformanceTimers()
         elif cmd[0] == "PROFILE":
             say("INFO", json.dumps(profile(writes)))
     say("BYE")

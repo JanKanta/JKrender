@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.79 alpha — 2026-11-05
+
+- Analyze script and Measure nodes are one: Analyze script. One Nuke with all threads opens the script, says what feeds the Write, renders frames from the middle, 90 s at most in all, read every 0.5 s, then one more frame with Nuke's timers on when it fits in the time (they slow a heavy comp about 6 times, so the measured frames go without them). It shows how long Nuke took to start and the script to open, the first and the other frames, the threads it kept busy, the GPU use, RAM and VRAM and how the VRAM grows per frame, the slowest nodes, and recommends Processes, Threads and Cache with the reasons. What it found is kept as text in the test results folder.
+- The Measure nodes button is gone.
+
 ## 0.78 alpha — 2026-11-05
 
 - report.json of every render also holds the PC (CPU, threads, RAM, graphics card and VRAM, Windows, an id made from the PC's name), the settings, frames per minute, the median frame time, the most processes at once, RAM and VRAM peaks, processes closed by the RAM or VRAM limit, crashes, how long Nuke took to start and the script to open, the frames with pixel problems, the resolution and how many nodes of each class the script has.
