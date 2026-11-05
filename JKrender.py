@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.8 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.9 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.8 alpha"
+APP_VERSION = "0.76.9 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -4646,11 +4646,14 @@ class FramesModel(QtCore.QAbstractTableModel):
             return [f for f in sorted(frames) if self._problem(frames[f])]
         if self.mode == "Rendered":
             return [f for f in sorted(frames) if frames[f].state in ("done", "bad", "skipped")]
+        if self.mode == "Framerange":  # every frame of the range, also those not on disk yet
+            return e.frame_list()
         return [f for f in sorted(frames) if frames[f].state != "queued" or frames[f].checks]
 
     @staticmethod
     def _problem(fr):
-        return fr.state in ("bad", "failed") or fr.small or pixels_broken(fr) or fr.same_as is not None
+        return (fr.state in ("bad", "failed") or fr.small or pixels_broken(fr) or fr.same_as is not None
+                or (fr.state == "queued" and bool(fr.checks)))  # found broken on disk, to render again
 
     def touch(self):
         """Row by row, not a reset: what you selected stays selected while frames come in."""
@@ -4693,7 +4696,11 @@ class FramesModel(QtCore.QAbstractTableModel):
             if col == 0:
                 return str(f)
             if col == 1:
-                return fr.state if f in self.engine.frames else "not in Framerange"
+                if f not in self.engine.frames:
+                    return "not in Framerange"
+                if fr.state == "queued":
+                    return "broken on disk" if fr.checks else "not on disk"
+                return fr.state
             if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
                 return (fr.ran_in or "") if fr.state in ("done", "bad", "skipped") else fr.chunk or ""
             if col == 3:
@@ -4723,7 +4730,8 @@ class FramesModel(QtCore.QAbstractTableModel):
                 return QtGui.QColor(C["small"])
             return QtGui.QColor(C["failed"] if pixels_broken(fr) or fr.same_as is not None else C["done"])
         if role == QtCore.Qt.ForegroundRole and col in (1, 6):
-            if fr.state in ("bad", "failed") or (col == 1 and (pixels_broken(fr) or fr.same_as is not None)):
+            if fr.state in ("bad", "failed") or (col == 1 and (pixels_broken(fr) or fr.same_as is not None
+                                                               or (fr.state == "queued" and fr.checks))):
                 return QtGui.QColor(C["failed"])
             if fr.small:
                 return QtGui.QColor(C["small"])
@@ -5677,7 +5685,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left = QtWidgets.QVBoxLayout()
         bar = QtWidgets.QHBoxLayout()
         self.out_filter = QtWidgets.QComboBox()
-        self.out_filter.addItems(["All", "Rendered", "Problems"])
+        self.out_filter.addItems(["All", "Rendered", "Problems", "Framerange"])
         self.out_filter.currentTextChanged.connect(self._out_filter)
         bar.addWidget(self.out_filter)
         for text, fn in (("Check frames", self._verify), ("Check pixels", self._check_pixels), ("Open folder", self._open_folder),

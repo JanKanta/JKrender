@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.9 alpha — 2026-11-05
+
+- Output has a fourth filter, Framerange: every frame of the render's Framerange, also those not rendered yet, with how each one stands. A frame still to render says `not on disk`, a broken one found on disk `broken on disk` in red. Problems now lists such a frame too.
+
 ## 0.76.8 alpha — 2026-11-05
 
 - The row of the Render button says Framerange instead of Frames, like Settings.
