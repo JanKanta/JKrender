@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.73 alpha — 2026-11-05
+
+- Settings > General: Sound when a render ends, on by default, with a choice of Windows' sounds and a Play button. It plays when a render finishes or fails. A render you stopped and a render already on disk when it opens stay silent.
+
 ## 0.72.1 alpha — 2026-11-05
 
 - Clearing the cache of open Nukes now frees their buffers (Cache > Clear Buffers, F12), which is what fills the RAM. Until now it cleared only the playback cache and the Blink cache. An open Nuke has to be restarted once to take part.

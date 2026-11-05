@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.72.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.73 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.72.1 alpha"
+APP_VERSION = "0.73 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -72,17 +72,36 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
-                    "auto_chunk": True, "hide_old_done": True}
+                    "auto_chunk": True, "hide_old_done": True, "end_sound": True, "end_sound_name": "Tada"}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
+SOUNDS = {"Tada": "tada.wav", "Ding": "ding.wav", "Chimes": "chimes.wav", "Chord": "chord.wav", "Notify": "notify.wav",
+          "Message": "Windows Notify Messaging.wav", "Print complete": "Windows Print complete.wav", "Ring": "Ring01.wav",
+          "Alarm 1": "Alarm01.wav", "Alarm 2": "Alarm02.wav", "Alarm 3": "Alarm03.wav"}  # names here, files in Windows' Media folder
 
 
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
+def sound_names():
+    """The sounds this PC has. None outside Windows: there a render's end just beeps."""
+    media = Path(os.environ.get("WINDIR", "C:/Windows")) / "Media"
+    return [name for name, file in SOUNDS.items() if (media / file).is_file()]
+
+
+def play_sound(name):
+    """Plays in the background, the window does not wait for it."""
+    try:
+        import winsound
+        path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Media" / SOUNDS[name]
+        winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except Exception:
+        QtWidgets.QApplication.beep()
+
+
 def read_settings():
     settings = dict(DEFAULT_SETTINGS)
     try:
@@ -5116,6 +5135,19 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Check pixels when a render opens", [self.c_open],
             "The same check on the frames already on disk, in the background, as soon as a render opens here.\n"
             "Render stops it, and a render that ends checks them all anyway. Frames on disk are always checked for missing, empty or cut-off files when a render opens.")
+        self.c_sound = toggle("end_sound", True, self._end_sound_changed)
+        self.cb_sound = QtWidgets.QComboBox()
+        self.cb_sound.addItems(sound_names())
+        self.cb_sound.setCurrentText(self.settings.get("end_sound_name", "Tada"))
+        self.cb_sound.activated.connect(self._end_sound_picked)
+        self.b_sound = QtWidgets.QPushButton("Play")
+        self.b_sound.setToolTip("Play the sound you picked")
+        self.b_sound.clicked.connect(lambda: play_sound(self.cb_sound.currentText()))
+        self._end_sound_changed(self.c_sound.isChecked(), save=False)
+        row(gen, "Sound when a render ends", [self.c_sound],
+            "Plays when a render finishes or fails. With several renders, for each of them.\n"
+            "A render you stopped and a render already on disk when it opens stay silent.")
+        row(gen, "Which sound", [self.cb_sound, self.b_sound])
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -5343,6 +5375,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in SYSTEM_HIDDEN)
 
+    def _end_sound_changed(self, on, save=True):
+        self.cb_sound.setEnabled(on)
+        self.b_sound.setEnabled(on)
+        if save:
+            self._save_setting("end_sound", on)
+
+    def _end_sound_picked(self):
+        self._save_setting("end_sound_name", self.cb_sound.currentText())
+        play_sound(self.cb_sound.currentText())
+
     def _reset_settings(self):
         if (QtWidgets.QMessageBox.question(self, "Reset to defaults",
                                           "Put every setting back to how JKrender comes?\n"
@@ -5359,10 +5401,11 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
+        self.cb_sound.setCurrentText(DEFAULT_SETTINGS["end_sound_name"])
         self._apply_chunks()
         self._reset_headers()
         self.settings.pop("system_hidden", None)
@@ -5971,6 +6014,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._save_queue()
                 if prev is not None and e.state in ("done", "failed"):
                     QtWidgets.QApplication.alert(self)
+                    # "ready" to "done" is a render found whole on disk: nothing has just ended
+                    if self.settings.get("end_sound", True) and (e.state == "failed" or prev != "ready"):
+                        play_sound(self.settings.get("end_sound_name", "Tada"))
         if self.exit_when_done and self.manager.engines and all(
                 e.state in ("done", "failed") for e in self.manager.engines):
             self.exit_when_done = False
