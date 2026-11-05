@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.74 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.74.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.74 alpha"
+APP_VERSION = "0.74.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -988,7 +988,7 @@ class RenderEngine:
         return made
 
     def preferred_chunk(self):
-        """Chunk size set next to Render: Auto = about 4 chunks per Nuke process (at most 10 frames), or the size set."""
+        """Chunk size from Settings: Auto = about 4 chunks per Nuke process (at most 10 frames), or the size set."""
         if self.movie:
             return max(1, len(self.frames))
         if self.settings.get("chunk_auto", True) or not self.settings.get("chunk_size"):
@@ -997,7 +997,7 @@ class RenderEngine:
         return max(1, int(self.settings["chunk_size"]))
 
     def apply_chunk_setting(self):
-        """Renders that are not running take the chunk size set next to Render."""
+        """Renders that are not running take the chunk size from Settings."""
         if self.movie or self.state not in ("ready", "stopped", "done", "failed"):
             return
         size = self.preferred_chunk()
@@ -1244,7 +1244,7 @@ class RenderEngine:
                 m.vram_cap = None if cap >= m.total else cap
             return "; the %s limit lets one more process run for it" % " and ".join(which)
         if m is not None and m.free_slots() <= 0:
-            return (" once a place is free: all %d Nuke processes run (Processes, next to Render)" % m.total)
+            return (" once a place is free: all %d Nuke processes run (Settings > Processes)" % m.total)
         if m is not None:
             m.started_by_hand = time.time() + 90
         return ""
@@ -4989,7 +4989,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addSpacing(14)
 
         def spin(label, lo, hi, value, suffix, tip):
-            # placed in the row of the Render button (see _settings_tab)
+            # placed in the Settings tab (see _settings_tab)
             box = QtWidgets.QSpinBox()
             box.setRange(lo, hi)
             box.setValue(value)
@@ -5023,6 +5023,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
         self.banner.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         self.banner.hide()
+        self.run_flow.addWidget(self.banner)  # the render's result, on what is left of the line
+        self.run_flow.fill = self.banner
         self.s_workers.valueChanged.connect(self._workers_changed)
         self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))
         self.s_ram.valueChanged.connect(lambda v: self._budget_changed("ram", v))
@@ -5086,7 +5088,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """Two cards: General, Performance and Optimization. Processes and chunks go in the row of the Render button.
+        """Three cards: General, Performance and Optimization, Processes and Chunks.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5272,43 +5274,28 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: nothing watches RAM; Windows starts swapping when it runs out.")
         note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
 
-        # -- Processes and chunks, next to Render (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
-        def in_row(label, widgets, tip=""):
-            box = QtWidgets.QWidget()
-            h = QtWidgets.QHBoxLayout(box)
-            h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(6)
-            if label:
-                lab = QtWidgets.QLabel(label)
-                lab.setObjectName("dim")
-                lab.setToolTip(tip)
-                h.addWidget(lab)
-            for x in widgets:
-                if isinstance(x, QtWidgets.QAbstractSpinBox):
-                    x.setFixedWidth(66)
-                if tip and not x.toolTip():
-                    x.setToolTip(tip)
-                h.addWidget(x)
-            self.run_flow.addWidget(box)
-
-        self.l_ram_need = QtWidgets.QLabel("")
-        self.l_ram_need.setObjectName("dim")
-        in_row("Processes", [self.s_workers])
-        in_row("Threads", [self.s_threads])
-        in_row("Nuke cache", [self.s_ram, self.l_ram_need])
+        # -- Processes and Chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
+        procs = card("Processes and Chunks")
+        row(procs, "Processes", [self.s_workers])
+        row(procs, "Threads", [self.s_threads])
+        row(procs, "Nuke cache", [self.s_ram])
         self.b_test = QtWidgets.QPushButton("Test this script…")
         self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Nuke cache setups\n"
                                "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
         self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
+        row(procs, "Test", [self.b_test])
         self.b_analyze = QtWidgets.QPushButton("Analyze script…")
         self.b_analyze.setToolTip("Opens the selected render's script without rendering, goes through the nodes that feed its Write\n"
                                   "and recommends Processes, Threads and Nuke cache to start from. Test this script measures them.")
         self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
+        row(procs, "Analyze", [self.b_analyze])
         self.b_measure = QtWidgets.QPushButton("Measure nodes…")
         self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes, which ones have GPU on,\n"
                                   "and the GPU use, VRAM peak and RAM peak of the whole test.\n"
                                   "Nothing else should render. Nothing is saved or changed.")
         self.b_measure.clicked.connect(self._measure_nodes)
+        row(procs, "Measure", [self.b_measure])
+        self.l_ram_need = note(procs, QtWidgets.QLabel(""))
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")
         self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
@@ -5341,16 +5328,14 @@ class MainWindow(QtWidgets.QMainWindow):
         seg.setSpacing(0)
         seg.addWidget(self.r_chunk_auto)
         seg.addWidget(self.r_chunk_set)
-        in_row("Chunk", [seg_w, self.s_chunk])
+        row(procs, "Chunk", [seg_w, self.s_chunk])
         self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
         self.c_chunk_auto = toggle("auto_chunk", True)
-        in_row("Smaller chunks at the end", [self.c_chunk_auto],
+        row(procs, "Smaller chunks at the end", [self.c_chunk_auto],
             "Chunks get smaller towards the end of a render, down to single frames,\n"
             "so every Nuke process finishes at about the same time.\n"
             "Off: every chunk keeps the size set under Chunk.")
-        in_row("", [self.b_test, self.b_analyze, self.b_measure])
-        self.run_flow.addWidget(self.banner)  # the render's result, on what is left of the line
-        self.run_flow.fill = self.banner
+        note(procs, "Every process finishes at about the same time.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
         scroll.reflow(10000)
@@ -5375,8 +5360,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk.setValue(self.engine.chunk_size)
         self.s_chunk.blockSignals(False)
         need = self.engine.ram_need()
-        self.l_ram_need.setText("took %.1f GB last time" % need if need else "")
-        self.l_ram_need.setToolTip("This script took %.1f GB per process last time" % need if need else "")
+        self.l_ram_need.setText("this script took %.1f GB per process last time" % need if need else "")
         self._sync_controls()
 
     def _tables(self):

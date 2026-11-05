@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.74.1 alpha — 2026-11-05
+
+- Processes, Threads, Nuke cache, Chunk, Smaller chunks at the end, Test this script, Analyze script and Measure nodes moved back from the row of the Render button to Settings, in the Processes and Chunks card.
+
 ## 0.74 alpha — 2026-11-05
 
 - Right-click in System or on the Workers timeline: Add process starts one more process in a running render, Close after this chunk lets one finish its chunk and close. Processes follows and stays at the new number. With several renders the added or closed place stays with the render you picked.
