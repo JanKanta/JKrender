@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.2 alpha"
+APP_VERSION = "0.76.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -820,7 +820,7 @@ class Chunk:
 
 
 class Frame:
-    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as")
+    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as", "ran_in")
 
     def __init__(self):
         self.state = "queued"  # queued / rendering / done / failed / bad / skipped
@@ -832,6 +832,7 @@ class Frame:
         self.chunk = None
         self.pixels = None  # check_pixels of the frame
         self.same_as = None  # the first frame with exactly the same pixels
+        self.ran_in = None  # the chunk that rendered it; chunk is the one of the plan now
 
 
 class Worker:
@@ -927,6 +928,8 @@ class RenderEngine:
         )
         self._small_dirty = False
         self.frames_text = self.sent_frames()  # Frames in Settings, each render its own; the slate frame comes on top
+        self.outside = {}  # frames on disk that this range leaves out: they stay in Output, nothing renders them
+        self.before = {}  # rendered frames of the plan before this one: found on disk again, they keep what is known of them
         self.range_text = self.default_range()
         frames = parse_frames(self.range_text)
         plan = auto_plan(len(frames), self.movie)
@@ -976,8 +979,17 @@ class RenderEngine:
     def frame_list(self):
         return sorted(self.frames)
 
+    def all_frames(self):
+        """The frames of the range and those on disk outside it, as Output lists them."""
+        return sorted(set(self.frames) | set(self.outside))
+
+    def frame_info(self, frame):
+        return self.frames.get(frame) or self.outside.get(frame)
+
     def rebuild_plan(self, frames=None):
         frames = parse_frames(self.range_text) if frames is None else frames
+        self.before = dict(self.outside)
+        self.before.update((f, fr) for f, fr in self.frames.items() if fr.state in ("done", "skipped", "bad"))
         self.frames = {f: Frame() for f in frames}
         self.chunks = []
         self.next_cid = 1
@@ -1101,6 +1113,7 @@ class RenderEngine:
                 fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
         if not everything:
             self.scan_disk()  # frames already on disk and passing the check are never rendered twice
+        self.before = {}
         if all(w.state == "gone" for w in self.workers.values()):
             # Stop closed every Nuke; the new run starts its own processes from W01 on a fresh timeline.
             self.workers = {}
@@ -1139,6 +1152,10 @@ class RenderEngine:
                 fr = self.frames[f]
                 fr.state, fr.worker, fr.secs = "done", "on disk", None
                 fr.checks = dict(enumerate(results))
+                known = self.before.get(f)
+                if known is not None and known.state == "done":
+                    fr.worker, fr.secs, fr.small, fr.pixels, fr.same_as, fr.ran_in = (
+                        known.worker, known.secs, known.small, known.pixels, known.same_as, known.ran_in)
                 found += 1
             elif any(r[0] != "missing" for r in results):
                 self.frames[f].checks = {i: r for i, r in enumerate(results) if r[0] != "missing"}  # shows why
@@ -1153,7 +1170,28 @@ class RenderEngine:
             self.note("%d of %d frames are already on disk and pass the check; they count as done" % (found, len(self.frames)), "ok")
         if broken:
             self.note("!! %d frame(s) on disk are broken (empty or cut off) and will be rendered again" % broken, "err")
+        self._find_outside()
+        self.before = {}
         return found
+
+    def _find_outside(self):
+        """What the range leaves out but is on disk: what Nuke sent, the slate frame, what was listed until now."""
+        near = set(parse_frames(self.sent_frames())) | set(self.outside) | set(self.before)
+        near.add(int(self.settings.get("slate_frame", 1000)))
+        near -= set(self.frames)
+        near = sorted(near)
+        checks = dict(zip(near, self.checker.map(lambda f: [check_file(p) for p in self.output_files(f)], near)))
+        outside = {}
+        for f in near:
+            results = checks[f]
+            if all(r[0] == "missing" for r in results):
+                continue
+            fr = self.outside.get(f) or self.before.get(f) or Frame()
+            fr.worker = fr.worker or "on disk"
+            fr.state = "done" if all(r[0] == "ok" for r in results) else "bad"
+            fr.checks = {i: r for i, r in enumerate(results) if r[0] != "missing"}
+            outside[f] = fr
+        self.outside = outside
 
     def pause(self):
         """Freeze every Nuke right where it is, mid-frame. RAM stays in use, the CPU goes idle."""
@@ -1719,6 +1757,7 @@ class RenderEngine:
             fr = self.frames.get(f)
             if fr is not None:
                 fr.state, fr.secs, fr.worker = "done", secs, w.name
+                fr.ran_in = w.chunk.name if w.chunk else None
                 if self.settings.get("check_frames", True) or self.job.get("test_out"):  # Test this script counts its frames by this
                     self._submit_check(f)
             if w.chunk and w.chunk.whole_range:
@@ -4598,7 +4637,8 @@ class FramesModel(QtCore.QAbstractTableModel):
 
     def _wanted(self):
         """The frames to list. Output starts empty: a frame comes in when it renders or is found on disk, also a broken one."""
-        frames = self.engine.frames
+        e = self.engine
+        frames = {f: e.frame_info(f) for f in e.all_frames()}
         if self.mode == "Problems":
             return [f for f in sorted(frames) if self._problem(frames[f])]
         if self.mode == "Rendered":
@@ -4642,7 +4682,7 @@ class FramesModel(QtCore.QAbstractTableModel):
         if not index.isValid() or index.row() >= len(self.rows):
             return None
         f = self.rows[index.row()]
-        fr = self.engine.frames.get(f)
+        fr = self.engine.frame_info(f)
         if fr is None:
             return None
         col = index.column()
@@ -4650,9 +4690,9 @@ class FramesModel(QtCore.QAbstractTableModel):
             if col == 0:
                 return str(f)
             if col == 1:
-                return fr.state
-            if col == 2:
-                return "" if fr.worker == "on disk" else fr.chunk or ""  # found there: no chunk of this plan rendered it
+                return fr.state if f in self.engine.frames else "not in Frames"
+            if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
+                return (fr.ran_in or "") if fr.state in ("done", "bad", "skipped") else fr.chunk or ""
             if col == 3:
                 return fr.worker or ""
             if col == 4:
@@ -5742,7 +5782,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return bar
 
     def _frame_order(self):
-        return self.engine.frame_list()
+        return self.engine.all_frames()
 
     def _sync_frame_bar(self, frame):
         frames = self._frame_order()
@@ -5767,7 +5807,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pick_frame(frames[max(0, min(len(frames) - 1, cur + step))])
 
     def _frame_playable(self, f):
-        fr = self.engine.frames.get(f)
+        fr = self.engine.frame_info(f)
         return fr is not None and fr.state in ("done", "skipped", "bad")
 
     def _frame_play_toggle(self):
@@ -6738,7 +6778,7 @@ class MainWindow(QtWidgets.QMainWindow):
         again = menu.addAction("Render this frame" if one else "Render this batch (%d frames)" % len(frames))
         delete = menu.addAction("Delete this frame" if one else "Delete this batch (%d frames)" % len(frames))
         e = self.engine
-        again.setEnabled(e.state not in ("finishing", "waiting"))
+        again.setEnabled(e.state not in ("finishing", "waiting") and any(f in e.frames for f in frames))  # not one left out by Frames
         delete.setEnabled(e.state not in ("rendering", "paused", "finishing", "waiting"))
         act = menu.exec(self.frames_view.viewport().mapToGlobal(pos))
         if act == again:
@@ -6788,7 +6828,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _show_frame(self, frame):
         e = self.engine
-        fr = e.frames.get(frame)
+        fr = e.frame_info(frame)
         if fr is None:
             return
         self._preview_frame = frame
@@ -7084,7 +7124,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if r_all.isChecked():
             self._delete_all()
             return
-        frames = sorted(set(parse_frames(edit.text())) & set(e.frames))
+        frames = sorted(set(parse_frames(edit.text())) & set(e.all_frames()))
         if not frames:
             QtWidgets.QMessageBox.information(self, "JKrender", "None of those frames is in this render (%s)." % e.range_text)
             return

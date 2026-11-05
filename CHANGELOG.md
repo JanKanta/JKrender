@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.3 alpha — 2026-11-05
+
+- Changing Frames or the slate no longer takes frames on disk out of Output. Those the range leaves out stay in the list as `not in Frames`, can be previewed and deleted, and nothing renders them. Rendered frames keep their process, time, chunk and pixel check.
+
 ## 0.76.2 alpha — 2026-11-05
 
 - Settings: a new card Jobs, with Slate frame and Frames, sits over Performance and Optimization. Test this script, Analyze script and Measure nodes moved to Performance and Optimization. The other card is Processes and Chunks again.

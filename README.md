@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.76.2 alpha.** It works in tests; expect rough edges.
+**Version 0.76.3 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -42,7 +42,7 @@ on disk.
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
 - **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
 - **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails or leaves broken frames. A render you stopped stays silent.
-- **Frames** (Settings > Jobs): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are.
+- **Frames** (Settings > Jobs): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are, and stay in Output marked `not in Frames`.
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
   graphics card. A light 4K script with Kronos rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
