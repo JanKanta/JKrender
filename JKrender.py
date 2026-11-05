@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.74.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.75 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.74.1 alpha"
+APP_VERSION = "0.75 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -5015,11 +5015,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.range_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.range_edit.setToolTip("Frames this render covers: the Write's range from Nuke,\n"
                                    "plus the slate frame when Settings > Render slate frame is on.")
+        def show_value(layout, name, tip):
+            """A name and its value to read, like FrameRanges. They change in Settings."""
+            lab = QtWidgets.QLabel(name)
+            lab.setObjectName("dim")
+            value = QtWidgets.QLabel("")
+            for x in (lab, value):
+                x.setToolTip(tip)
+            layout.addWidget(lab)
+            layout.addWidget(value)
+            return value
+
+        ctl.addSpacing(8)
+        self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Render slate frame.")
+        ctl.addSpacing(8)
         lab = QtWidgets.QLabel("FrameRanges")
         lab.setObjectName("dim")
         ctl.addWidget(lab)
         ctl.addWidget(self.range_edit)
         self.run_flow.addWidget(run)
+        info = QtWidgets.QWidget()  # its own piece of the row: in a narrow window it goes to the next line
+        have = QtWidgets.QHBoxLayout(info)
+        have.setContentsMargins(0, 0, 0, 0)
+        have.setSpacing(6)
+        self.l_info = {}
+        for i, (key, name, tip) in enumerate((
+                ("processes", "Processes", "Nuke processes for all renders together. Settings > Processes, or right-click in System while rendering."),
+                ("threads", "Threads", "Threads per Nuke process. Settings > Threads."),
+                ("cache", "Nuke cache", "Nuke's cache limit per process. Settings > Nuke cache."),
+                ("chunk", "Chunk", "Frames per chunk of this render. Settings > Chunk."))):
+            if i:
+                have.addSpacing(8)
+            self.l_info[key] = show_value(have, name, tip)
+        self.run_flow.addWidget(info)
         self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
         self.banner.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
         self.banner.hide()
@@ -5958,15 +5986,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_controls()
         self._refresh_cards()
 
+    def _show_run_info(self):
+        """What the row of the Render button says about the picked render."""
+        e, m = self.engine, self.manager
+        frame = self.settings.get("slate_frame", 1000)
+        self.l_slate.setText(str(frame) if self.settings.get("slate", True) and frame in e.frames else "off")
+        self.l_info["processes"].setText(str(m.total))
+        self.l_info["threads"].setText(str(m.threads))
+        self.l_info["cache"].setText("%d GB" % m.ram)
+        self.l_info["chunk"].setText("whole movie" if e.movie else
+                                     "%s%d fr" % ("Auto " if self.settings.get("chunk_auto", True) else "", e.chunk_size))
+
     def _workers_changed(self, v):
         self.manager.set_budget(total=v)
         self._save_setting("processes", v)
         if self.settings.get("chunk_auto", True):
             self._apply_chunks()  # Auto chunk follows the number of processes
+        self._show_run_info()
 
     def _budget_changed(self, key, v):
         self.manager.set_budget(**{key: v})
         self._save_setting(key, v)
+        self._show_run_info()
 
     def _chunk_changed(self, v):
         if self.r_chunk_auto.isChecked():
@@ -5975,6 +6016,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_chunks()
 
     def _sync_controls(self):
+        self._show_run_info()
         s = self.engine.state
         running = s in ("rendering", "paused", "finishing", "waiting")
         self.b_start.setEnabled(s not in ("rendering", "finishing", "waiting"))

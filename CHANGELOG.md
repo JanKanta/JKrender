@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.75 alpha — 2026-11-05
+
+- The row of the Render button shows, to read: the slate frame or off before FrameRanges; Processes, Threads, Nuke cache and Chunk after it. They change in Settings.
+
 ## 0.74.1 alpha — 2026-11-05
 
 - Processes, Threads, Nuke cache, Chunk, Smaller chunks at the end, Test this script, Analyze script and Measure nodes moved back from the row of the Render button to Settings, in the Processes and Chunks card.
