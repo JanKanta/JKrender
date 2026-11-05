@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.6 alpha — 2026-11-05
+
+- System comes with new column widths: Process 53, Render 225, State 273, Cache 92 and Frames 62 px.
+
 ## 0.76.5 alpha — 2026-11-05
 
 - System comes with Frame and Peak RAM off as well. Tick them in its header to see them.

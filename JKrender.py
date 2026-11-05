@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.6 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.5 alpha"
+APP_VERSION = "0.76.6 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -78,6 +78,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
+SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
 SYSTEM_ORDER = ["Process", "Render", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
@@ -5920,8 +5921,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker_table.setAlternatingRowColors(True)
         self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.worker_table.horizontalHeader().setStretchLastSection(True)
-        self.worker_table.setColumnWidth(1, 240)  # Render: wide enough for the script name
-        self.worker_table.setColumnWidth(3, 205)  # State: "busy -> closes (VRAM limit)" and the like
         head = self.worker_table.horizontalHeader()
         head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
@@ -5935,6 +5934,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.worker_table.setColumnHidden(col, names[col] in hidden)
 
         arrange(SYSTEM_ORDER, SYSTEM_HIDDEN)
+        for name, width in SYSTEM_WIDTHS.items():
+            self.worker_table.setColumnWidth(names.index(name), width)
         self._header_defaults = {"system": head.saveState()}
         arrange(self.settings.get("system_order", SYSTEM_ORDER), set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
         head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
