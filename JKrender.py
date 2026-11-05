@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.6 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.7 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.6 alpha"
+APP_VERSION = "0.76.7 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -4756,7 +4756,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.server = None
         self.setWindowTitle("JKrender %s" % APP_VERSION)
         room = QtWidgets.QApplication.primaryScreen().availableGeometry()
-        self.resize(min(1320, room.width()), min(900, room.height() - 40))
+        self.resize(min(2560, room.width()), min(1369, room.height() - 23))  # a 1440p monitor filled, less the title bar
         job_path = Path(job_path)
         # Before the window shows: frames the Write already rendered appear as done.
         self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
@@ -5177,12 +5177,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sub_tabs.addTab(self._system_tab(), "System")
         self.sub_tabs.addTab(self._settings_tab(), "Settings")
         split.addWidget(self.sub_tabs)
-        split.setSizes([360, 400])
+        split.setSizes([464, 576])
         rlay.addWidget(split, 1)
         main.addWidget(right)
         main.setStretchFactor(0, 2)
         main.setStretchFactor(1, 3)
-        main.setSizes([560, 840])
+        main.setSizes([945, 1583])
         lay.addWidget(main, 1)
         self.main_split = main
         self.big_box = QtWidgets.QWidget()  # the big preview, in place of the three panes
@@ -5711,7 +5711,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_view.setAlternatingRowColors(True)
         self.frames_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.frames_view.horizontalHeader().setStretchLastSection(True)
-        for col, width in enumerate((60, 66, 54, 64, 64, 70, 110)):  # narrow, so the checks (last) fit in the pane
+        for col, width in enumerate((60, 66, 54, 64, 64, 70, 121)):  # narrow, so the checks (last) fit in the pane
             self.frames_view.setColumnWidth(col, width)
         self.frames_view.selectionModel().currentRowChanged.connect(
             lambda cur, prev: self._show_frame(self.frames_model.rows[cur.row()]) if cur.isValid() else None)
