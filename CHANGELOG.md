@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.76.1 alpha — 2026-11-05
+
+- Output starts empty: a frame comes into the list when it renders or is found on disk, so changing Frames or the slate does not fill or reorder it. What you selected stays selected while frames come in.
+- Chunks start at C01 again after the chunk size changes before a render, and a frame found on disk shows no chunk.
+
 ## 0.76 alpha — 2026-11-05
 
 - Frames can be changed: first item of the card, now called Job, Processes and Chunks. Every render has its own, kept when you switch cards and after a crash. A slate frame comes on top of them.

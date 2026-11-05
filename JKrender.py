@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76 alpha"
+APP_VERSION = "0.76.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1026,6 +1026,8 @@ class RenderEngine:
         queued = [c for c in self.chunks if c.state == "queued" and c.attempts == 0]
         frames = [f for c in queued for f in c.frames]
         self.chunks = [c for c in self.chunks if c not in queued]
+        if not self.chunks:
+            self.next_cid = 1  # a new plan, so it starts at C01
         self._chunk(frames)
 
     def sent_frames(self):
@@ -4591,24 +4593,37 @@ class FramesModel(QtCore.QAbstractTableModel):
 
     def refilter(self):
         self.beginResetModel()
-        frames = self.engine.frame_list()
-        if self.mode == "Problems":
-            frames = [f for f in frames if self._problem(self.engine.frames[f])]
-        elif self.mode == "Rendered":
-            frames = [f for f in frames if self.engine.frames[f].state in ("done", "bad", "skipped")]
-        self.rows = frames
+        self.rows = self._wanted()
         self.endResetModel()
+
+    def _wanted(self):
+        """The frames to list. Output starts empty: a frame comes in when it renders or is found on disk, also a broken one."""
+        frames = self.engine.frames
+        if self.mode == "Problems":
+            return [f for f in sorted(frames) if self._problem(frames[f])]
+        if self.mode == "Rendered":
+            return [f for f in sorted(frames) if frames[f].state in ("done", "bad", "skipped")]
+        return [f for f in sorted(frames) if frames[f].state != "queued" or frames[f].checks]
 
     @staticmethod
     def _problem(fr):
         return fr.state in ("bad", "failed") or fr.small or pixels_broken(fr) or fr.same_as is not None
 
     def touch(self):
-        if self.mode == "Problems":
-            now = [f for f in self.engine.frame_list() if self._problem(self.engine.frames[f])]
-            if now != self.rows:
-                self.refilter()
-                return
+        """Row by row, not a reset: what you selected stays selected while frames come in."""
+        now = self._wanted()
+        if now != self.rows:
+            wanted = set(now)
+            for i in range(len(self.rows) - 1, -1, -1):
+                if self.rows[i] not in wanted:
+                    self.beginRemoveRows(QtCore.QModelIndex(), i, i)
+                    del self.rows[i]
+                    self.endRemoveRows()
+            for i, f in enumerate(now):
+                if i >= len(self.rows) or self.rows[i] != f:
+                    self.beginInsertRows(QtCore.QModelIndex(), i, i)
+                    self.rows.insert(i, f)
+                    self.endInsertRows()
         if self.rows:
             self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, len(self.COLS) - 1))
 
@@ -4637,7 +4652,7 @@ class FramesModel(QtCore.QAbstractTableModel):
             if col == 1:
                 return fr.state
             if col == 2:
-                return fr.chunk or ""
+                return "" if fr.worker == "on disk" else fr.chunk or ""  # found there: no chunk of this plan rendered it
             if col == 3:
                 return fr.worker or ""
             if col == 4:
