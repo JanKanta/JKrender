@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.7 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.8 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.7 alpha"
+APP_VERSION = "0.76.8 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -5101,7 +5101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.range_edit.setToolTip("The frames of this render: the range Nuke sent, unless you changed it in Settings > Framerange.\n"
                                    "The slate frame comes on top of them.")
         def show_value(layout, name, tip):
-            """A name and its value to read, like Frames. They change in Settings."""
+            """A name and its value to read, like Framerange. They change in Settings."""
             lab = QtWidgets.QLabel(name)
             lab.setObjectName("dim")
             value = QtWidgets.QLabel("")
@@ -5114,7 +5114,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addSpacing(8)
         self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Slate frame.")
         ctl.addSpacing(8)
-        lab = QtWidgets.QLabel("Frames")
+        lab = QtWidgets.QLabel("Framerange")
         lab.setObjectName("dim")
         ctl.addWidget(lab)
         ctl.addWidget(self.range_edit)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.8 alpha — 2026-11-05
+
+- The row of the Render button says Framerange instead of Frames, like Settings.
+
 ## 0.76.7 alpha — 2026-11-05
 
 - The window opens at 2560 x 1369, or as much of the screen as there is, with new sizes for its panes. Output's Check frames column is a little wider.
