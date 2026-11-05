@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.73.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.73.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.73.3 alpha"
+APP_VERSION = "0.73.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -81,8 +81,9 @@ SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 # A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
-SOUNDS = {"done_v3": (1.0, ((0.00, 783.99, 0.70, 0.06), (0.08, 1046.50, 0.75, 0.06), (0.16, 1318.51, 0.80, 0.07),
-                            (0.26, 1567.98, 0.90, 0.20), (0.26, 1046.50, 0.40, 0.20), (0.26, 523.25, 0.35, 0.16))),
+SOUNDS = {"done_v4": (1.6, ((0.00, 523.25, 1.10, 0.07), (0.00, 1046.50, 0.50, 0.06), (0.11, 783.99, 1.20, 0.07), (0.11, 1567.98, 0.50, 0.06),
+                            (0.22, 130.81, 0.50, 0.30), (0.22, 261.63, 0.60, 0.38), (0.22, 659.25, 0.70, 0.42), (0.22, 783.99, 0.70, 0.42),
+                            (0.22, 1046.50, 0.85, 0.46), (0.22, 1318.51, 0.40, 0.34)), 0.9),
           "error_v1": (1.0, ((0.00, 329.63, 0.80, 0.11), (0.00, 659.25, 0.12, 0.08),
                              (0.17, 233.08, 0.90, 0.20), (0.17, 466.16, 0.14, 0.12)))}
 
@@ -95,7 +96,7 @@ def sound_file(name):
     path = HOME_DIR / "sounds" / (name + ".wav")
     if path.is_file():
         return path
-    seconds, notes = SOUNDS[name]
+    seconds, notes, level = (SOUNDS[name] + (0.7,))[:3]
     rate = 44100
     size = int(seconds * rate)
     dry = [0.0] * size
@@ -108,7 +109,7 @@ def sound_file(name):
     left, right = int(0.11 * rate), int(0.17 * rate)
     frames = array.array("h")
     wet = [(x + 0.22 * dry[i - left] * (i >= left), x + 0.22 * dry[i - right] * (i >= right)) for i, x in enumerate(dry)]
-    scale = 0.7 * 32767 / max(max(abs(a), abs(b)) for a, b in wet)
+    scale = level * 32767 / max(max(abs(a), abs(b)) for a, b in wet)
     ending = 0.08 * rate
     for i, (a, b) in enumerate(wet):
         out = min(1.0, (size - 1 - i) / ending) * scale
@@ -6029,7 +6030,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     # "ready" to "done" is a render found whole on disk: nothing has just ended
                     if self.settings.get("end_sound", True) and (e.state == "failed" or prev != "ready"):
                         broken = e.state == "failed" or any(fr.state == "bad" for fr in e.frames.values())
-                        play_sound("error_v1" if broken else "done_v3")
+                        play_sound("error_v1" if broken else "done_v4")
         if self.exit_when_done and self.manager.engines and all(
                 e.state in ("done", "failed") for e in self.manager.engines):
             self.exit_when_done = False
