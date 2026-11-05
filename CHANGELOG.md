@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.77.2 alpha — 2026-11-05
+
+- The Check frames tile counts frames found broken on disk too; it said ok next to them.
+- The banner of a finished render says only what was checked: with Check frames as they render off it says how many frames were not checked, in yellow; when the pixel check ends and found NaN, inf, black, duplicated or different frames, the banner turns red and says how many. While the pixel check runs it says so.
+
 ## 0.77.1 alpha — 2026-11-05
 
 - Every line of a Nuke process's log has the time it came, and what start-up scripts print comes when they print it.

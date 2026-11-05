@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.77.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.77.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.77.1 alpha"
+APP_VERSION = "0.77.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2845,6 +2845,11 @@ QLabel#tileValue { font-size: 14pt; font-weight: 600; }
 """ % C
 
 
+def frame_broken(fr):
+    """Broken on disk: a rendered one that failed its check, or one found so on disk and waiting to render again."""
+    return fr.state == "bad" or (fr.state == "queued" and any(c[0] != "ok" for c in fr.checks.values()))
+
+
 def pixels_broken(fr):
     return bool(fr.pixels and (fr.pixels.get("nan") or fr.pixels.get("inf") or fr.pixels.get("blank") or fr.pixels.get("differs")))
 
@@ -4781,6 +4786,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exit_when_done = exit_when_done
         self.cards = {}
         self._last_states = {}
+        self._pixels_were = {}  # render -> its pixel check was running at the last tick
         self._preview_frame = None
         self._gpu = None
         self._gpu_procs = {}  # pid -> (GPU %, VRAM bytes)
@@ -6251,6 +6257,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 if e is self.engine:
                     self._append_log(e.new_log)
                 e.new_log = []
+            pending = bool(e.pixels_pending)
+            if self._pixels_were.get(e) and not pending and e is self.engine and e.state == "done":
+                self._state_changed()  # the pixel check is through: the banner says what it found
+            self._pixels_were[e] = pending
             prev = self._last_states.get(e)
             if e.state != prev:
                 self._last_states[e] = e.state
@@ -6296,15 +6306,28 @@ class MainWindow(QtWidgets.QMainWindow):
                     done_in, os.path.basename(e.movie_path()), len(e.frames), extra),
                     C["small"] if warn else C["done"])
         elif e.state == "done":
-            bad = sum(1 for fr in e.frames.values() if fr.state == "bad")
-            small = sum(1 for fr in e.frames.values() if fr.small)
+            frames = list(e.frames.values())
+            bad = sum(1 for fr in frames if fr.state == "bad")
+            small = sum(1 for fr in frames if fr.small)
+            pixels = sum(1 for fr in frames if pixels_broken(fr) or fr.same_as is not None)
+            unchecked = sum(1 for fr in frames if not fr.checks)
             if bad:
                 self._banner("%s, but %d frame(s) are broken on disk. Output: Problems, select them, right-click → Render again."
                              % (done_in, bad), C["failed"])
+            elif pixels:
+                self._banner("%s, but the pixel check found %d frame(s) with NaN, inf, black, duplicated or different pixels. "
+                             "Output: Problems shows them." % (done_in, pixels), C["failed"])
             else:
-                extra = (" %d frame(s) are much smaller than the rest; worth a look." % small) if small else ""
-                self._banner("%s. All %d frames are on disk and pass the check.%s"
-                             % (done_in, len(e.frames), extra), C["done"])
+                if unchecked:  # Check frames as they render was off: nothing says these files are whole
+                    text = "%s. All %d frames are on disk; %d of them were not checked (Check frames as they render is off)." % (
+                        done_in, len(frames), unchecked)
+                else:
+                    text = "%s. All %d frames are on disk and pass the check." % (done_in, len(frames))
+                if e.pixels_pending:
+                    text += " Checking pixels…"
+                if small:
+                    text += " %d frame(s) are much smaller than the rest; worth a look." % small
+                self._banner(text, C["small"] if unchecked or small else C["done"])
         elif e.notice and e.state in ("rendering", "paused"):
             self._banner(e.notice[0], {"ok": C["done"], "warn": C["small"], "bad": C["failed"]}[e.notice[1]])
         elif e.state == "waiting":
@@ -6360,7 +6383,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            "rendering / running · %d of %d for all renders" % (self.manager.live_count(),
                                                                                self.manager.total))
         checked = [fr for fr in e.frames.values() if fr.checks]
-        bad = sum(1 for fr in e.frames.values() if fr.state == "bad")
+        bad = sum(1 for fr in e.frames.values() if frame_broken(fr))
         small = sum(1 for fr in e.frames.values() if fr.small)
         self.t_check_frames.title.setText("Check video" if e.movie else "Check frames")
         self.check_tiles.show_right(not e.movie)
