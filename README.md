@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.73.4 alpha.** It works in tests; expect rough edges.
+**Version 0.74 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -40,6 +40,7 @@ on disk.
 - **Space** plays and stops the preview. It never presses a button, so it cannot stop a render.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
+- **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
 - **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails or leaves broken frames. A render you stopped stays silent.
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the

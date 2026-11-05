@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.74 alpha — 2026-11-05
+
+- Right-click in System or on the Workers timeline: Add process starts one more process in a running render, Close after this chunk lets one finish its chunk and close. Processes follows and stays at the new number. With several renders the added or closed place stays with the render you picked.
+- Fix: starting a process by hand past a RAM or VRAM limit did nothing while another process you closed held a place. System no longer says a process is coming back when the free place is held for one you closed.
+
 ## 0.73.4 alpha — 2026-11-05
 
 - The sound of a finished render is now a stronger, happier ta-da: two firm notes and a full major chord, louder than before. The error sound stays.

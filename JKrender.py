@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.73.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.74 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.73.4 alpha"
+APP_VERSION = "0.74 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -849,6 +849,7 @@ class Worker:
         self.user_paused = False  # frozen from its right-click menu
         self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
         self.pinned = False  # started again by hand: the RAM guard closes the others first
+        self.user_leaving = False  # Close after this chunk: it closes even if a place comes free meanwhile
         self.gpu = False  # started with --gpu
         self.leave = False  # Work on another render: this one hands its place over first
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
@@ -914,6 +915,7 @@ class RenderEngine:
         frames = parse_frames(self.range_text)
         plan = auto_plan(len(frames), self.movie)
         self.workers_target = plan["workers"]
+        self.place_offset = 0  # Add process / Close after this chunk: this render keeps that many places more or fewer than an even share
         self.threads = plan["threads"]
         self.ram = plan["ram"]
         self.chunk_size = plan["chunk"]
@@ -1047,6 +1049,7 @@ class RenderEngine:
 
     def start(self, everything=False):
         """everything=True renders the whole range again, including frames already on disk."""
+        self.place_offset = 0
         if self.state in ("rendering", "starting", "finishing"):
             return
         self._stop_pixels()
@@ -1197,6 +1200,18 @@ class RenderEngine:
         self._kill(w, requeue=True, note="stopped")
         self.note("%s closed by you; its chunk goes back to the queue" % w.name)
 
+    def user_close_after_chunk(self, w):
+        """One process less, without losing work: it finishes its chunk and closes. One with no chunk closes now."""
+        if w.state not in ("loading", "idle", "busy"):
+            return
+        w.user_leaving = True
+        w.why_leaving = w.closed_why = "by you"
+        if w.state == "busy":
+            w.retire = True
+            self.note("%s closes after its chunk, by you" % w.name)
+        else:
+            self._quit(w, "by you")
+
     def user_start_here(self, wid, src=None):
         """Start again, in this render, a process that closed in render src (finished, stopped), under its name;
         without src, a place no process has taken yet."""
@@ -1219,7 +1234,7 @@ class RenderEngine:
         """A process you start by hand goes past the RAM and VRAM limits: they let one more run, and do not close
         one again for 90 s. What it says about that, for the log."""
         m = self.manager
-        cap = m.live_count() + 1 if m is not None else 0
+        cap = m.live_count() + 1 + len(self.held) if m is not None else 0  # a place held for one you closed starts nothing
         which = [n for n, c in (("RAM", m.ram_cap), ("VRAM", m.vram_cap)) if c is not None and c < cap] if m else []
         if m is not None and m.free_slots() <= 0 and which:
             m.started_by_hand = time.time() + 90
@@ -1550,7 +1565,7 @@ class RenderEngine:
         elif extra < 0:
             # Room again (another render done, the RAM limit up): ones still to close after their chunk stay.
             for w in [w for w in self.workers.values()
-                      if w.state in ("loading", "idle", "busy") and (w.retire or w.handover)][:-extra]:
+                      if w.state in ("loading", "idle", "busy") and (w.retire or w.handover) and not w.user_leaving][:-extra]:
                 w.retire = w.handover = False
                 w.why_leaving = w.closed_why = None
 
@@ -2664,16 +2679,11 @@ class RenderManager:
                         key=lambda e: (not (e.restart_ids or e.hand_wids), e.started or 0, e.number))
         needs = {e: e.need() for e in active}
         share = {e: 0 for e in active}
-        left = self.budget()
-        while left > 0:
-            gave = False
-            for e in active:
-                if left and share[e] < needs[e]:
-                    share[e] += 1
-                    left -= 1
-                    gave = True
-            if not gave:
+        for _ in range(self.budget()):  # even shares, but for places added or taken away by hand
+            hungry = [e for e in active if share[e] < needs[e]]
+            if not hungry:
                 break
+            share[min(hungry, key=lambda e: share[e] - e.place_offset)] += 1
         # Work on: places moved by hand, as long as both renders run and the one moved to has work for it
         self.moves = [(a, b) for a, b in getattr(self, "moves", []) if a in share and b in share]
         for a, b in self.moves:
@@ -6327,8 +6337,9 @@ class MainWindow(QtWidgets.QMainWindow):
         there are free places, in a render with chunks left, and none you closed by hand."""
         m = self.manager
         closed = [(x, w) for x, w in rows if x is not None and w.state == "gone" and x.state == "rendering"
-                  and queued_left_for(x) and w.id not in x.held]
-        return closed[:max(0, m.total - m.live_count())]
+                  and queued_left_for(x) and w.id not in x.held and not w.user_leaving]
+        held = sum(len(x.held) for x in m.engines if x.state == "rendering")  # their places stay empty
+        return closed[:max(0, m.total - held - m.live_count())]
 
     def _memory_why(self):
         """What a closed process waits for, in numbers: the same rules as coming back itself, or "" when nothing holds it."""
@@ -6411,6 +6422,51 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._empty_place_menu(w, self.worker_table.viewport().mapToGlobal(pos))
             else:
                 self._worker_menu(e, w, self.worker_table.viewport().mapToGlobal(pos))
+        else:
+            menu = QtWidgets.QMenu(self)
+            actions = {}
+            self._add_process_item(menu, actions)
+            act = menu.exec(self.worker_table.viewport().mapToGlobal(pos))
+            if act in actions:
+                actions[act]()
+                self._update_system()
+
+    def _add_process_item(self, menu, actions):
+        """Add process: into the render still handing out chunks, or a choice of them. Greyed out when none has any left."""
+        renders = [x for x in self.manager.engines if x.state == "rendering" and not x.is_tail()]
+        room = self.manager.total < self.s_workers.maximum()
+        if len(renders) > 1:
+            sub = menu.addMenu("Add process to")
+            sub.setEnabled(room)
+            for x in renders:
+                actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: self._add_process(x))
+        else:
+            act = menu.addAction("Add process")
+            act.setEnabled(room and bool(renders))
+            if renders:
+                actions[act] = lambda: self._add_process(renders[0])
+
+    def _add_process(self, e):
+        """One process more: Processes goes up with it and stays there. It takes the next chunk from the queue."""
+        m = self.manager
+        self.s_workers.setValue(m.total + 1)
+        e.place_offset += 1
+        e.user_start_here(m.take_wid(e))
+        cpu = os.cpu_count() or 1
+        if m.total * m.threads > cpu:
+            e.note("%d processes x %d threads is more than the %d threads of this PC: they may not go faster"
+                   % (m.total, m.threads, cpu), "warn")
+
+    def _close_after_chunk(self, e, w):
+        """One process less: Processes goes down with it and stays there, so nothing takes its place."""
+        m = self.manager
+        e.place_offset -= 1
+        e.user_close_after_chunk(w)
+        if m.ram_cap is not None:
+            m.ram_cap = max(1, m.ram_cap - 1)
+        if m.vram_cap is not None:
+            m.vram_cap = max(1, m.vram_cap - 1)
+        self.s_workers.setValue(m.total - 1)
 
     def _empty_place_menu(self, wid, global_pos):
         """A place no process has taken: start one there by hand, in a render still going."""
@@ -6422,6 +6478,7 @@ class MainWindow(QtWidgets.QMainWindow):
         sub.setEnabled(bool(running))
         for x in running:
             actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: x.user_start_here(wid))
+        self._add_process_item(menu, actions)
         act = menu.exec(global_pos)
         if act in actions:
             actions[act]()
@@ -6455,6 +6512,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 act = menu.addAction("Pause")
                 act.setEnabled(w.state in ("loading", "idle", "busy") and e.state == "rendering")
                 actions[act] = lambda: e.user_pause(w, True)
+            act = menu.addAction("Close after this chunk")
+            act.setEnabled(self.manager.total > 1 and w.state in ("loading", "idle", "busy") and not w.user_paused
+                           and not (w.retire or w.handover or w.leave))
+            actions[act] = lambda: self._close_after_chunk(e, w)
             actions[menu.addAction("Close")] = lambda: e.user_close(w)
         others = [x for x in self.manager.engines if x is not e and x.state in ("rendering", "paused")]
         if others and w.state != "gone":
@@ -6462,6 +6523,8 @@ class MainWindow(QtWidgets.QMainWindow):
             for x in others:
                 act = sub.addAction("%d  %s" % (x.number, x.name))
                 actions[act] = (lambda x=x: self.manager.move_worker(e, w, x))
+        menu.addSeparator()
+        self._add_process_item(menu, actions)
         menu.addSeparator()
         actions[menu.addAction("Show process log")] = lambda: self._open_path(w.log_path)
         act = menu.exec(global_pos)
