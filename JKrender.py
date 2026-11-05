@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.3 alpha"
+APP_VERSION = "0.76.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -77,7 +77,9 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
-SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
+SYSTEM_HIDDEN = ["PID"]  # System columns off until ticked in its header
+SYSTEM_ORDER = ["Process", "Render", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
+                "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 # A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
@@ -927,7 +929,7 @@ class RenderEngine:
             for w in job.get("writes", [])
         )
         self._small_dirty = False
-        self.frames_text = self.sent_frames()  # Frames in Settings, each render its own; the slate frame comes on top
+        self.frames_text = self.sent_frames()  # Framerange in Settings, each render its own; the slate frame comes on top
         self.outside = {}  # frames on disk that this range leaves out: they stay in Output, nothing renders them
         self.before = {}  # rendered frames of the plan before this one: found on disk again, they keep what is known of them
         self.range_text = self.default_range()
@@ -4690,7 +4692,7 @@ class FramesModel(QtCore.QAbstractTableModel):
             if col == 0:
                 return str(f)
             if col == 1:
-                return fr.state if f in self.engine.frames else "not in Frames"
+                return fr.state if f in self.engine.frames else "not in Framerange"
             if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
                 return (fr.ran_in or "") if fr.state in ("done", "bad", "skipped") else fr.chunk or ""
             if col == 3:
@@ -5093,9 +5095,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
                             "Frames per chunk. Applies to chunks that have not started yet.\n"
                             "With Smaller chunks at the end this is the largest chunk; towards the end they get smaller.")
-        self.range_edit = QtWidgets.QLabel(e.frames_text)  # to read: it changes in Settings > Frames
+        self.range_edit = QtWidgets.QLabel(e.frames_text)  # to read: it changes in Settings > Framerange
         self.range_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        self.range_edit.setToolTip("The frames of this render: the range Nuke sent, unless you changed it in Settings > Frames.\n"
+        self.range_edit.setToolTip("The frames of this render: the range Nuke sent, unless you changed it in Settings > Framerange.\n"
                                    "The slate frame comes on top of them.")
         def show_value(layout, name, tip):
             """A name and its value to read, like Frames. They change in Settings."""
@@ -5198,7 +5200,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """General, Jobs over Performance and Optimization, Processes and Chunks.
+        """General, Frames over Performance and Optimization, Processes and Chunks.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5333,8 +5335,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_reset.clicked.connect(self._reset_settings)
         gen.box.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
 
-        # -- Jobs, of the render picked at the top
-        jobs = card("Jobs")
+        # -- Frames, of the render picked at the top
+        jobs = card("Frames")
         self.c_slate = Toggle()
         self.c_slate.setChecked(bool(self.settings.get("slate", True)))
         self.s_slate = QtWidgets.QSpinBox()
@@ -5349,12 +5351,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
         self.e_frames.setFixedWidth(FIELD * 2)
         self.e_frames.editingFinished.connect(self._frames_edited)
-        row(jobs, "Frames", [self.e_frames],
+        row(jobs, "Framerange", [self.e_frames],
             "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
             "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
             "Frames already on disk stay where they are. Locked while this render runs.")
 
-        # -- Performance and Optimization, under Jobs
+        # -- Performance and Optimization, under Frames
         perf = card("Performance and Optimization")
         self.c_gpu = toggle("use_gpu", True)
         row(perf, "Use GPU", [self.c_gpu],
@@ -5412,7 +5414,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row(perf, "Measure", [self.b_measure])
         cards.remove(jobs)
         cards.remove(perf)
-        column = QtWidgets.QWidget()  # Jobs over Performance: one place among the cards
+        column = QtWidgets.QWidget()  # Frames over Performance: one place among the cards
         stack = QtWidgets.QVBoxLayout(column)
         stack.setContentsMargins(0, 0, 0, 0)
         stack.setSpacing(12)
@@ -5919,17 +5921,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.worker_table.horizontalHeader().setStretchLastSection(True)
         self.worker_table.setColumnWidth(1, 240)  # Render: wide enough for the script name
+        self.worker_table.setColumnWidth(3, 205)  # State: "busy -> closes (VRAM limit)" and the like
         head = self.worker_table.horizontalHeader()
         head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
         head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
-        self._header_defaults = {"system": head.saveState()}
-        hidden = set(self.settings.get("system_hidden", SYSTEM_HIDDEN))
-        for col in range(1, self.worker_table.columnCount()):
-            self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in hidden)
         names = [self.worker_table.horizontalHeaderItem(c).text() for c in range(self.worker_table.columnCount())]
-        for i, name in enumerate(n for n in self.settings.get("system_order", []) if n in names):
-            head.moveSection(head.visualIndex(names.index(name)), i)
+
+        def arrange(order, hidden):
+            for i, name in enumerate(n for n in order if n in names):
+                head.moveSection(head.visualIndex(names.index(name)), i)
+            for col in range(1, len(names)):
+                self.worker_table.setColumnHidden(col, names[col] in hidden)
+
+        arrange(SYSTEM_ORDER, SYSTEM_HIDDEN)
+        self._header_defaults = {"system": head.saveState()}
+        arrange(self.settings.get("system_order", SYSTEM_ORDER), set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
         head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
         head.sectionMoved.connect(lambda *_: self._save_column_order())
         lay.addWidget(self.worker_table, 1)
@@ -6101,14 +6108,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.l_info["chunk"].setText("whole movie" if e.movie else "%d fr" % e.chunk_size)
 
     def _frames_edited(self):
-        """Settings > Frames: this render's frames, also when it is picked again later. Empty: what Nuke sent."""
+        """Settings > Framerange: this render's frames, also when it is picked again later. Empty: what Nuke sent."""
         e, box = self.engine, self.e_frames
         text = box.text().strip() or e.sent_frames()
         problem = frames_problem(text, e.movie)
         spec = frames_to_spec(parse_frames(text)) if not problem else e.frames_text
         box.setText(spec)
         if problem:
-            self._banner("Frames: " + problem, C["failed"])
+            self._banner("Framerange: " + problem, C["failed"])
         if spec == e.frames_text or e.state not in ("ready", "stopped", "done", "failed"):
             box.setText(e.frames_text)
             return
@@ -6117,7 +6124,7 @@ class MainWindow(QtWidgets.QMainWindow):
         e.apply_chunk_setting()
         e.scan_disk()
         e.done_if_on_disk()
-        e.note("Frames set to %s (Nuke sent %s)" % (spec, e.sent_frames()))
+        e.note("Framerange set to %s (Nuke sent %s)" % (spec, e.sent_frames()))
         self.select(e)
         self.frames_model.refilter()
         self._state_changed()
@@ -6778,7 +6785,7 @@ class MainWindow(QtWidgets.QMainWindow):
         again = menu.addAction("Render this frame" if one else "Render this batch (%d frames)" % len(frames))
         delete = menu.addAction("Delete this frame" if one else "Delete this batch (%d frames)" % len(frames))
         e = self.engine
-        again.setEnabled(e.state not in ("finishing", "waiting") and any(f in e.frames for f in frames))  # not one left out by Frames
+        again.setEnabled(e.state not in ("finishing", "waiting") and any(f in e.frames for f in frames))  # not one left out by Framerange
         delete.setEnabled(e.state not in ("rendering", "paused", "finishing", "waiting"))
         act = menu.exec(self.frames_view.viewport().mapToGlobal(pos))
         if act == again:
