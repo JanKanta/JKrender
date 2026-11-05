@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.71 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.71.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.71 alpha"
+APP_VERSION = "0.71.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Settings > Test this script: its renders, deleted after each setup
@@ -4059,7 +4059,7 @@ class Graph(QtWidgets.QWidget):
         self.max_value = max_value
         self.unit = unit
         self.data = {k: collections.deque(maxlen=300) for k, _, _ in series}
-        self.setMinimumHeight(70)
+        self.setMinimumHeight(130)
 
     def add(self, values):
         for k in self.data:
@@ -4104,7 +4104,7 @@ class CoreGrid(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.values = []
-        self.setMinimumHeight(32)
+        self.setMinimumHeight(56)
 
     def set_values(self, values):
         self.values = values

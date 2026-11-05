@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.71.1 alpha — 2026-11-05
+
+- The graphs and CPU threads in System are as high as before 0.71 again. The smallest window is about 780 x 840.
+
 ## 0.71 alpha — 2026-11-04
 
 - The window shrinks: its smallest size went from about 1740 x 990 to about 780 x 755, so it fits a Full HD monitor with room to spare, with any number of renders.
