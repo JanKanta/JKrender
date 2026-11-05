@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.73.1 alpha — 2026-11-05
+
+- Sound when a render ends: JKrender's own two sounds instead of a list of Windows' sounds. A short modern chime when a render finishes, an error sound when it fails or leaves broken frames. Settings keeps only the on/off switch.
+
 ## 0.73 alpha — 2026-11-05
 
 - Settings > General: Sound when a render ends, on by default, with a choice of Windows' sounds and a Play button. It plays when a render finishes or fails. A render you stopped and a render already on disk when it opens stay silent.
