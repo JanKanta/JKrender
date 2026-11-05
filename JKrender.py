@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.73.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.73.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -19,7 +19,6 @@ import json
 import math
 import os
 import queue as pyqueue
-import random
 import re
 import shutil
 import socket
@@ -53,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.73.2 alpha"
+APP_VERSION = "0.73.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -81,11 +80,9 @@ NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKr
 SYSTEM_HIDDEN = ["Uptime", "Peak RAM", "Chunks", "Last frame"]  # System columns off until ticked in its header
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
-# A render's end: notes as (start s, Hz, loudness, decay s), drums as (start s, kind, loudness, Hz).
-# Made here so no sound file ships; a new design needs a new file name.
-SOUNDS = {"done_v2": (1.9, ((0.00, "snare", 0.75, 190), (0.10, "snare", 0.60, 190), (0.20, "tom", 0.90, 200),
-                            (0.30, "tom", 0.90, 150), (0.40, "tom", 1.00, 105),
-                            (0.50, "kick", 1.20, 50), (0.50, "snare", 0.70, 190), (0.50, "crash", 0.90, 0))),
+# A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
+SOUNDS = {"done_v3": (1.0, ((0.00, 783.99, 0.70, 0.06), (0.08, 1046.50, 0.75, 0.06), (0.16, 1318.51, 0.80, 0.07),
+                            (0.26, 1567.98, 0.90, 0.20), (0.26, 1046.50, 0.40, 0.20), (0.26, 523.25, 0.35, 0.16))),
           "error_v1": (1.0, ((0.00, 329.63, 0.80, 0.11), (0.00, 659.25, 0.12, 0.08),
                              (0.17, 233.08, 0.90, 0.20), (0.17, 466.16, 0.14, 0.12)))}
 
@@ -93,27 +90,6 @@ SOUNDS = {"done_v2": (1.9, ((0.00, "snare", 0.75, 190), (0.10, "snare", 0.60, 19
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
-def add_drum(dry, rate, start, kind, gain, hz):
-    """One drum hit into the samples. The noise has a fixed seed, so the sound comes out the same every time."""
-    noise = random.Random(int(start * 1000) + len(kind))
-    first, last, phase = int(start * rate), 0.0, 0.0
-    for t in range(min(len(dry) - first, int({"crash": 1.6, "kick": 0.4, "tom": 0.4, "snare": 0.3}[kind] * rate))):
-        now = t / rate
-        white = noise.uniform(-1, 1)
-        bright, last = white - last, white
-        if kind == "crash":
-            ring = sum(math.sin(2 * math.pi * f * now) for f in (3150, 4270, 5620)) * 0.12 * math.exp(-now / 0.35)
-            x = bright * 0.55 * math.exp(-now / 0.5) + ring
-        elif kind == "snare":
-            x = math.sin(2 * math.pi * hz * now) * 0.8 * math.exp(-now / 0.07) + bright * 0.6 * math.exp(-now / 0.11)
-        else:  # the pitch falls fast: that is the punch of a kick or a tom
-            kick = kind == "kick"
-            phase += 2 * math.pi * hz * (1 + (2.5 if kick else 0.5) * math.exp(-now / 0.03)) / rate
-            x = math.sin(phase) * math.exp(-now / (0.17 if kick else 0.15))
-            x += bright * (0.4 * math.exp(-now / 0.004) if kick else 0.15 * math.exp(-now / 0.02))
-        dry[first + t] += gain * x
-
-
 def sound_file(name):
     """The WAV of a sound, made the first time, with a short stereo echo."""
     path = HOME_DIR / "sounds" / (name + ".wav")
@@ -123,12 +99,7 @@ def sound_file(name):
     rate = 44100
     size = int(seconds * rate)
     dry = [0.0] * size
-    drums = [n for n in notes if isinstance(n[1], str)]
-    for drum in drums:
-        add_drum(dry, rate, *drum)
-    if drums:
-        dry = [math.tanh(1.6 * x) for x in dry]  # glues the hits together and keeps them loud
-    for start, freq, gain, decay in (n for n in notes if not isinstance(n[1], str)):
+    for start, freq, gain, decay in notes:
         first, step = int(start * rate), 2 * math.pi * freq / rate
         attack, fade, shine = 0.005 * rate, decay * rate, decay * 0.3 * rate
         for t in range(min(size - first, int(fade * 7))):
@@ -6058,7 +6029,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     # "ready" to "done" is a render found whole on disk: nothing has just ended
                     if self.settings.get("end_sound", True) and (e.state == "failed" or prev != "ready"):
                         broken = e.state == "failed" or any(fr.state == "bad" for fr in e.frames.values())
-                        play_sound("error_v1" if broken else "done_v2")
+                        play_sound("error_v1" if broken else "done_v3")
         if self.exit_when_done and self.manager.engines and all(
                 e.state in ("done", "failed") for e in self.manager.engines):
             self.exit_when_done = False

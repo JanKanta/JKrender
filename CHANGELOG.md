@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.73.3 alpha — 2026-11-05
+
+- The sound of a finished render is now a short cheerful run of rising notes instead of the drums. The error sound stays.
+
 ## 0.73.2 alpha — 2026-11-05
 
 - The sound of a finished render is now a drum fill ending on a kick and a crash. The error sound stays.
