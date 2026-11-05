@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.72 alpha — 2026-11-05
+
+- Processes, Threads, Nuke cache, Chunk, Smaller chunks at the end, Test this script, Analyze script and Measure nodes moved from Settings to the row of the Render button. In a narrow window the row goes on in a second line.
+
 ## 0.71.1 alpha — 2026-11-05
 
 - The graphs and CPU threads in System are as high as before 0.71 again. The smallest window is about 780 x 840.
