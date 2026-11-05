@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.77 alpha — 2026-11-05
+
+- The frame preview zooms like the movie player: mouse wheel zooms around the cursor, drag moves, double-click fits the frame again (a second double-click makes the preview big). Zoomed in, the frame is shown at its own size, so the pixels are real, and the zoom stays when you go to the next frame. Playing shows frames at the preview's size and the real pixels come back when it stops.
+- Settings: the card Frames is now called Job.
+
 ## 0.76.9 alpha — 2026-11-05
 
 - Output has a fourth filter, Framerange: every frame of the render's Framerange, also those not rendered yet, with how each one stands. A frame still to render says `not on disk`, a broken one found on disk `broken on disk` in red. Problems now lists such a frame too.

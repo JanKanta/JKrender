@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.9 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.77 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.9 alpha"
+APP_VERSION = "0.77 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -656,6 +656,8 @@ def preview_image(path, max_w, max_h):
     image = QtGui.QImage(path)
     if image.isNull():
         raise RuntimeError("Qt cannot read this file type")
+    if image.width() <= max_w and image.height() <= max_h:
+        return image
     return image.scaled(max_w, max_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
 
 
@@ -4480,6 +4482,8 @@ class ZoomView(QtWidgets.QWidget):
     The view is kept as a zoom factor and a centre point in image fractions, so it stays put when
     the next frame of a playing movie (or a sharper still of the same frame) replaces the image."""
 
+    zoomed_in = QtCore.Signal()  # from fitted to zoomed in: time to show real pixels
+
     def __init__(self):
         super().__init__()
         self.image = None
@@ -4546,6 +4550,7 @@ class ZoomView(QtWidgets.QWidget):
         fx = (pos.x() - before.x()) / before.width()
         fy = (pos.y() - before.y()) / before.height()
         step = 1.25 if event.angleDelta().y() > 0 else 1 / 1.25
+        fitted = self.zoom <= 1.001
         self.zoom = max(1.0, min(64.0, self.zoom * step))
         # Keep the image point under the cursor where it is.
         sc = self._scale()
@@ -4553,6 +4558,8 @@ class ZoomView(QtWidgets.QWidget):
         self.center = QtCore.QPointF(fx - (pos.x() - self.width() / 2.0) / w, fy - (pos.y() - self.height() / 2.0) / h)
         self._clamp()
         self.update()
+        if fitted and self.zoom > 1.001:
+            self.zoomed_in.emit()
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton and self.image is not None and self.zoom > 1.001:
@@ -4988,8 +4995,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.e_frames.setText(e.frames_text)
         self.chunk_table.setRowCount(0)  # columns keep their widths: fitted once, or as you left them
         self._preview_frame = None
-        self.preview.setPixmap(QtGui.QPixmap())
-        self.preview.setText("Click a frame to see it")
+        self.preview.reset_view()
+        self.preview.set_text("Click a frame to see it")
         self.preview_info.setText("")
         self._frame_play_stop()
         self._sync_frame_bar(None)  # the slider covers this render's frames before any frame is shown
@@ -5209,7 +5216,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """General, Frames over Performance and Optimization, Processes and Chunks.
+        """General, Job over Performance and Optimization, Processes and Chunks.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5344,8 +5351,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_reset.clicked.connect(self._reset_settings)
         gen.box.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
 
-        # -- Frames, of the render picked at the top
-        jobs = card("Frames")
+        # -- Job: the render picked at the top
+        jobs = card("Job")
         self.c_slate = Toggle()
         self.c_slate.setChecked(bool(self.settings.get("slate", True)))
         self.s_slate = QtWidgets.QSpinBox()
@@ -5365,7 +5372,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
             "Frames already on disk stay where they are. Locked while this render runs.")
 
-        # -- Performance and Optimization, under Frames
+        # -- Performance and Optimization, under Job
         perf = card("Performance and Optimization")
         self.c_gpu = toggle("use_gpu", True)
         row(perf, "Use GPU", [self.c_gpu],
@@ -5423,7 +5430,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row(perf, "Measure", [self.b_measure])
         cards.remove(jobs)
         cards.remove(perf)
-        column = QtWidgets.QWidget()  # Frames over Performance: one place among the cards
+        column = QtWidgets.QWidget()  # Job over Performance: one place among the cards
         stack = QtWidgets.QVBoxLayout(column)
         stack.setContentsMargins(0, 0, 0, 0)
         stack.setSpacing(12)
@@ -5728,19 +5735,20 @@ class MainWindow(QtWidgets.QMainWindow):
         left.addWidget(self.frames_view, 1)
         lay.addLayout(left, 3)
         right = QtWidgets.QVBoxLayout()
-        self.preview = QtWidgets.QLabel("Click a frame to see it")
-        self.preview.setAlignment(QtCore.Qt.AlignCenter)
+        self.preview = ZoomView()  # zooms like the movie player
+        self.preview.set_text("Click a frame to see it")
         # Small minimum and an ignored size hint: in a low panel the picture shrinks instead of
         # being drawn over the frame info under it.
         self.preview.setMinimumSize(200, 120)
         self.preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
-        self.preview.setStyleSheet("background: #0d0e10; color: %s;" % C["dim"])
+        self.preview.zoomed_in.connect(lambda: self._preview_frame is not None and self._show_frame(self._preview_frame))
         self.preview_info = QtWidgets.QLabel("")
         self.preview_info.setObjectName("dim")
         self.preview_info.setWordWrap(True)
         self.preview_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.preview.installEventFilter(self)  # double-click: big preview
-        self.preview.setToolTip("Double-click to make the preview as big as the three panes (Esc goes back)")
+        self.preview.setToolTip("Mouse wheel zooms, drag moves. Double-click fits the frame again, or, when it fits,\n"
+                                "makes the preview as big as the three panes (Esc goes back)")
         # the preview, its frame bar and the frame info in one box, so the box can move to the big view and back
         self.preview_box = QtWidgets.QWidget()
         box = QtWidgets.QVBoxLayout(self.preview_box)
@@ -5786,7 +5794,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_big = tool(nav_icon("big"), "Preview as big as the three panes (Esc goes back)", self._toggle_big)
         self._frame_timer = QtCore.QTimer(self)
         self._frame_timer.timeout.connect(self._frame_play_step)
-        self._pix_cache = collections.OrderedDict()  # (frame, size, mtime) -> QPixmap: a second loop plays smoothly
+        self._pix_cache = collections.OrderedDict()  # (frame, size or "full", mtime) -> QImage: a second loop plays smoothly
         self._big = False
         esc = QtGui.QShortcut(QtGui.QKeySequence("Esc"), self)
         esc.activated.connect(lambda: self._big and self._toggle_big())
@@ -5833,6 +5841,29 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._frame_timer.isActive():
             self._frame_timer.stop()
             self.b_frame_play.setIcon(play_icon(False))
+            if self.preview.zoom > 1.001 and self._preview_frame is not None:
+                self._show_frame(self._preview_frame)  # stopped while zoomed in: real pixels again
+
+    def _frame_image(self, frame, path, full):
+        """The frame's picture, at the preview's size or at its own; kept, about 300 MB of them, for a smooth second loop."""
+        ratio = self.preview.devicePixelRatioF()
+        size = (10 ** 6, 10 ** 6) if full else (max(200, int(self.preview.width() * ratio)), max(150, int(self.preview.height() * ratio)))
+        key = (frame, "full" if full else size, os.path.getmtime(path))
+        image = self._pix_cache.get(key)
+        if image is not None:
+            self._pix_cache.move_to_end(key)
+            return image
+        if full:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            image = preview_image(path, *size)
+        finally:
+            if full:
+                QtWidgets.QApplication.restoreOverrideCursor()
+        self._pix_cache[key] = image
+        while len(self._pix_cache) > 1 and sum(i.sizeInBytes() for i in self._pix_cache.values()) > 300e6:
+            self._pix_cache.popitem(last=False)
+        return image
 
     def _frame_play_step(self):
         """Next rendered frame, looping; frames not on disk yet are skipped."""
@@ -5865,7 +5896,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "preview", None) and event.type() == QtCore.QEvent.MouseButtonDblClick:
-            self._toggle_big()
+            if self.preview.zoom > 1.001:
+                self.preview.reset_view()  # like the movie player: back to the whole frame
+            else:
+                self._toggle_big()
             return True
         if event.type() in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease) and event.key() == QtCore.Qt.Key_Space \
                 and isinstance(obj, QtWidgets.QWidget):
@@ -6861,25 +6895,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_info.setText("<br>".join(info))
         target = next((p for p in files if os.path.exists(p)), None)
         if fr.state == "rendering" or not target:
-            self.preview.setPixmap(QtGui.QPixmap())
-            self.preview.setText("Still rendering" if fr.state == "rendering" else "No file on disk yet")
+            self.preview.set_text("Still rendering" if fr.state == "rendering" else "No file on disk yet")
             return
         try:
-            size = (max(200, self.preview.width()), max(150, self.preview.height()))
-            key = (frame, size, os.path.getmtime(target))
-            pix = self._pix_cache.get(key)
-            if pix is None:
-                img = preview_image(target, *size)
-                pix = QtGui.QPixmap.fromImage(img).scaled(
-                    self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-                self._pix_cache[key] = pix
-                # about 300 MB of preview pictures at most
-                while len(self._pix_cache) > max(20, int(300e6 / max(1, size[0] * size[1] * 4))):
-                    self._pix_cache.popitem(last=False)
-            self.preview.setPixmap(pix)
+            # zoomed in: the frame at its own size, so the pixels are real; playing stays at the preview's size
+            self.preview.set_image(self._frame_image(frame, target, self.preview.zoom > 1.001 and not self._frame_timer.isActive()))
         except Exception as exc:
-            self.preview.setPixmap(QtGui.QPixmap())
-            self.preview.setText("No preview: %s" % exc)
+            self.preview.set_text("No preview: %s" % exc)
         if self.side_tabs.currentWidget() is not self.output_page and not getattr(self, "_quiet_pick", False):
             self.side_tabs.setCurrentWidget(self.output_page)
 
@@ -7183,8 +7205,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_movie()
             self._movie_show(0.5)
         self._preview_frame = None
-        self.preview.setPixmap(QtGui.QPixmap())
-        self.preview.setText("Click a frame to see it")
+        self.preview.reset_view()
+        self.preview.set_text("Click a frame to see it")
         self.preview_info.setText("")
         self.frames_model.refilter()
         self._sync_controls()
