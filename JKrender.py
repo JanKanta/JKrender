@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.77.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.78 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.77.3 alpha"
+APP_VERSION = "0.78 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -422,6 +422,56 @@ def fmt_size(n):
         if n < 1024 or unit == "GB":
             return ("%d %s" if unit == "B" else "%.1f %s") % (n, unit)
         n /= 1024.0
+
+
+_MACHINE = {}
+
+
+def machine_info():
+    """This PC, for the render report: no user or host name, only an id made from it."""
+    if _MACHINE:
+        return dict(_MACHINE)
+    import platform
+    cpu = platform.processor()
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            cpu = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
+    except Exception:
+        pass
+    gpu, vram = None, None
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=5, **hidden()).stdout.strip().splitlines()[0]
+            gpu, vram = out.rsplit(",", 1)
+            gpu, vram = gpu.strip(), round(float(vram) / 1024, 1)
+        except Exception:
+            pass
+    _MACHINE.update({
+        "id": hashlib.blake2b(platform.node().lower().encode("utf-8"), digest_size=6).hexdigest(),
+        "cpu": cpu, "threads": os.cpu_count(),
+        "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1) if psutil else None,
+        "gpu": gpu, "vram_gb": vram, "os": "%s %s" % (platform.system(), platform.version())})  # 10.0.22000 and up is Windows 11
+    return dict(_MACHINE)
+
+
+def script_id(path):
+    """The same id for every version and snapshot of one script (sh0050_v21 and sh0050_v22), and nothing of its name."""
+    stem = re.sub(r"[_.-]?v\d+$", "", Path(str(path or "")).stem.lower())
+    return hashlib.blake2b(stem.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def node_classes(path):
+    """How many nodes of each class a .nk has (nodes inside groups too). Classes only, no node names."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    counts = collections.Counter(m.group(1) for m in re.finditer(r"^([A-Za-z][\w.]*) \{\s*$", text, re.M))
+    for skip in ("Root", "define_window_layout_xml"):
+        counts.pop(skip, None)
+    return dict(counts.most_common())
 
 
 def auto_plan(n_frames, movie):
@@ -1101,6 +1151,7 @@ class RenderEngine:
             self.manager.fresh_start()
         self.size_seen = 0.0
         self.crashes = self.load_failures = 0  # a new run: the last one's crashes must not stop it at its first
+        self.run_stats = {"starts": [], "rss_peak": 0.0, "vram_peak": 0.0, "ram_pct_peak": 0.0, "card_peak": 0.0, "live_peak": 0}
         self.ever_ready = False
         self.scope = None  # Render renders everything still to render
         if everything:
@@ -1377,6 +1428,7 @@ class RenderEngine:
         if self.state in ("ready", "done", "failed", "stopped", "finishing"):
             if idle:  # a new run: its own clock
                 self.crashes = self.load_failures = 0
+                self.run_stats = {"starts": [], "rss_peak": 0.0, "vram_peak": 0.0, "ram_pct_peak": 0.0, "card_peak": 0.0, "live_peak": 0}
                 self.rerun_at = time.time() if self.started else None
                 self.started, self.paused_secs, self.paused_at, self.pauses = time.time(), 0.0, None, []
                 self.done_times.clear()
@@ -1710,6 +1762,17 @@ class RenderEngine:
                         self.size_seen = max(self.size_seen, w.rss)
                 except Exception:
                     pass
+        stats = getattr(self, "run_stats", None)
+        if stats is not None and self.state in ("rendering", "finishing"):
+            m = self.manager
+            live = [w for w in self.workers.values() if w.state != "gone"]
+            stats["live_peak"] = max(stats["live_peak"], len(live))
+            stats["rss_peak"] = max([stats["rss_peak"]] + [w.rss for w in live])
+            if m is not None:
+                stats["vram_peak"] = max([stats["vram_peak"]] + [m.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 3 for w in live])
+                stats["ram_pct_peak"] = max(stats["ram_pct_peak"], m.ram_percent())
+                if m.vram:
+                    stats["card_peak"] = max(stats["card_peak"], m.vram[1] / 1024.0)
         return changed
 
     def _on_line(self, w, line, at=None):
@@ -1746,6 +1809,8 @@ class RenderEngine:
                 script = float(rest[0])
             except (IndexError, ValueError):
                 script = None
+            if getattr(self, "run_stats", None) is not None:
+                self.run_stats["starts"].append((w.boot_secs, script, w.load_secs))
             if w.boot_secs is None or script is None:
                 self.note("%s ready in %.1f s" % (w.name, w.load_secs))
             else:
@@ -1996,6 +2061,8 @@ class RenderEngine:
             self.frames[frame].pixels = result
         if self.pixels_pending > 0:
             return
+        if self.state in ("done", "failed") and getattr(self, "run_stats", None) is not None:
+            QtCore.QTimer.singleShot(0, self.write_report)  # after the results below are in: the report gets the pixel problems
         first, broken, same, errors, blank, differs = {}, [], [], {}, {}, {}
         # what most frames have: a frame with something else was rendered another way
         usual = {}
@@ -2262,10 +2329,44 @@ class RenderEngine:
             "frame_secs_avg": (sum(secs) / len(secs)) if secs else None,
             "bad_frames": [f for f, fr in self.frames.items() if fr.state == "bad"],
         }
+        report.update(self._measure_report(secs))
         try:
             (self.dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         except Exception:
             pass
+
+    def _measure_report(self, secs):
+        """What a render tells about this PC and this kind of script: what Export render data hands to whoever
+        tunes the recommendations. No names or paths in it."""
+        stats = getattr(self, "run_stats", None) or {}
+        starts = stats.get("starts") or []
+        boot = [b for b, _, _ in starts if b is not None]
+        opened = [o for _, o, _ in starts if o is not None]
+        done = sum(1 for fr in self.frames.values() if fr.state == "done" and fr.worker != "on disk")
+        log = [x[1] for x in self.log]
+        job = self.job
+        return {
+            "report": 2, "jkrender": APP_VERSION, "nuke": job.get("nuke_version", ""),
+            "machine": machine_info(),
+            "settings": {k: self.settings.get(k) for k in ("use_gpu", "ram_guard", "ram_limit", "vram_guard", "vram_limit",
+                                                         "chunk_auto", "auto_chunk", "max_renders")},
+            "script": {"id": script_id(job.get("script")), "width": job.get("width"), "height": job.get("height"),
+                       "movie": bool(self.movie), "nodes": node_classes(job.get("snapshot") or job.get("script"))},
+            "result": {
+                "rendered": done, "frames_per_min": round(60.0 * done / self.elapsed(), 2) if done and self.elapsed() else None,
+                "frame_secs_median": round(statistics.median(secs), 3) if secs else None,
+                "processes_peak": stats.get("live_peak"), "rss_peak_gb": round(stats.get("rss_peak", 0.0), 1),
+                "vram_peak_gb": round(stats.get("vram_peak", 0.0), 1), "ram_peak_pct": round(stats.get("ram_pct_peak", 0.0)),
+                "card_vram_peak_gb": round(stats.get("card_peak", 0.0), 1),
+                "closed_ram": sum(1 for t in log if "!! RAM" in t and "closed now" in t),
+                "closed_vram": sum(1 for t in log if "!! VRAM" in t and "closed now" in t),
+                "limit_steps": sum(1 for t in log if "Nuke processes until" in t),
+                "crashes": self.crashes, "starts": len(starts),
+                "nuke_start_avg": round(sum(boot) / len(boot), 1) if boot else None, "nuke_start_max": round(max(boot), 1) if boot else None,
+                "script_open_avg": round(sum(opened) / len(opened), 2) if opened else None,
+                "script_open_max": round(max(opened), 2) if opened else None,
+                "pixel_problems": sum(1 for fr in self.frames.values() if pixels_broken(fr) or fr.same_as is not None)},
+        }
 
     def shutdown(self):
         for w in list(self.workers.values()):
@@ -5377,6 +5478,11 @@ class MainWindow(QtWidgets.QMainWindow):
             "When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
             "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.")
         note(gen, "Snapshots and logs in the log folder; rendered frames are never touched.")
+        self.b_export = QtWidgets.QPushButton("Export render data…")
+        self.b_export.clicked.connect(self._export_render_data)
+        row(gen, "Render data", [self.b_export],
+            "Every render's report (this PC, settings, speed, memory, how the processes started, the kinds of nodes)\n"
+            "in one file, to send to whoever tunes JKrender's recommendations. No script names, paths or errors in it.")
         self.b_reset = QtWidgets.QPushButton("Reset to defaults")
         self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
         self.b_reset.clicked.connect(self._reset_settings)
@@ -5571,6 +5677,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chunk_cols_sized = False
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in SYSTEM_HIDDEN)
+
+    def _export_render_data(self):
+        """Settings > Export render data: the reports of every render in the log folder, without names, paths or errors."""
+        root = self.engine.dir.parent
+        renders = []
+        for path in sorted(root.glob("*/report.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if data.get("report") != 2:
+                continue  # from before JKrender measured renders
+            data.pop("error", None)
+            data.pop("bad_frames", None)
+            renders.append(data)
+        if not renders:
+            QtWidgets.QMessageBox.information(self, "JKrender", "No render has a report to export yet.\n"
+                                              "Renders finished with this version of JKrender write one.")
+            return
+        name = "jkrender_render_data_%s_%s.json" % (machine_info()["id"], datetime.date.today().isoformat())
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export render data", str(Path.home() / "Desktop" / name), "JSON (*.json)")
+        if not path:
+            return
+        Path(path).write_text(json.dumps({"exported": datetime.datetime.now().isoformat(timespec="seconds"),
+                                          "jkrender": APP_VERSION, "renders": renders}, indent=1), encoding="utf-8")
+        self.engine.note("Exported %d render report(s) to %s" % (len(renders), path), "ok")
+        QtWidgets.QMessageBox.information(self, "JKrender", "%d render report(s) saved to\n%s" % (len(renders), path))
 
     def _reset_settings(self):
         if (QtWidgets.QMessageBox.question(self, "Reset to defaults",

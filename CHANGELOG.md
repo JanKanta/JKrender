@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.78 alpha — 2026-11-05
+
+- report.json of every render also holds the PC (CPU, threads, RAM, graphics card and VRAM, Windows, an id made from the PC's name), the settings, frames per minute, the median frame time, the most processes at once, RAM and VRAM peaks, processes closed by the RAM or VRAM limit, crashes, how long Nuke took to start and the script to open, the frames with pixel problems, the resolution and how many nodes of each class the script has.
+- Settings > General > Export render data: all those reports in one file, without script names, paths or errors. A script is known by an id that is the same for all its versions.
+
 ## 0.77.3 alpha — 2026-11-05
 
 - The slate frame is never flagged as much smaller than the rest, and does not count when the others are measured.
