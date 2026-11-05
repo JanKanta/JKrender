@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.4 alpha"
+APP_VERSION = "0.76.5 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -77,7 +77,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
-SYSTEM_HIDDEN = ["PID"]  # System columns off until ticked in its header
+SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
 SYSTEM_ORDER = ["Process", "Render", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first

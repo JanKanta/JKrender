@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.5 alpha — 2026-11-05
+
+- System comes with Frame and Peak RAM off as well. Tick them in its header to see them.
+
 ## 0.76.4 alpha — 2026-11-05
 
 - System comes with a new order of columns: Process, Render, State, CPU used, RAM, Cache, GPU, Frames, Last frame, Avg frame, Script load, Uptime, Chunk, Chunks, Frame, Peak RAM. PID is off, the others are on, and State is wider. Reset to defaults goes back to this.
