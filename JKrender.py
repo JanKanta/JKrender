@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.76.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.76.1 alpha"
+APP_VERSION = "0.76.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -5069,7 +5069,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return value
 
         ctl.addSpacing(8)
-        self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Render slate frame.")
+        self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Slate frame.")
         ctl.addSpacing(8)
         lab = QtWidgets.QLabel("Frames")
         lab.setObjectName("dim")
@@ -5158,7 +5158,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """Three cards: General, Performance and Optimization, Job, Processes and Chunks.
+        """General, Jobs over Performance and Optimization, Processes and Chunks.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5263,17 +5263,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "of the current one finish, so the PC never sits idle. That gets the first shot done soonest.\n"
             "2-3: renders run side by side and share the Nuke processes. Not faster in total,\n"
             "but you see frames of every shot early.")
-        self.c_slate = Toggle()
-        self.c_slate.setChecked(bool(self.settings.get("slate", True)))
-        self.s_slate = QtWidgets.QSpinBox()
-        self.s_slate.setRange(-100000, 1000000)
-        self.s_slate.setValue(int(self.settings.get("slate_frame", 1000)))
-        self.s_slate.setEnabled(self.c_slate.isChecked())
-        self.c_slate.toggled.connect(lambda v: (self._slate_changed("slate", v), self.s_slate.setEnabled(v)))
-        self.s_slate.valueChanged.connect(lambda v: self._slate_changed("slate_frame", v))
-        row(gen, "Render slate frame", [self.c_slate, self.s_slate],
-            "The project range starts after the slate (e.g. 1001 with the slate on 1000).\n"
-            "With this on, every render also renders the slate frame on this frame.")
         self.c_all_workers = toggle("show_all_workers", True, self._all_workers_changed)
         row(gen, "Show processes of all renders", [self.c_all_workers],
             "On: Workers and System show the Nuke processes of every render in the window.\n"
@@ -5304,7 +5293,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_reset.clicked.connect(self._reset_settings)
         gen.box.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
 
-        # -- Performance and Optimization
+        # -- Jobs, of the render picked at the top
+        jobs = card("Jobs")
+        self.c_slate = Toggle()
+        self.c_slate.setChecked(bool(self.settings.get("slate", True)))
+        self.s_slate = QtWidgets.QSpinBox()
+        self.s_slate.setRange(-100000, 1000000)
+        self.s_slate.setValue(int(self.settings.get("slate_frame", 1000)))
+        self.s_slate.setEnabled(self.c_slate.isChecked())
+        self.c_slate.toggled.connect(lambda v: (self._slate_changed("slate", v), self.s_slate.setEnabled(v)))
+        self.s_slate.valueChanged.connect(lambda v: self._slate_changed("slate_frame", v))
+        row(jobs, "Slate frame", [self.c_slate, self.s_slate],
+            "The project range starts after the slate (e.g. 1001 with the slate on 1000).\n"
+            "With this on, every render also renders the slate frame on this frame.")
+        self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
+        self.e_frames.setFixedWidth(FIELD * 2)
+        self.e_frames.editingFinished.connect(self._frames_edited)
+        row(jobs, "Frames", [self.e_frames],
+            "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
+            "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
+            "Frames already on disk stay where they are. Locked while this render runs.")
+
+        # -- Performance and Optimization, under Jobs
         perf = card("Performance and Optimization")
         self.c_gpu = toggle("use_gpu", True)
         row(perf, "Use GPU", [self.c_gpu],
@@ -5344,34 +5354,37 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: nothing watches RAM; Windows starts swapping when it runs out.")
         note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
 
-        # -- Job, Processes and Chunks (Frames is each render's own; Processes, Threads and Cache are shared by every render; locked while rendering)
-        procs = card("Job, Processes and Chunks")
-        self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
-        self.e_frames.setFixedWidth(FIELD * 2)
-        self.e_frames.editingFinished.connect(self._frames_edited)
-        row(procs, "Frames", [self.e_frames],
-            "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
-            "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
-            "Frames already on disk stay where they are. Locked while this render runs.")
-        row(procs, "Processes", [self.s_workers])
-        row(procs, "Threads", [self.s_threads])
-        row(procs, "Cache", [self.s_ram])
         self.b_test = QtWidgets.QPushButton("Test this script…")
         self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Cache setups\n"
                                "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
         self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
-        row(procs, "Test", [self.b_test])
+        row(perf, "Test", [self.b_test])
         self.b_analyze = QtWidgets.QPushButton("Analyze script…")
         self.b_analyze.setToolTip("Opens the selected render's script without rendering, goes through the nodes that feed its Write\n"
                                   "and recommends Processes, Threads and Cache to start from. Test this script measures them.")
         self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
-        row(procs, "Analyze", [self.b_analyze])
+        row(perf, "Analyze", [self.b_analyze])
         self.b_measure = QtWidgets.QPushButton("Measure nodes…")
         self.b_measure.setToolTip("Renders a few frames in one Nuke to a test folder and shows how long each node takes, which ones have GPU on,\n"
                                   "and the GPU use, VRAM peak and RAM peak of the whole test.\n"
                                   "Nothing else should render. Nothing is saved or changed.")
         self.b_measure.clicked.connect(self._measure_nodes)
-        row(procs, "Measure", [self.b_measure])
+        row(perf, "Measure", [self.b_measure])
+        cards.remove(jobs)
+        cards.remove(perf)
+        column = QtWidgets.QWidget()  # Jobs over Performance: one place among the cards
+        stack = QtWidgets.QVBoxLayout(column)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(12)
+        stack.addWidget(jobs)
+        stack.addWidget(perf, 1)
+        cards.append(column)
+
+        # -- Processes and Chunks (Processes, Threads and Cache are shared by every render; locked while rendering)
+        procs = card("Processes and Chunks")
+        row(procs, "Processes", [self.s_workers])
+        row(procs, "Threads", [self.s_threads])
+        row(procs, "Cache", [self.s_ram])
         self.l_ram_need = note(procs, QtWidgets.QLabel(""))
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")

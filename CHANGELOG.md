@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.76.2 alpha — 2026-11-05
+
+- Settings: a new card Jobs, with Slate frame and Frames, sits over Performance and Optimization. Test this script, Analyze script and Measure nodes moved to Performance and Optimization. The other card is Processes and Chunks again.
+
 ## 0.76.1 alpha — 2026-11-05
 
 - Output starts empty: a frame comes into the list when it renders or is found on disk, so changing Frames or the slate does not fill or reorder it. What you selected stays selected while frames come in.
