@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.77.3 alpha — 2026-11-05
+
+- The slate frame is never flagged as much smaller than the rest, and does not count when the others are measured.
+
 ## 0.77.2 alpha — 2026-11-05
 
 - The Check frames tile counts frames found broken on disk too; it said ok next to them.

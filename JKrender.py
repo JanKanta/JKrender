@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.77.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.77.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.77.2 alpha"
+APP_VERSION = "0.77.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2035,16 +2035,23 @@ class RenderEngine:
         if not broken and not same and not errors and not blank and not differs:
             self.note("Pixels checked in %d frames: no NaN, no inf, no blank frame, none the same as another, all alike" % self.pixels_total, "ok")
 
+    def slate_frames(self):
+        """The slate frame this render has on top of its Framerange (none, or one)."""
+        return set(self.frames) - set(parse_frames(self.frames_text))
+
     def _flag_small(self):
-        """A frame far smaller than the median of its sequence is often black or half empty."""
+        """A frame far smaller than the median of its sequence is often black or half empty. Not the slate:
+        a card with a few lines of text is small by nature, and it does not count in the median either."""
         self._small_dirty = False
+        slate = self.slate_frames()
+        shot = [fr for f, fr in self.frames.items() if f not in slate]
         medians = {}
         for idx in range(len(self.outputs)):
-            sizes = [fr.checks[idx][1] for fr in self.frames.values() if fr.checks.get(idx, ("",))[0] == "ok"]
+            sizes = [fr.checks[idx][1] for fr in shot if fr.checks.get(idx, ("",))[0] == "ok"]
             if len(sizes) >= 5:
                 medians[idx] = statistics.median(sizes)
-        for fr in self.frames.values():
-            fr.small = any(c[0] == "ok" and i in medians and c[1] < 0.4 * medians[i] for i, c in fr.checks.items())
+        for f, fr in self.frames.items():
+            fr.small = f not in slate and any(c[0] == "ok" and i in medians and c[1] < 0.4 * medians[i] for i, c in fr.checks.items())
 
     def verify_all(self):
         if self.movie:
