@@ -411,9 +411,15 @@ def _norm(path):
 
 
 def _clear_cache():
-    """JKrender's Render button: this Nuke gives the render its RAM and VRAM back. The disk cache stays."""
-    nuke.clearRAMCache()
-    nuke.clearBlinkCache()
+    """JKrender's Render button: this Nuke gives the render its RAM and VRAM back. The disk cache stays.
+
+    The buffers are what fills the RAM (Cache > Clear Buffers, F12); nuke.clearRAMCache is only the playback cache."""
+    from nuke import memory2
+    for clear in (memory2.clearUsage, nuke.clearRAMCache, nuke.clearBlinkCache):
+        try:
+            clear()
+        except Exception as exc:
+            print("JKrender: could not clear the cache:", exc)
 
 
 def _serve(server):

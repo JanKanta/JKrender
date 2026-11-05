@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.72 alpha.** It works in tests; expect rough edges.
+**Version 0.72.1 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -18,7 +18,7 @@ on disk.
   Right of the cards: when all renders should be done and how long they have taken so far; once through, how long they took altogether.
   With **Start next render when one ends** (Settings > General, off by default), the next card not yet started starts by itself when a render
   finishes or fails. A render you stopped stays stopped and starts nothing.
-- **Render asks before it clears the cache of open Nukes.** With a Nuke open, Render asks whether it should free its RAM cache and Blink cache, so the render has the memory. The render starts either way, and No is the default.
+- **Render asks before it clears the cache of open Nukes.** With a Nuke open, Render asks whether it should free its buffers, playback cache and Blink cache, so the render has the memory. The render starts either way, and No is the default.
   The disk cache stays. Resume, the next render starting by itself and a render resuming after a crash clear nothing. A Nuke has to be restarted once after an update to take part.
 - **Output check.**
   - Image sequences, as each frame renders or with Check frames: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames. Settings > General can turn the automatic check off.

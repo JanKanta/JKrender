@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.72 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.72.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -50,7 +50,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.72 alpha"
+APP_VERSION = "0.72.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -251,7 +251,7 @@ def open_nukes():
 
 
 def clear_open_nukes():
-    """Every open Nuke frees its RAM cache and Blink cache, when you say yes to it on Render. In the background: a port
+    """Every open Nuke frees its buffers, playback cache and Blink cache, when you say yes to it on Render. In the background: a port
     nobody listens on takes a moment to answer. A Nuke started before this version just ignores it."""
     def send():
         for port in NUKE_PORTS:
@@ -5864,7 +5864,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         what = "the open Nuke" if count == 1 else "the %d open Nukes" % count
         ask = QtWidgets.QMessageBox.question(
-            self, "JKrender", "Clear the cache of %s?\n\nRAM cache and Blink cache, so the render has the memory. "
+            self, "JKrender", "Clear the cache of %s?\n\nBuffers, playback cache and Blink cache, so the render has the memory. "
             "The disk cache stays. The render starts either way." % what,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
         if ask == QtWidgets.QMessageBox.Yes:

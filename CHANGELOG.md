@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.72.1 alpha — 2026-11-05
+
+- Clearing the cache of open Nukes now frees their buffers (Cache > Clear Buffers, F12), which is what fills the RAM. Until now it cleared only the playback cache and the Blink cache. An open Nuke has to be restarted once to take part.
+
 ## 0.72 alpha — 2026-11-05
 
 - Processes, Threads, Nuke cache, Chunk, Smaller chunks at the end, Test this script, Analyze script and Measure nodes moved from Settings to the row of the Render button. In a narrow window the row goes on in a second line.
