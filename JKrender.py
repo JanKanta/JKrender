@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.75 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.76 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.75 alpha"
+APP_VERSION = "0.76 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -365,6 +365,21 @@ def parse_frames(text):
         elif re.match(r"^-?\d+$", part):
             frames.add(int(part))
     return sorted(frames)
+
+
+def frames_problem(text, movie=False):
+    """What is wrong with a range typed by hand, or ""."""
+    count = 0
+    for part in re.split(r"[,\s]+", str(text or "").strip()):
+        m = re.match(r"^(-?\d+)(?:(?:-|:)(-?\d+))?$", part)
+        if not m:
+            return '"%s" is not a frame or a range. Write it like 1001-1100 or 1001-1010,1050.' % part
+        count += abs(int(m.group(2) or m.group(1)) - int(m.group(1))) + 1
+        if count > 200000:
+            return "That is too many frames."
+    if movie and "," in frames_to_spec(parse_frames(text)):
+        return "A movie needs one range without gaps."
+    return ""
 
 
 def frames_to_spec(frames):
@@ -911,6 +926,7 @@ class RenderEngine:
             for w in job.get("writes", [])
         )
         self._small_dirty = False
+        self.frames_text = self.sent_frames()  # Frames in Settings, each render its own; the slate frame comes on top
         self.range_text = self.default_range()
         frames = parse_frames(self.range_text)
         plan = auto_plan(len(frames), self.movie)
@@ -1012,14 +1028,20 @@ class RenderEngine:
         self.chunks = [c for c in self.chunks if c not in queued]
         self._chunk(frames)
 
+    def sent_frames(self):
+        """The range Nuke sent."""
+        return "%s-%s" % (self.job.get("first"), self.job.get("last"))
+
     def default_range(self):
-        """The range Nuke sent, with the slate frame in front of it when Settings asks for one.
+        """This render's Frames, with the slate frame in front of them when Settings asks for one.
 
         Projects start at 1001 with the slate on 1000; the script's range leaves the slate out."""
-        text = "%s-%s" % (self.job.get("first"), self.job.get("last"))
+        text = self.frames_text
+        frames = parse_frames(text)
         slate = int(self.settings.get("slate_frame", 1000))
-        if self.settings.get("slate") and slate < int(self.job.get("first")):
-            text = frames_to_spec([slate] + parse_frames(text))  # 1000 + 1001-1100 -> 1000-1100
+        # a movie has no gaps: there the slate frame only goes right in front of its frames
+        if self.settings.get("slate") and slate < frames[0] and (not self.movie or slate == frames[0] - 1):
+            text = frames_to_spec([slate] + frames)  # 1000 + 1001-1100 -> 1000-1100
         return text
 
     def set_range(self, text):
@@ -1323,8 +1345,8 @@ class RenderEngine:
 
     # ---- workers ------------------------------------------------------------
     def _process_size(self):
-        """Threads and Nuke cache of one Nuke process. A movie cannot be split, so its one process gets every
-        thread; its cache is the Nuke cache setting like any other process, so several renders never ask for
+        """Threads and Cache of one Nuke process. A movie cannot be split, so its one process gets every
+        thread; its cache is the Cache setting like any other process, so several renders never ask for
         most of the RAM each."""
         if self.movie:
             return auto_plan(1, True)["threads"], self.ram
@@ -1720,7 +1742,7 @@ class RenderEngine:
                 self._remember_ram(w.rss)
                 if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
                     self._ram_noted = True
-                    self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB Nuke cache set. "
+                    self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB Cache set. "
                               "That is fine; Nuke takes more than its cache for heavy scripts. Use fewer processes if the PC runs short."
                               % (w.name, w.rss, w.ram), "warn")
             m = self.manager
@@ -3026,7 +3048,7 @@ class Gantt(QtWidgets.QWidget):
 class ScriptAnalysis(QtWidgets.QDialog):
     """Settings > Analyze script: a Nuke opens the script in this render's environment, reports what feeds the Write and
     closes. Then one Nuke with all threads renders a few frames to a test folder, about a minute at most: how many threads it
-    really uses, what RAM and VRAM it takes. It recommends processes, threads and Nuke cache from that; Test this script measures them."""
+    really uses, what RAM and VRAM it takes. It recommends processes, threads and Cache from that; Test this script measures them."""
 
     PROBE_SECONDS = 45  # no new frame after this; a frame already going may finish, up to PROBE_MOST
     PROBE_MOST = 120
@@ -3227,7 +3249,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
 
     @staticmethod
     def advise(info, cpu, free_gb, card_gb=None):
-        """Processes, threads, Nuke cache and why. As many processes of 4 threads as fit in the graphics card and the RAM, from
+        """Processes, threads, Cache and why. As many processes of 4 threads as fit in the graphics card and the RAM, from
         what one Nuke did in the short render. Measured, several small processes beat one big one as long as they fit, also
         when one process uses all its threads: what stops them is memory. Without the render, from the number of nodes."""
         probe = info.get("probe") or {}
@@ -3316,7 +3338,7 @@ class ScriptAnalysis(QtWidgets.QDialog):
         for name, value, now, meaning in (
                 ("Processes", str(n), str(m.total), "Nuke processes rendering at once."),
                 ("Threads", str(t), str(m.threads), "CPU threads each process may use."),
-                ("Nuke cache", "%d GB" % c, "%d GB" % m.ram, "RAM cache of each process. A process takes about %d GB more." % BESIDE_CACHE)):
+                ("Cache", "%d GB" % c, "%d GB" % m.ram, "RAM cache of each process. A process takes about %d GB more." % BESIDE_CACHE)):
             tile = Tile(name)
             tile.set(value, "now %s" % now)
             tile.value.setStyleSheet("color: %s; font-size: 20pt; font-weight: 600;" % C["accent"])
@@ -3523,7 +3545,7 @@ class NodeMeasure(QtWidgets.QDialog):
         gpu_on = self.main.settings.get("use_gpu", True)
         gpu = "off in Settings" if not gpu_on else "%.0f %% on average" % (sum(run["gpu"]) / len(run["gpu"])) if run["gpu"] else "not read"
         use = "GPU %s  ·  VRAM peak %s  ·  RAM peak %s" % (gpu, "%.1f GB" % run["vram"] if gpu_on and run["vram"] else "—", "%.1f GB" % run["ram"] if run["ram"] else "—")
-        whole, box = self._card("The whole test", "One Nuke with all threads and the Nuke cache you have set. Nuke counts these for no node, so they are for the test as a whole.")
+        whole, box = self._card("The whole test", "One Nuke with all threads and the Cache you have set. Nuke counts these for no node, so they are for the test as a whole.")
         box.addWidget(self._text(use))
         self.lay.insertWidget(self.lay.count() - 1, whole)
         total = sum(n[2] for n in run["nodes"]) or 1
@@ -3549,7 +3571,7 @@ class NodeMeasure(QtWidgets.QDialog):
 
 class ScriptTest(QtWidgets.QDialog):
     """Test this script: frames from the middle of the render, rendered with each Processes x Threads x
-    Nuke cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
+    Cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
     per minute from when the script is open. It recommends the fastest; Use these settings puts it into Settings.
     Nothing changes unless you press it. The frames go to a test folder, deleted after each setup; the render's own
     files stay as they are."""
@@ -3568,7 +3590,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     @classmethod
     def plan(cls, cpu, free_gb):
-        """The setups for this PC: (processes, threads, Nuke cache GB). The RAM free for Nuke, split by the number
+        """The setups for this PC: (processes, threads, Cache GB). The RAM free for Nuke, split by the number
         of processes, less what a process takes besides its cache. A setup that cannot fit gets 1 GB of cache
         and starts what the RAM limit lets it (the Ran column shows how many)."""
         setups = []
@@ -3651,7 +3673,7 @@ class ScriptTest(QtWidgets.QDialog):
         for widget in (label("Frames per setup"), self.s_frames):
             edit.addWidget(widget)
         edit.addSpacing(24)
-        for widget in (label("Processes"), self.s_add_p, label("Threads"), self.s_add_t, label("Nuke cache"), self.s_add_c,
+        for widget in (label("Processes"), self.s_add_p, label("Threads"), self.s_add_t, label("Cache"), self.s_add_c,
                        self.b_add, self.b_remove):
             edit.addWidget(widget)
         edit.addStretch(1)
@@ -3896,11 +3918,11 @@ class ScriptTest(QtWidgets.QDialog):
         rate = self.results[best]["rate"]
         mine = self.results.get(self.current)
         if best == self.current:
-            text = "Your settings (Processes %d, Threads %d, Nuke cache %d GB) are the fastest of these for this script: " \
+            text = "Your settings (Processes %d, Threads %d, Cache %d GB) are the fastest of these for this script: " \
                    "%.1f frames / min." % (best[0], best[1], best[2], rate)
         else:
             gain = " — %.0f %% faster than yours (%.1f)" % ((rate / mine["rate"] - 1) * 100, mine["rate"]) if mine and mine["rate"] else ""
-            text = "Fastest for this script on this PC: Processes %d, Threads %d, Nuke cache %d GB, %.1f frames / min%s." % (
+            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, %.1f frames / min%s." % (
                 best[0], best[1], best[2], rate, gain)
             self.b_use.setEnabled(True)
         if partial:
@@ -3927,7 +3949,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.main.s_workers.setValue(n)
         self.main.s_threads.setValue(t)
         self.main.s_ram.setValue(c)
-        self.verdict.setText(self.verdict.text() + "  Set: Processes %d, Threads %d, Nuke cache %d GB." % (n, t, c))
+        self.verdict.setText(self.verdict.text() + "  Set: Processes %d, Threads %d, Cache %d GB." % (n, t, c))
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
@@ -4757,7 +4779,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """The cards and the Nuke processes, whole or not at all, whenever they change."""
         if self.exit_when_done:
             return
-        renders = [{"job": str(e.dir / "job.json"), "state": e.state, "range": e.range_text, "started": e.started} for e in self.manager.engines]
+        renders = [{"job": str(e.dir / "job.json"), "state": e.state, "range": e.range_text, "frames": e.frames_text, "started": e.started} for e in self.manager.engines]
         pids = []
         for e in self.manager.engines:
             for w in e.workers.values():
@@ -4781,6 +4803,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def restore(self, e, saved):
         """A card as it was when JKrender went down. What the disk has counts; a render that was going is left
         stopped, for Render to go on from the rest. True if it was going."""
+        if saved.get("frames"):
+            e.frames_text = saved["frames"]
         if saved.get("range") and saved["range"] != e.range_text:
             e.set_range(saved["range"])
             e.scan_disk()
@@ -4884,6 +4908,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Show one render: header, frame map, chunks, output, log and details all follow it."""
         if hasattr(self, "_play_timer"):
             self._movie_stop()
+        if hasattr(self, "e_frames"):
+            self._frames_edited()  # still typed for the render picked until now
         self.engine = e
         self._last_states[e] = e.state  # shown below; the next tick need not show it again
         self.frame_map.engine = e
@@ -4892,7 +4918,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt.selected = e
         if hasattr(self, "l_ram_need"):
             self._show_chunk()
-        self.range_edit.setText(e.range_text)
+        if hasattr(self, "e_frames"):
+            self.e_frames.setText(e.frames_text)
         self.chunk_table.setRowCount(0)  # columns keep their widths: fitted once, or as you left them
         self._preview_frame = None
         self.preview.setPixmap(QtGui.QPixmap())
@@ -5011,12 +5038,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
                             "Frames per chunk. Applies to chunks that have not started yet.\n"
                             "With Smaller chunks at the end this is the largest chunk; towards the end they get smaller.")
-        self.range_edit = QtWidgets.QLabel(e.range_text)  # plain text: the range comes from Nuke
+        self.range_edit = QtWidgets.QLabel(e.frames_text)  # to read: it changes in Settings > Frames
         self.range_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        self.range_edit.setToolTip("Frames this render covers: the Write's range from Nuke,\n"
-                                   "plus the slate frame when Settings > Render slate frame is on.")
+        self.range_edit.setToolTip("The frames of this render: the range Nuke sent, unless you changed it in Settings > Frames.\n"
+                                   "The slate frame comes on top of them.")
         def show_value(layout, name, tip):
-            """A name and its value to read, like FrameRanges. They change in Settings."""
+            """A name and its value to read, like Frames. They change in Settings."""
             lab = QtWidgets.QLabel(name)
             lab.setObjectName("dim")
             value = QtWidgets.QLabel("")
@@ -5029,7 +5056,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ctl.addSpacing(8)
         self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Render slate frame.")
         ctl.addSpacing(8)
-        lab = QtWidgets.QLabel("FrameRanges")
+        lab = QtWidgets.QLabel("Frames")
         lab.setObjectName("dim")
         ctl.addWidget(lab)
         ctl.addWidget(self.range_edit)
@@ -5042,7 +5069,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for i, (key, name, tip) in enumerate((
                 ("processes", "Processes", "Nuke processes for all renders together. Settings > Processes, or right-click in System while rendering."),
                 ("threads", "Threads", "Threads per Nuke process. Settings > Threads."),
-                ("cache", "Nuke cache", "Nuke's cache limit per process. Settings > Nuke cache."),
+                ("cache", "Cache", "Nuke's cache limit per process. Settings > Cache."),
                 ("chunk", "Chunk", "Frames per chunk of this render. Settings > Chunk."))):
             if i:
                 have.addSpacing(8)
@@ -5116,7 +5143,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """Three cards: General, Performance and Optimization, Processes and Chunks.
+        """Three cards: General, Performance and Optimization, Job, Processes and Chunks.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5302,19 +5329,26 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: nothing watches RAM; Windows starts swapping when it runs out.")
         note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
 
-        # -- Processes and Chunks (Processes, Threads and Nuke cache are shared by every render; locked while rendering)
-        procs = card("Processes and Chunks")
+        # -- Job, Processes and Chunks (Frames is each render's own; Processes, Threads and Cache are shared by every render; locked while rendering)
+        procs = card("Job, Processes and Chunks")
+        self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
+        self.e_frames.setFixedWidth(FIELD * 2)
+        self.e_frames.editingFinished.connect(self._frames_edited)
+        row(procs, "Frames", [self.e_frames],
+            "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
+            "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
+            "Frames already on disk stay where they are. Locked while this render runs.")
         row(procs, "Processes", [self.s_workers])
         row(procs, "Threads", [self.s_threads])
-        row(procs, "Nuke cache", [self.s_ram])
+        row(procs, "Cache", [self.s_ram])
         self.b_test = QtWidgets.QPushButton("Test this script…")
-        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Nuke cache setups\n"
+        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Cache setups\n"
                                "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
         self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
         row(procs, "Test", [self.b_test])
         self.b_analyze = QtWidgets.QPushButton("Analyze script…")
         self.b_analyze.setToolTip("Opens the selected render's script without rendering, goes through the nodes that feed its Write\n"
-                                  "and recommends Processes, Threads and Nuke cache to start from. Test this script measures them.")
+                                  "and recommends Processes, Threads and Cache to start from. Test this script measures them.")
         self.b_analyze.clicked.connect(lambda: ScriptAnalysis(self, self.engine).show())
         row(procs, "Analyze", [self.b_analyze])
         self.b_measure = QtWidgets.QPushButton("Measure nodes…")
@@ -5475,7 +5509,6 @@ class MainWindow(QtWidgets.QMainWindow):
             if e.state in ("ready", "stopped", "done", "failed") and e.set_range(e.default_range()):
                 e.scan_disk()
                 e.done_if_on_disk()
-        self.range_edit.setText(self.engine.range_text)
         self.frames_model.refilter()
         self._sync_controls()
         self._slow_tick()
@@ -5989,13 +6022,41 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_run_info(self):
         """What the row of the Render button says about the picked render."""
         e, m = self.engine, self.manager
-        frame = self.settings.get("slate_frame", 1000)
-        self.l_slate.setText(str(frame) if self.settings.get("slate", True) and frame in e.frames else "off")
+        over = set(e.frames) - set(parse_frames(e.frames_text))  # a running render keeps the slate it started with
+        self.l_slate.setText(str(min(over)) if over else "off")
+        self.range_edit.setText(e.frames_text)
+        if hasattr(self, "e_frames") and not self.e_frames.hasFocus():
+            self.e_frames.setText(e.frames_text)
         self.l_info["processes"].setText(str(m.total))
         self.l_info["threads"].setText(str(m.threads))
         self.l_info["cache"].setText("%d GB" % m.ram)
-        self.l_info["chunk"].setText("whole movie" if e.movie else
-                                     "%s%d fr" % ("Auto " if self.settings.get("chunk_auto", True) else "", e.chunk_size))
+        self.l_info["chunk"].setText("whole movie" if e.movie else "%d fr" % e.chunk_size)
+
+    def _frames_edited(self):
+        """Settings > Frames: this render's frames, also when it is picked again later. Empty: what Nuke sent."""
+        e, box = self.engine, self.e_frames
+        text = box.text().strip() or e.sent_frames()
+        problem = frames_problem(text, e.movie)
+        spec = frames_to_spec(parse_frames(text)) if not problem else e.frames_text
+        box.setText(spec)
+        if problem:
+            self._banner("Frames: " + problem, C["failed"])
+        if spec == e.frames_text or e.state not in ("ready", "stopped", "done", "failed"):
+            box.setText(e.frames_text)
+            return
+        e.frames_text = spec
+        e.set_range(e.default_range())
+        e.apply_chunk_setting()
+        e.scan_disk()
+        e.done_if_on_disk()
+        e.note("Frames set to %s (Nuke sent %s)" % (spec, e.sent_frames()))
+        self.select(e)
+        self.frames_model.refilter()
+        self._state_changed()
+        self._refresh_cards()
+        self._slow_tick()
+        self.frame_map.update()
+        self._save_queue()
 
     def _workers_changed(self, v):
         self.manager.set_budget(total=v)
@@ -6018,6 +6079,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_controls(self):
         self._show_run_info()
         s = self.engine.state
+        if hasattr(self, "e_frames"):
+            self.e_frames.setEnabled(s in ("ready", "stopped", "done", "failed"))
         running = s in ("rendering", "paused", "finishing", "waiting")
         self.b_start.setEnabled(s not in ("rendering", "finishing", "waiting"))
         again = s == "done" or (s in ("ready", "stopped", "failed") and self.engine.nothing_to_render())

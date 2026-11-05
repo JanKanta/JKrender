@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.76 alpha — 2026-11-05
+
+- Frames can be changed: first item of the card, now called Job, Processes and Chunks. Every render has its own, kept when you switch cards and after a crash. A slate frame comes on top of them.
+- The row of the Render button: FrameRanges is now Frames and shows them without the slate frame; Chunk shows only its size.
+- Nuke cache is now called Cache.
+
 ## 0.75 alpha — 2026-11-05
 
 - The row of the Render button shows, to read: the slate frame or off before FrameRanges; Processes, Threads, Nuke cache and Chunk after it. They change in Settings.
