@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.77.1 alpha — 2026-11-05
+
+- Every line of a Nuke process's log has the time it came, and what start-up scripts print comes when they print it.
+- The log says where a process's start went: `W08 ready in 60.5 s: Nuke started in 60.3 s, script opened in 0.18 s`. More than 15 s of Nuke starting is a warning. "Script opened in" used to count the whole start.
+
 ## 0.77 alpha — 2026-11-05
 
 - The frame preview zooms like the movie player: mouse wheel zooms around the cursor, drag moves, double-click fits the frame again (a second double-click makes the preview big). Zoomed in, the frame is shown at its own size, so the pixels are real, and the zoom stays when you go to the next frame. Playing shows frames at the preview's size and the real pixels come back when it stops.

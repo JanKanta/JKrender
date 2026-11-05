@@ -177,6 +177,7 @@ def profile(writes):
 
 
 def main():
+    say("BOOT")  # Nuke has started and run its start-up scripts: from here on it is JKrender's time
     script, original, names = (sys.argv[1:] + ["", "", ""])[:3]
     if os.environ.get("JKRENDER_ARGS"):
         # JKrender passes them as UTF-8 too: the command line comes in the Windows code page, which breaks

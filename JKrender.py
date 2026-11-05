@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.77 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.77.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.77 alpha"
+APP_VERSION = "0.77.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -67,7 +67,8 @@ SPAWN_GAP = 0.3  # seconds between Nuke starts, so licence checkout and script l
 BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
 NUKE_ENV_KEYS = ("NUKE_PATH", "PYTHONPATH", "OCIO")
 SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
-JKR_LINE = re.compile(r"JKR (READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
+JKR_LINE = re.compile(r"JKR (BOOT|READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b ?(.*)$")
+SLOW_START = 15  # seconds of Nuke starting before the script opens that are worth a warning
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
@@ -855,6 +856,7 @@ class Worker:
         self.spawned = time.time()
         self.ready_at = None
         self.load_secs = None
+        self.boot_secs = None  # from the start of the process until JKrender's code runs in it: licence, start-up scripts
         self.frames_done = 0
         self.frames_here = 0  # by this very Nuke; frames_done and frame_secs go on from the one it replaced
         self.frame_secs = []
@@ -1449,6 +1451,7 @@ class RenderEngine:
                       text=True, encoding="utf-8", errors="replace", bufsize=1)
         kwargs.update(hidden())
         kwargs["env"] = nuke_render_env(self.job.get("env"))
+        kwargs["env"]["PYTHONUNBUFFERED"] = "1"  # what start-up scripts print comes when they print it: its time in the log is true
         # the same, as UTF-8: Nuke reads its command line in the Windows code page, so a path such as
         # "D:/Práce/Žluťoučký kůň/..." arrived broken and every Nuke stopped while opening the script
         kwargs["env"]["JKRENDER_ARGS"] = json.dumps(self._worker_args())
@@ -1487,7 +1490,7 @@ class RenderEngine:
     def _reader(self, w):
         try:
             for line in w.proc.stdout:
-                self.events.put(("line", w, line))
+                self.events.put(("line", w, line, time.time()))  # when it came, not when the window got to it
         except Exception as exc:
             self.events.put(("line", w, "[output read error: %s]\n" % exc))
         finally:
@@ -1682,7 +1685,7 @@ class RenderEngine:
             changed = True
             kind = ev[0]
             if kind == "line":
-                self._on_line(ev[1], ev[2])
+                self._on_line(ev[1], ev[2], ev[3] if len(ev) > 3 else None)
             elif kind == "exit":
                 self._on_exit(ev[1], ev[2])
             elif kind == "check":
@@ -1709,10 +1712,11 @@ class RenderEngine:
                     pass
         return changed
 
-    def _on_line(self, w, line):
+    def _on_line(self, w, line, at=None):
         if w is None:
             return
-        w.log.write(line)
+        # every line of a process's log with the time it came, so a slow start shows where it waited
+        w.log.write(datetime.datetime.fromtimestamp(at or time.time()).strftime("%H:%M:%S.%f")[:-3] + "  " + line)
         if w.state == "gone":  # last words of a closed process; its replacement may already use its name
             return
         w.tail.append(line)
@@ -1729,13 +1733,27 @@ class RenderEngine:
             return
         kind, rest = m.group(1), m.group(2).split()
         now = time.time()
-        if kind == "READY":
+        if kind == "BOOT":
+            moment = at or now
+            w.boot_secs = moment - w.spawned - self.paused_between(w.spawned, moment)
+        elif kind == "READY":
             w.state = "idle"
             w.ready_at = now
             w.load_secs = now - w.spawned - self.paused_between(w.spawned, now)
             w.close_segment("loaded")
             self.ever_ready = True
-            self.note("%s ready, script opened in %.1f s" % (w.name, w.load_secs))
+            try:
+                script = float(rest[0])
+            except (IndexError, ValueError):
+                script = None
+            if w.boot_secs is None or script is None:
+                self.note("%s ready in %.1f s" % (w.name, w.load_secs))
+            else:
+                slow = w.boot_secs >= SLOW_START
+                self.note("%s ready in %.1f s: Nuke started in %.1f s, script opened in %.2f s%s" % (
+                    w.name, w.load_secs, w.boot_secs, script,
+                    ". A slow start: licence and start-up scripts; the process log has the time of each line" if slow else ""),
+                    "warn" if slow else "ev")
             if w.retire:
                 self._quit(w, "not needed")
         elif kind == "START":
