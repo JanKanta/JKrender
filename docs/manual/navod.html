@@ -56,7 +56,7 @@ svg { display: block; }
 <!-- ============ TITULNÍ STRANA ============ -->
 <section class="cover">
   <div class="hero">
-    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">NÁVOD K POUŽITÍ · VERZE 0.80 ALPHA</div>
+    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">NÁVOD K POUŽITÍ · VERZE 0.80.1 ALPHA</div>
     <h1>JK<span>render</span></h1>
     <p style="font-size:14pt; color:#ddd; max-width:150mm">Rychlý lokální render pro Nuke. Render se rozdělí na kousky (chunky) a ty se počítají v několika Nuke procesech najednou. Každý hotový frame JKrender hned zkontroluje na disku.</p>
     <div style="margin-top:8mm"><img src="shots/03_rendering_workers.png" style="width:100%; border-radius:6px; border:1px solid #000"></div>
@@ -290,14 +290,14 @@ svg { display: block; }
 <h3>Tlačítka</h3>
 <table>
 <tr><th style="width:34mm">Prvek</th><th>Co dělá</th></tr>
-<tr><td>Filtr</td><td><b>All</b>: všechny framy. <b>Rendered</b>: jen ty na disku. <b>Problems</b>: chyby, podezřele malé framy a nálezy pixelové kontroly. <b>Framerange</b>: jak je na tom každý frame zvoleného rozsahu (na disku, <i>not on disk</i>, <i>broken on disk</i>).</td></tr>
+<tr><td>Filtr</td><td><b>All</b>: všechno, co je na disku nebo se renderuje, i staré framy čekající na nový render (<i>on disk, queued again</i>). <b>Rendered</b>: jen framy vyrenderované v tomto běhu. <b>Problems</b>: chyby, podezřele malé framy a nálezy pixelové kontroly. <b>Framerange</b>: jak je na tom každý frame zvoleného rozsahu (na disku, <i>not on disk</i>, <i>broken on disk</i>).</td></tr>
 <tr><td><span class="btn">Check frames</span></td><td>Znovu projde soubory všech framů: existuje, není prázdný, je celý a čitelný a není výrazně menší než ostatní.</td></tr>
 <tr><td><span class="btn">Check pixels</span></td><td>Na pozadí projde pixely každého framu (EXR, PNG, JPEG, TIFF, DPX): černé, prázdné a jednobarevné framy, framy stejné jako jiný kdekoli v sekvenci, odlišná velikost, kanály nebo bitová hloubka; u EXR i NaN, inf a komprese. Zhruba 0,1 s na 4K frame. Jen hlásí, nic znovu nerenderuje.</td></tr>
 <tr><td><span class="btn">Open folder</span></td><td>Otevře složku s výstupem.</td></tr>
 <tr><td><span class="btn">Delete</span></td><td>Smaže vyrenderované framy z disku: všechny (výchozí) nebo zadaný rozsah. Předtím se zeptá.</td></tr>
 </table>
 <h3>Seznam framů</h3>
-<p>Sloupce: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (který proces ho počítal), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. Seznam začíná prázdný a framy přibývají, jak se renderují. Framy na disku mimo zvolený Framerange zůstávají v seznamu s poznámkou <i>not in Framerange</i>.</p>
+<p>Sloupce: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (který proces ho počítal), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. Seznam začíná prázdný a framy přibývají, jak se renderují. Po <b>Render again</b> framy nezmizí: zůstanou jako <i>on disk, queued again</i> se starou velikostí a časem (jdou prohlížet i přehrávat), dokud je nový render nepřepíše. Framy na disku mimo zvolený Framerange zůstávají v seznamu s poznámkou <i>not in Framerange</i>.</p>
 <div class="cols">
 <div class="menu"><img src="shots/m4_frame_menu.png" style="width:60%"></div>
 <div><b>Pravé tlačítko na framu</b> (nebo na víc vybraných):<br>
@@ -563,7 +563,7 @@ svg { display: block; }
 <tr><td>Nevím, co se renderovalo</td><td>Panel Details a Log › Open log folder (snapshot scriptu a job.json).</td></tr>
 </table>
 <div class="box r"><b>JKrender je v alpha verzi.</b> V testech funguje, ale počítej s drobnostmi. Když narazíš na chybu, pošli autorovi složku logu renderu (Open Renders Folder) a popis, co se stalo.</div>
-<p class="dim small" style="margin-top:10mm">JKrender 0.80 alpha · github.com/JanKanta/JKrender · návod vytvořen 6. 11. 2026. Snímky jsou z ukázkového renderu (shoty sh010 a sh020).</p>
+<p class="dim small" style="margin-top:10mm">JKrender 0.80.1 alpha · github.com/JanKanta/JKrender · návod vytvořen 6. 11. 2026. Snímky jsou z ukázkového renderu (shoty sh010 a sh020).</p>
 </section>
 
 </body>
