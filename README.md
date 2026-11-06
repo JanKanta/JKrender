@@ -8,6 +8,8 @@ on disk.
 
 **Version 0.79.1 alpha.** It works in tests; expect rough edges.
 
+A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
+
 ## What it does
 
 - **Chunks across processes.** By default the work is spread over 8 Nuke processes with 4 threads each
