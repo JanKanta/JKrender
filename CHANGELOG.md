@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.80.1 alpha — 2026-11-06
+
+- Render again no longer empties Output: frames still on disk stay listed as `on disk, queued again`, with their size and time, and can be looked at and played until the new frame replaces them. The same for Render this frame / batch and a chunk rendered again. Rendered lists only the frames of the run now.
+
 ## 0.80 alpha — 2026-11-06
 
 - Check pixels reads the pixels of PNG, JPEG, TIFF and DPX too (8, 10, 12 and 16 bit DPX as Nuke writes it): black, empty and one-colour frames, and a size, channels or bit depth unlike the rest. Identical frames are found by their pixels, so two the same with another time in the file count as the same. Before, only EXR was looked at; a black PNG passed.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.80 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.80.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.80 alpha"
+APP_VERSION = "0.80.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -972,7 +972,7 @@ class Chunk:
 
 
 class Frame:
-    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as", "ran_in")
+    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as", "ran_in", "old")
 
     def __init__(self):
         self.state = "queued"  # queued / rendering / done / failed / bad / skipped
@@ -985,6 +985,13 @@ class Frame:
         self.pixels = None  # check_pixels of the frame
         self.same_as = None  # the first frame with exactly the same pixels
         self.ran_in = None  # the chunk that rendered it; chunk is the one of the plan now
+        self.old = None  # rendered again: what is known of the frame still on disk until the new one replaces it
+
+    def copy(self):
+        twin = Frame()
+        for name in self.__slots__:
+            setattr(twin, name, getattr(self, name))
+        return twin
 
 
 class Worker:
@@ -1262,7 +1269,11 @@ class RenderEngine:
                         c.state, c.attempts, c.error = "queued", 0, ""
                 for f in todo:
                     self.frames[f].state = "queued"
-        for fr in self.frames.values():
+        for f, fr in self.frames.items():
+            known = self.before.get(f)
+            if fr.state == "queued" and known is not None and known.state in ("done", "skipped", "bad"):
+                fr.old = known.copy()  # still on disk: Output keeps listing it until the new one is there
+                fr.old.old = None
             if fr.state == "queued":  # a check from an earlier run says nothing about the frame about to be rendered
                 fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
         if not everything:
@@ -1516,6 +1527,9 @@ class RenderEngine:
                 c.frames = [f for f in c.frames if f not in frames]
         for f in frames:
             fr = self.frames[f]
+            if fr.state in ("done", "skipped", "bad"):
+                fr.old = fr.copy()  # still on disk: Output keeps listing it until the new one is there
+                fr.old.old = None
             fr.state, fr.secs, fr.checks, fr.small, fr.worker, fr.pixels, fr.same_as = "queued", None, {}, False, None, None, None
         self.chunks = [c for c in self.chunks if c.state != "queued" or c.frames]
         made = self._chunk(frames)
@@ -4834,7 +4848,7 @@ class FramesModel(QtCore.QAbstractTableModel):
             return [f for f in sorted(frames) if frames[f].state in ("done", "bad", "skipped")]
         if self.mode == "Framerange":  # every frame of the range, also those not on disk yet
             return e.frame_list()
-        return [f for f in sorted(frames) if frames[f].state != "queued" or frames[f].checks]
+        return [f for f in sorted(frames) if frames[f].state != "queued" or frames[f].checks or frames[f].old is not None]
 
     @staticmethod
     def _problem(fr):
@@ -4885,16 +4899,20 @@ class FramesModel(QtCore.QAbstractTableModel):
                 if f not in self.engine.frames:
                     return "not in Framerange"
                 if fr.state == "queued":
-                    return "broken on disk" if fr.checks else "not on disk"
+                    if fr.checks:
+                        return "broken on disk"
+                    return "on disk, queued again" if fr.old is not None else "not on disk"
                 return fr.state
             if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
                 return (fr.ran_in or "") if fr.state in ("done", "bad", "skipped") else fr.chunk or ""
             if col == 3:
                 return fr.worker or ""
+            old = fr.old if fr.state in ("queued", "rendering") else None  # the frame on disk until the new one is written
             if col == 4:
-                return "%.2f s" % fr.secs if fr.secs is not None else ""
+                secs = fr.secs if fr.secs is not None else (old.secs if old is not None else None)
+                return "%.2f s" % secs if secs is not None else ""
             if col == 5:
-                sizes = [c[1] for c in fr.checks.values() if c[1] is not None]
+                sizes = [c[1] for c in (fr.checks or (old.checks if old is not None else {})).values() if c[1] is not None]
                 return fmt_size(sum(sizes)) if sizes else ""
             if col == 6:
                 if not fr.checks:
@@ -6038,7 +6056,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _frame_playable(self, f):
         fr = self.engine.frame_info(f)
-        return fr is not None and fr.state in ("done", "skipped", "bad")
+        return fr is not None and (fr.state in ("done", "skipped", "bad") or (fr.state == "queued" and fr.old is not None))
 
     def _frame_play_toggle(self):
         if self._frame_timer.isActive():
