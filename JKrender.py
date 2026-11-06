@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.80.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.80.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.80.1 alpha"
+APP_VERSION = "0.80.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -7610,7 +7610,7 @@ def main():
     alone = "--exit-when-done" in sys.argv  # scripted runs keep to themselves
     if not alone:
         # One render per Write: hand each to the JKrender already open; whatever is left opens a window here.
-        if not args:  # Reopen Renders: nothing to do if a window is open
+        if not args:  # only what was open before a crash: nothing to do if a window is open
             try:
                 socket.create_connection(("127.0.0.1", APP_PORT), timeout=1.0).close()
                 return

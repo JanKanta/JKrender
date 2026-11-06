@@ -78,7 +78,7 @@ def _script_path():
     except Exception:
         modified = False
     if modified:
-        if not nuke.ask("The script has unsaved changes.\n\nSave it and render?\n\n(JKrender renders a copy of the saved script.)"):
+        if not nuke.ask("The script has unsaved changes.\n\nSave it and render?"):
             return None
         try:
             nuke.scriptSave()
@@ -377,17 +377,6 @@ def render_selected():
         threading.Thread(target=_launch, args=(app, job_paths), daemon=True).start()
 
 
-def reopen_renders():
-    """After a crash or a restart: the renders JKrender had open come back. It stays as it is if a window is open."""
-    app = _app_path()
-    if not app:
-        return
-    if not (Path.home() / ".jkrender" / "queue.json").is_file():
-        nuke.message("JKrender closed properly last time: there is nothing to bring back.")
-        return
-    threading.Thread(target=_launch, args=(app, []), daemon=True).start()
-
-
 def open_renders_folder():
     folder = _renders_dir()
     folder.mkdir(parents=True, exist_ok=True)
@@ -520,7 +509,6 @@ def _offer_preview_libs():
 def install_menu():
     menu = nuke.menu("Nuke").addMenu("JKrender")
     menu.addCommand("Render Selected Write(s)", render_selected, "Ctrl+Alt+R")
-    menu.addCommand("Reopen Renders After a Crash", reopen_renders)
     menu.addCommand("Open Renders Folder", open_renders_folder)
     if nuke.GUI:
         try:

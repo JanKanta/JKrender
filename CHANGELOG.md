@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.80.2 alpha — 2026-11-06
+
+- The JKrender menu in Nuke no longer has Reopen Renders After a Crash: the renders come back the next time JKrender opens.
+- Rendering an unsaved script asks only "Save it and render?", without the note in brackets.
+
 ## 0.80.1 alpha — 2026-11-06
 
 - Render again no longer empties Output: frames still on disk stay listed as `on disk, queued again`, with their size and time, and can be looked at and played until the new frame replaces them. The same for Render this frame / batch and a chunk rendered again. Rendered lists only the frames of the run now.
