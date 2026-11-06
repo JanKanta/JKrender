@@ -271,7 +271,7 @@ svg { display: block; }
 </section>
 
 <!-- ============ 6 OUTPUT ============ -->
-<section class="page">
+<section class="page" style="font-size:9.6pt">
 <h2>6  Panel Output: náhled a framy</h2>
 <div class="cols">
 <div><div class="shot"><img src="shots/c_output.png"></div></div>
@@ -299,12 +299,12 @@ svg { display: block; }
 <h3>Seznam framů</h3>
 <p>Sloupce: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (který proces ho počítal), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. Seznam začíná prázdný a framy přibývají, jak se renderují. Po <b>Render again</b> framy nezmizí: zůstanou jako <i>on disk, queued again</i> se starou velikostí a časem (jdou prohlížet i přehrávat), dokud je nový render nepřepíše. Framy na disku mimo zvolený Framerange zůstávají v seznamu s poznámkou <i>not in Framerange</i>.</p>
 <div class="cols">
-<div class="menu"><img src="shots/m4_frame_menu.png" style="width:60%"></div>
+<div class="menu"><img src="shots/m4_frame_menu.png" style="width:42%"></div>
 <div><b>Pravé tlačítko na framu</b> (nebo na víc vybraných):<br>
 <b>Render this frame / batch</b>: vyrenderuje jen tyto framy znovu (když render běží, přidají se do něj).<br>
 <b>Delete this frame / batch</b>: smaže je z disku (jen když render neběží).</div>
 </div>
-<div class="box b"><b>MOV / MP4 / MXF:</b> místo seznamu framů se ukáže jeden filmový soubor s detaily (kodek, profil, fps, rozlišení, timecode, počet framů proti nastavení Writu) a přehrávač s lupou. Tlačítka <span class="btn">Check video</span>, <span class="btn">Open folder</span>, <span class="btn">Delete video</span>. Film se nedá rozdělit, takže ho renderuje jeden proces.</div>
+<div class="box b small" style="margin-top:1mm"><b>MOV / MP4 / MXF:</b> místo seznamu framů se ukáže jeden filmový soubor s detaily (kodek, profil, fps, rozlišení, timecode, počet framů proti nastavení Writu) a přehrávač s lupou. Tlačítka <span class="btn">Check video</span>, <span class="btn">Open folder</span>, <span class="btn">Delete video</span>. Film se nedá rozdělit, takže ho renderuje jeden proces.</div>
 </section>
 
 <!-- ============ 7 CHUNKS + DETAILS ============ -->
