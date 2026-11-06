@@ -56,7 +56,7 @@ svg { display: block; }
 <!-- ============ TITULNÍ STRANA ============ -->
 <section class="cover">
   <div class="hero">
-    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">NÁVOD K POUŽITÍ · VERZE 0.79.1 ALPHA</div>
+    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">NÁVOD K POUŽITÍ · VERZE 0.80 ALPHA</div>
     <h1>JK<span>render</span></h1>
     <p style="font-size:14pt; color:#ddd; max-width:150mm">Rychlý lokální render pro Nuke. Render se rozdělí na kousky (chunky) a ty se počítají v několika Nuke procesech najednou. Každý hotový frame JKrender hned zkontroluje na disku.</p>
     <div style="margin-top:8mm"><img src="shots/03_rendering_workers.png" style="width:100%; border-radius:6px; border:1px solid #000"></div>
@@ -255,7 +255,7 @@ svg { display: block; }
 <tr><td>Frame time</td><td>Kolik trvá jeden frame v jednom procesu a kolik framů se počítá najednou (× N at once).</td></tr>
 <tr><td>Nuke processes</td><td>Kolik procesů renderuje / kolik jich běží, plus ty, které se načítají nebo čekají.</td></tr>
 <tr><td>Check frames</td><td>Kontrola souborů: chybějící, prázdné, useknuté, nečitelné a podezřele malé framy.</td></tr>
-<tr><td>Check pixels</td><td>Kontrola pixelů: duplikáty (frame stejný jako jiný) a u EXR navíc NaN a inf, černé, prázdné a jednobarevné framy a frame, jehož velikost, kanály, bitová hloubka nebo komprese se liší od ostatních.</td></tr>
+<tr><td>Check pixels</td><td>Kontrola pixelů (EXR, PNG, JPEG, TIFF, DPX): černé, prázdné a jednobarevné framy, framy stejné jako jiný a frame, jehož velikost, kanály nebo bitová hloubka se liší od ostatních. U EXR navíc NaN, inf a komprese.</td></tr>
 </table>
 
 <h3>Mapa framů</h3>
@@ -292,7 +292,7 @@ svg { display: block; }
 <tr><th style="width:34mm">Prvek</th><th>Co dělá</th></tr>
 <tr><td>Filtr</td><td><b>All</b>: všechny framy. <b>Rendered</b>: jen ty na disku. <b>Problems</b>: chyby, podezřele malé framy a nálezy pixelové kontroly. <b>Framerange</b>: jak je na tom každý frame zvoleného rozsahu (na disku, <i>not on disk</i>, <i>broken on disk</i>).</td></tr>
 <tr><td><span class="btn">Check frames</span></td><td>Znovu projde soubory všech framů: existuje, není prázdný, je celý a čitelný a není výrazně menší než ostatní.</td></tr>
-<tr><td><span class="btn">Check pixels</span></td><td>Na pozadí projde každý frame: framy stejné jako jiný kdekoli v sekvenci a u EXR i každý pixel: NaN a inf, černé, prázdné a jednobarevné framy, odlišná velikost, kanály, bitová hloubka nebo komprese. Zhruba 0,1 s na 4K EXR. Jen hlásí, nic znovu nerenderuje.</td></tr>
+<tr><td><span class="btn">Check pixels</span></td><td>Na pozadí projde pixely každého framu (EXR, PNG, JPEG, TIFF, DPX): černé, prázdné a jednobarevné framy, framy stejné jako jiný kdekoli v sekvenci, odlišná velikost, kanály nebo bitová hloubka; u EXR i NaN, inf a komprese. Zhruba 0,1 s na 4K frame. Jen hlásí, nic znovu nerenderuje.</td></tr>
 <tr><td><span class="btn">Open folder</span></td><td>Otevře složku s výstupem.</td></tr>
 <tr><td><span class="btn">Delete</span></td><td>Smaže vyrenderované framy z disku: všechny (výchozí) nebo zadaný rozsah. Předtím se zeptá.</td></tr>
 </table>
@@ -389,7 +389,7 @@ svg { display: block; }
 <tr><td>Start next render when one ends</td><td>Když render skončí nebo selže, sám se spustí další dosud nespuštěný render v pořadí karet. Render, který jsi zastavil, nic dalšího nespustí.</td><td class="def">vyp.</td></tr>
 <tr><td>Go on after a crash</td><td>Když JKrender spadne během renderu, karty se při dalším otevření vrátí (s tím, co je na disku). Zapnuto: běžící rendery se samy rozjedou. Vypnuto: čekají na Render.</td><td class="def">vyp.</td></tr>
 <tr><td>Check frames as they render</td><td>Každý frame hned po vyrenderování: je tam, není prázdný, je celý a čitelný, není výrazně menší než ostatní. Vypnuto: rozbitý frame se počítá jako hotový, dokud nestiskneš Check frames.</td><td class="def">zap.</td></tr>
-<tr><td>Check pixels when a render ends</td><td>Po dokončení renderu na pozadí zkontroluje všechny framy: duplikáty a u EXR i pixely (NaN, inf, černé, jednobarevné, odlišný formát). Jen hlásí.</td><td class="def">zap.</td></tr>
+<tr><td>Check pixels when a render ends</td><td>Po dokončení renderu na pozadí zkontroluje pixely všech framů (černé, jednobarevné, stejné, odlišný formát; u EXR i NaN a inf). Jen hlásí.</td><td class="def">zap.</td></tr>
 <tr><td>Check pixels when a render opens</td><td>Stejná kontrola framů, které už jsou na disku, hned po otevření renderu. Render ji zastaví.</td><td class="def">zap.</td></tr>
 <tr><td>Sound when a render ends</td><td>Zvuk po skončení renderu, až doběhnou zapnuté kontroly. Jiný zvuk při chybě, rozbitých framech nebo problému v pixelech. Zastavený render je potichu.</td><td class="def">zap.</td></tr>
 <tr><td>Max renders at once</td><td><b>1</b>: rendery jdou po sobě, další se začne načítat, když předchozí dodělává poslední chunky (nejdřív hotový první shot). <b>2–3</b>: běží vedle sebe a dělí se o procesy (celkově ne rychlejší, ale z každého shotu vidíš framy brzo).</td><td class="def">3</td></tr>
@@ -507,12 +507,11 @@ svg { display: block; }
 <h2>14  Kontroly, zvuky, pád a data</h2>
 <h3>Kontrola výstupu</h3>
 <div class="shot"><img src="shots/c_problems.png"></div>
-<p class="cap">Render s useknutým framem (1030, červeně) a černým PNG framem (1031, žlutě jako podezřele malý). Filtr Problems ukazuje jen je.</p>
-<div class="box r"><b>Pozor u PNG, JPEG a DPX:</b> pixely (černé framy, NaN) kontroluje Check pixels jen u EXR. U ostatních formátů pozná jen stejné framy; černý frame tam prozradí nejspíš jen Check frames jako podezřele malý.</div>
+<p class="cap">Render s useknutým framem (1030) a černým framem (1031), oba najdené ručním Check frames a Check pixels: červený pruh, červené framy v mapě, filtr Problems ukazuje jen je.</p>
 <table>
 <tr><th style="width:40mm">Kontrola</th><th>Kdy</th><th>Co hledá</th></tr>
 <tr><td>Check frames</td><td>Po každém framu (lze vypnout) a tlačítkem. Vždy při otevření renderu a před Renderem.</td><td>Chybějící, prázdné, useknuté a nečitelné soubory (EXR, PNG, JPEG, DPX), podezřele malé framy.</td></tr>
-<tr><td>Check pixels</td><td>Po skončení renderu, při otevření (lze vypnout) a tlačítkem.</td><td>Framy stejné jako jiný. U EXR navíc NaN a inf, černé, prázdné a jednobarevné framy, odlišná velikost, kanály, bitová hloubka a komprese.</td></tr>
+<tr><td>Check pixels</td><td>Po skončení renderu, při otevření (lze vypnout) a tlačítkem.</td><td>EXR, PNG, JPEG, TIFF a DPX: černé, prázdné a jednobarevné framy, framy stejné jako jiný, odlišná velikost, kanály a bitová hloubka. U EXR navíc NaN, inf a komprese. Ostatní formáty: jen stejné soubory.</td></tr>
 <tr><td>Movie check</td><td>U MOV, MP4 a MXF.</td><td>Kodek, profil, fps, rozlišení, timecode a počet framů proti nastavení Writu.</td></tr>
 </table>
 <h3>Zvuk po renderu</h3>
@@ -557,14 +556,14 @@ svg { display: block; }
 <tr><td>Nuke procesy dlouho startují (30–50 s)</td><td>Obvykle start Nuka (licence, startovací skripty pipeline) ve chvíli, kdy PC renderuje. Log ukazuje rozdělení <i>Nuke started in … / script opened in …</i>.</td></tr>
 <tr><td>Procesy se zavírají a startují znovu</td><td>Došla RAM nebo VRAM (State v System, Log). Méně procesů s více vlákny, menší Cache, nebo Analyze script.</td></tr>
 <tr><td>Žlutý pruh „not checked“</td><td>Kontrola framů je vypnutá nebo neproběhla. Stiskni Check frames.</td></tr>
-<tr><td>Červený pruh</td><td>Output › filtr Problems ukáže, které framy. Pravým tlačítkem <i>Render this frame / batch</i>.</td></tr>
+<tr><td>Červený pruh</td><td>Output › filtr Problems ukáže, které framy. Pravým tlačítkem <i>Render this frame / batch</i>. Pruh se přepočítá i po ručním Check frames a Check pixels.</td></tr>
 <tr><td>Náhled EXR se neukazuje</td><td>Chybí numpy/OpenEXR. Smaž <code>lib/DECLINED</code> a restartuj Nuke, nebo je nainstaluj podle README.</td></tr>
 <tr><td>Render nezačal hned</td><td>Stav Waiting: jiné rendery už vytěžují PC (Max renders at once), nebo se čeká na paměť.</td></tr>
 <tr><td>Vyčištění cache Nuka nefunguje</td><td>Po aktualizaci JKrenderu je potřeba Nuke jednou restartovat.</td></tr>
 <tr><td>Nevím, co se renderovalo</td><td>Panel Details a Log › Open log folder (snapshot scriptu a job.json).</td></tr>
 </table>
 <div class="box r"><b>JKrender je v alpha verzi.</b> V testech funguje, ale počítej s drobnostmi. Když narazíš na chybu, pošli autorovi složku logu renderu (Open Renders Folder) a popis, co se stalo.</div>
-<p class="dim small" style="margin-top:10mm">JKrender 0.79.1 alpha · github.com/JanKanta/JKrender · návod vytvořen 6. 11. 2026. Snímky jsou z ukázkového renderu (shoty sh010 a sh020).</p>
+<p class="dim small" style="margin-top:10mm">JKrender 0.80 alpha · github.com/JanKanta/JKrender · návod vytvořen 6. 11. 2026. Snímky jsou z ukázkového renderu (shoty sh010 a sh020).</p>
 </section>
 
 </body>
