@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.79.1 alpha.** It works in tests; expect rough edges.
+**Version 0.80 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -24,7 +24,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   The disk cache stays. Resume, the next render starting by itself and a render resuming after a crash clear nothing. A Nuke has to be restarted once after an update to take part.
 - **Output check.**
   - Image sequences, as each frame renders or with Check frames: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames. Settings > General can turn the automatic check off.
-  - Pixels, when a render opens, when it ends or with Check pixels: NaN and inf in every frame, black, empty or one-colour frames, frames exactly the same as another anywhere in the sequence, and a size, channels, bit depth or compression unlike the rest. In the background, it only reports, and Render stops the check at opening (Settings > General, both on by default).
+  - Pixels, when a render opens, when it ends or with Check pixels: black, empty or one-colour frames, frames exactly the same as another anywhere in the sequence, and a size, channels or bit depth unlike the rest, in EXR, PNG, JPEG, TIFF and DPX; in EXR also NaN and inf, and the compression. Other formats: only frames that are the same file. In the background, it only reports, and Render stops the check at opening (Settings > General, both on by default).
   - Movies (MOV / MP4 / MXF): codec, profile, fps, resolution, timecode and frame count against the Write's settings.
     The movie has a looping player with zoom.
   - Rendered frames: a frame bar with Play and a slider under the preview, and an enlarged view over the panes.

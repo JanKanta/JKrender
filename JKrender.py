@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.79.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.80 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.79.1 alpha"
+APP_VERSION = "0.80 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -595,19 +595,101 @@ def check_file(path):
     return "ok", size, ""
 
 
-def _one_value(pixels):
+def _one_value(pixels, tolerance=0):
     """The value of every channel if the whole image holds just one, else None. Every 8th pixel first: min and max of a whole
-    4K frame take 0.14 s, and nearly every frame shows at once that it is not one colour."""
+    4K frame take 0.14 s, and nearly every frame shows at once that it is not one colour. A JPEG's compression leaves a little
+    noise even on one flat colour, hence the tolerance."""
     import numpy as np
 
     for image in (pixels[::8, ::8], pixels):
         low, high = image.min(axis=(0, 1)), image.max(axis=(0, 1))
-        if not np.all(low == high):
+        if not np.all(high.astype(np.int64) - low.astype(np.int64) <= tolerance) if tolerance else not np.all(low == high):
             return None
-    return np.atleast_1d(low)
+    return np.atleast_1d(low if not tolerance else (low.astype(np.int64) > tolerance) * low)
 
 
-def _blank(channels):
+class _Plane:
+    """One layer of an image, shaped like an OpenEXR channel: what _blank reads."""
+
+    def __init__(self, pixels):
+        self.pixels = pixels
+
+
+def _read_dpx(path):
+    """The pixels of a DPX file (H x W x channels, integers) and its properties, or (None, reason).
+    8, 10, 12 and 16 bit RGB, RGBA and luma, the packings Nuke writes; anything else is not judged."""
+    import numpy as np
+
+    with open(path, "rb") as f:
+        head = f.read(2048)
+        magic = head[:4]
+        if magic == b"SDPX":
+            end = ">"
+        elif magic == b"XPDS":
+            end = "<"
+        else:
+            return None, "not a DPX file"
+        u32 = lambda at: int(np.frombuffer(head, end + "u4", 1, at)[0])
+        u16 = lambda at: int(np.frombuffer(head, end + "u2", 1, at)[0])
+        width, height = u32(772), u32(776)
+        descriptor, bits, packing, encoding = head[800], head[803], u16(804), u16(806)
+        offset = u32(808) or u32(4)
+        channels = {50: 3, 51: 4, 6: 1}.get(descriptor)
+        if not channels or encoding != 0 or not width or not height:
+            return None, "DPX layout not read here (descriptor %d, encoding %d)" % (descriptor, encoding)
+        names = {3: "RGB", 4: "RGBA", 1: "Y"}[channels]
+        samples = width * channels
+        f.seek(offset)
+        if bits == 8:
+            line = -(-samples // 4) * 4
+            data = np.frombuffer(f.read(line * height), np.uint8).reshape(height, line)[:, :samples]
+        elif bits == 16 or (bits == 12 and packing == 1):
+            line = -(-samples // 2) * 2
+            data = np.frombuffer(f.read(line * height * 2), end + "u2").reshape(height, line)[:, :samples]
+            data = data >> 4 if bits == 12 else data
+        elif bits == 10 and packing in (1, 2):
+            words = -(-samples // 3)
+            raw = np.frombuffer(f.read(words * height * 4), end + "u4").reshape(height, words)
+            shifts = (22, 12, 2) if packing == 1 else (20, 10, 0)
+            data = np.stack([(raw >> s) & 0x3FF for s in shifts], axis=2).reshape(height, words * 3)[:, :samples]
+        else:
+            return None, "DPX %d bit with packing %d not read here" % (bits, packing)
+    if data.shape[0] != height:
+        return None, "the file is shorter than its picture"
+    pixels = np.ascontiguousarray(data.reshape(height, width, channels))
+    return pixels, {"size": "%dx%d" % (width, height), "channels": names, "bit depth": "%d bit" % bits}
+
+
+def _read_qt(path):
+    """The pixels of a PNG, JPEG or TIFF through Qt (H x W x channels) and its properties, or (None, reason)."""
+    import numpy as np
+
+    img = QtGui.QImage(path)
+    if img.isNull():
+        return None, "Qt could not read it"
+    deep = img.depth() > 32 or img.format() in (QtGui.QImage.Format_Grayscale16,)
+    gray = img.format() in (QtGui.QImage.Format_Grayscale8, QtGui.QImage.Format_Grayscale16)  # what the file is, not what it shows
+    if gray:
+        img = img.convertToFormat(QtGui.QImage.Format_Grayscale16 if deep else QtGui.QImage.Format_Grayscale8)
+        dtype, channels, names = (np.uint16 if deep else np.uint8), 1, "Y"
+    else:
+        alpha = img.hasAlphaChannel()
+        img = img.convertToFormat(QtGui.QImage.Format_RGBA64 if deep else QtGui.QImage.Format_RGBA8888)
+        dtype, channels, names = (np.uint16 if deep else np.uint8), 4, ("RGBA" if alpha else "RGB")
+    width, height = img.width(), img.height()
+    item = np.dtype(dtype).itemsize
+    raw = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(height, img.bytesPerLine())
+    pixels = raw[:, :width * channels * item].view(dtype).reshape(height, width, channels)
+    if names == "RGB":
+        pixels = pixels[:, :, :3]
+    pixels = np.array(pixels, copy=True)  # a copy: the view is of the QImage's memory, gone when it is
+    return pixels, {"size": "%dx%d" % (width, height), "channels": names, "bit depth": "%d bit" % (16 if deep else 8)}
+
+
+PIXEL_FORMATS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".dpx")
+
+
+def _blank(channels, tolerance=0):
     """"empty", "black" or "one colour" for a frame like that, else None. A frame without RGB channels is not judged."""
     rgb, alpha = [], None
     for name, channel in channels.items():
@@ -615,26 +697,28 @@ def _blank(channels):
         if name in ("RGB", "RGBA") and pixels.ndim == 3:
             rgb.append(pixels[:, :, :3])
             alpha = pixels[:, :, 3] if name == "RGBA" else alpha
-        elif name in ("R", "G", "B"):
+        elif name in ("R", "G", "B", "Y"):
             rgb.append(pixels)
         elif name == "A":
             alpha = pixels
     if not rgb:
         return None
-    values = [_one_value(p) for p in rgb]
+    values = [_one_value(p, tolerance) for p in rgb]
     if any(v is None for v in values):
         return None
     if any(v.any() for v in values):
         return "one colour"
     if alpha is None:
         return "black"
-    one = _one_value(alpha)
+    one = _one_value(alpha, tolerance)
     return "empty" if one is not None and not one.any() else "black"
 
 
 def check_pixels(paths):
     """What only the pixels can tell, for one frame: {"nan", "inf", "hash", "blank", "props"}, or {"error"}. The hash is of the
-    pixels of an EXR, not of the file: its header holds the time it was written, so two identical frames have different files."""
+    pixels, not of the file: an EXR's header holds the time it was written, so two identical frames have different files.
+    PNG, JPEG and TIFF are read through Qt and DPX here: black, empty or one-colour frames and what differs from the sequence;
+    they hold whole numbers, so no NaN or inf. Other formats: only frames that are the same file."""
     digest = hashlib.blake2b(digest_size=16)
     nan = inf = 0
     blank, props = None, {}
@@ -661,11 +745,23 @@ def check_pixels(paths):
                                 n = int(np.isnan(pixels).sum())
                                 nan += n
                                 inf += int(broken.sum()) - n
+            elif path.lower().endswith(PIXEL_FORMATS):
+                import numpy as np  # noqa: F401  (the readers need it)
+
+                pixels, info = (_read_dpx if path.lower().endswith(".dpx") else _read_qt)(path)
+                if pixels is None:
+                    return {"error": info}
+                props = info
+                digest.update(pixels.tobytes())
+                names = {"RGB": ("R", "G", "B"), "RGBA": ("R", "G", "B", "A"), "Y": ("Y",)}[info["channels"]]
+                planes = {n: _Plane(pixels[:, :, i]) for i, n in enumerate(names)}
+                jpeg = path.lower().endswith((".jpg", ".jpeg"))
+                blank = blank or _blank(planes, tolerance=3 if jpeg else 0)
             else:
                 with open(path, "rb") as f:
                     digest.update(f.read())
     except ImportError:
-        return {"error": "needs numpy and OpenEXR"}
+        return {"error": "needs numpy (and OpenEXR for EXR)"}
     except Exception as exc:
         return {"error": str(exc)[:120]}
     return {"nan": nan, "inf": inf, "hash": digest.hexdigest(), "blank": blank, "props": props}
@@ -4847,6 +4943,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cards = {}
         self._last_states = {}
         self._pixels_were = {}  # render -> its pixel check was running at the last tick
+        self._banner_was = None  # what the banner of the picked finished render last said
         self._preview_frame = None
         self._gpu = None
         self._gpu_procs = {}  # pid -> (GPU %, VRAM bytes)
@@ -5386,7 +5483,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Check pixels when a render ends", [self.c_pixels],
             "NaN and inf, black, empty or one-colour frames, frames exactly the same as another, and a size, channels, bit depth\n"
             "or compression unlike the rest of the sequence, in the background.\n"
-            "About 0.1 s a 4K frame. It needs numpy and OpenEXR for EXR files, and only reports: nothing renders again by itself.")
+            "EXR, PNG, JPEG, TIFF and DPX (NaN and inf only in EXR, the others hold whole numbers); other formats: only frames that are the same.\n"
+            "About 0.1 s a 4K EXR, a little more for a PNG. It needs numpy (and OpenEXR for EXR), and only reports: nothing renders again by itself.")
         self.c_open = toggle("check_on_open", True)
         row(gen, "Check pixels when a render opens", [self.c_open],
             "The same check on the frames already on disk, in the background, as soon as a render opens here.\n"
@@ -6366,6 +6464,9 @@ class MainWindow(QtWidgets.QMainWindow):
                             self._pixels_were[e] = True
                         else:
                             self._end_sound(e)
+        e = self.engine
+        if e.state == "done" and not e.movie and self._banner_says(e) != self._banner_was:
+            self._state_changed()  # Check frames or Check pixels by hand, Delete, a frame rendered again: the result changed
         if self.exit_when_done and self.manager.engines and all(
                 e.state in ("done", "failed") for e in self.manager.engines):
             self.exit_when_done = False
@@ -6380,8 +6481,17 @@ class MainWindow(QtWidgets.QMainWindow):
         broken = e.state == "failed" or any(fr.state == "bad" or pixels_broken(fr) or fr.same_as is not None for fr in frames)
         play_sound("error_v1" if broken else "done_v4")
 
+    @staticmethod
+    def _banner_says(e):
+        """What the banner of a finished render is made of; when it changes, the banner is drawn again."""
+        frames = e.frames.values()
+        return (e, sum(fr.state == "bad" for fr in frames), sum(bool(fr.small) for fr in frames),
+                sum(pixels_broken(fr) or fr.same_as is not None for fr in frames), sum(not fr.checks for fr in frames),
+                bool(e.pixels_pending), e.pending_checks > 0)
+
     def _state_changed(self):
         e = self.engine
+        self._banner_was = self._banner_says(e) if e.state == "done" and not e.movie else None
         done_in = ("Done in %s" % fmt_secs(e.elapsed())) if e.started else "Already rendered"
         self._sync_controls()
         if e.movie:
@@ -6419,6 +6529,8 @@ class MainWindow(QtWidgets.QMainWindow):
                         done_in, len(frames), unchecked)
                 else:
                     text = "%s. All %d frames are on disk and pass the check." % (done_in, len(frames))
+                if e.pending_checks > 0:
+                    text += " Checking frames…"
                 if e.pixels_pending:
                     text += " Checking pixels…"
                 if small:

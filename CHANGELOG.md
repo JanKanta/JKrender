@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.80 alpha — 2026-11-06
+
+- Check pixels reads the pixels of PNG, JPEG, TIFF and DPX too (8, 10, 12 and 16 bit DPX as Nuke writes it): black, empty and one-colour frames, and a size, channels or bit depth unlike the rest. Identical frames are found by their pixels, so two the same with another time in the file count as the same. Before, only EXR was looked at; a black PNG passed.
+- The banner of a finished render follows Check frames and Check pixels run by hand: a broken frame turns it red instead of leaving "pass the check", and it says "Checking frames…" meanwhile.
+- A Czech manual: docs/JKrender_navod.pdf.
+
 ## 0.79.1 alpha — 2026-11-06
 
 - The sound of a finished render comes when the checks that are on are through: right after the render with them off, after the frame check, and with the pixel check on after that. When the pixel check finds a problem it is the error sound.
