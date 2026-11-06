@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.79 alpha.** It works in tests; expect rough edges.
+**Version 0.79.1 alpha.** It works in tests; expect rough edges.
 
 ## What it does
 
@@ -44,7 +44,7 @@ on disk.
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
 - **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
 - **Render data** (Settings > General > Export render data): every render writes a report.json with this PC's CPU, RAM and graphics card, the settings, speed, memory peaks, limit closes, how long Nuke took to start and the script to open, and the kinds of nodes in the script. Export puts them all in one file to send, without script names, paths or errors; a script is known only by an id that stays the same over its versions.
-- **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails or leaves broken frames. A render you stopped stays silent.
+- **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem. It comes when the checks that are on are through. A render you stopped stays silent.
 - **Framerange** (Settings > Job): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are, and stay in Output marked `not in Framerange`.
 - **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the

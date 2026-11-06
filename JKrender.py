@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.79 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.79.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.79 alpha"
+APP_VERSION = "0.79.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -5393,8 +5393,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "Render stops it, and a render that ends checks them all anyway. Frames on disk are always checked for missing, empty or cut-off files when a render opens.")
         self.c_sound = toggle("end_sound", True)
         row(gen, "Sound when a render ends", [self.c_sound],
-            "One sound when a render finishes, another when it fails or leaves broken frames. With several renders, for each of them.\n"
-            "A render you stopped and a render already on disk when it opens stay silent.")
+            "One sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem.\n"
+            "It comes when the checks that are on are through: the frame check, then the pixel check. With several renders,\n"
+            "for each of them. A render you stopped and a render already on disk when it opens stay silent.")
         threading.Thread(target=lambda: [sound_file(name) for name in SOUNDS], daemon=True).start()
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
@@ -6337,8 +6338,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._append_log(e.new_log)
                 e.new_log = []
             pending = bool(e.pixels_pending)
-            if self._pixels_were.get(e) and not pending and e is self.engine and e.state == "done":
-                self._state_changed()  # the pixel check is through: the banner says what it found
+            if self._pixels_were.get(e) and not pending:
+                if e is self.engine and e.state == "done":
+                    self._state_changed()  # the pixel check is through: the banner says what it found
+                if getattr(e, "sound_after_pixels", False):
+                    e.sound_after_pixels = False
+                    if e.state == "done":  # not when a new render stopped the check
+                        self._end_sound(e)
             self._pixels_were[e] = pending
             prev = self._last_states.get(e)
             if e.state != prev:
@@ -6353,8 +6359,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     QtWidgets.QApplication.alert(self)
                     # "ready" to "done" is a render found whole on disk: nothing has just ended
                     if self.settings.get("end_sound", True) and (e.state == "failed" or prev != "ready"):
-                        broken = e.state == "failed" or any(fr.state == "bad" for fr in e.frames.values())
-                        play_sound("error_v1" if broken else "done_v4")
+                        # The frames are checked by now (a render is done only when its frame checks are). With the pixel
+                        # check on, the sound waits for that too, so it says what both found.
+                        if e.state == "done" and e.pixels_pending:
+                            e.sound_after_pixels = True
+                            self._pixels_were[e] = True
+                        else:
+                            self._end_sound(e)
         if self.exit_when_done and self.manager.engines and all(
                 e.state in ("done", "failed") for e in self.manager.engines):
             self.exit_when_done = False
@@ -6362,6 +6373,12 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(200, QtWidgets.QApplication.quit)
         if changed or self.engine.state in ("rendering", "paused"):
             self.frame_map.update()
+
+    def _end_sound(self, e):
+        """The done sound, or the error sound when the render failed, left broken frames or the pixel check found any."""
+        frames = e.frames.values()
+        broken = e.state == "failed" or any(fr.state == "bad" or pixels_broken(fr) or fr.same_as is not None for fr in frames)
+        play_sound("error_v1" if broken else "done_v4")
 
     def _state_changed(self):
         e = self.engine
