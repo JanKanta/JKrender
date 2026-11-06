@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.81 alpha — 2026-11-06
+
+- Render again on a render with frames on disk asks: **Only missing** renders just the frames missing or broken on disk, **All frames again** renders every frame anew, Cancel leaves it. A movie is always rendered whole.
+- Frames a render finds on disk and does not render show dark green (on disk, skipped) on the frame map, which has it in its legend now. Rendered lists only what the run rendered, not the skipped frames.
+
 ## 0.80.2 alpha — 2026-11-06
 
 - The JKrender menu in Nuke no longer has Reopen Renders After a Crash: the renders come back the next time JKrender opens.
