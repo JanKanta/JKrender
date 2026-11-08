@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.86.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.86.1 alpha"
+APP_VERSION = "0.87 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3410,13 +3410,17 @@ class ScriptTest(QtWidgets.QDialog):
                               if not (x[:2] == cur[:2] and abs(x[2] - cur[2]) <= 2)} | {cur} | self.added)
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            "Renders frames spread over this render with each setup below: first a few frames each (Round 1), then\n"
-            "the fastest ones again with all the frames (Round 2). Frames per minute once the processes are going: each\n"
-            "process's first frame and the start are left out, as in a long render. The frames go to a test folder and are\n"
-            "deleted; your render's files stay as they are. Nothing else should render meanwhile.")
-        intro.setObjectName("dim")
-        lay.addWidget(intro)
+        top = QtWidgets.QHBoxLayout()
+        self.b_add = QtWidgets.QPushButton("Add test")
+        self.b_add.setToolTip("A setup of your own: Processes, Threads and Cache. It is kept for the next time.")
+        self.b_add.clicked.connect(self._add_setup)
+        self.b_remove = QtWidgets.QPushButton("Remove test")
+        self.b_remove.setToolTip("Removes the selected setups. A recommended one comes back the next time this window opens.")
+        self.b_remove.clicked.connect(self._remove_setups)
+        top.addWidget(self.b_add)
+        top.addWidget(self.b_remove)
+        top.addStretch(1)
+        lay.addLayout(top)
         self.table = QtWidgets.QTableWidget(len(self.setups), len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
         for col, (_, tip) in enumerate(self.COLUMNS):
@@ -3455,17 +3459,8 @@ class ScriptTest(QtWidgets.QDialog):
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
         self.l_frames = label("")
         self.s_frames.valueChanged.connect(self._frames_note)
-        self.s_add_p, self.s_add_t, self.s_add_c = box(1, cpu, m.total), box(1, cpu, m.threads), box(1, ram, m.ram, " GB")
-        self.b_add = QtWidgets.QPushButton("Add setup")
-        self.b_add.clicked.connect(self._add_setup)
-        self.b_remove = QtWidgets.QPushButton("Remove selected")
-        self.b_remove.setToolTip("A recommended setup comes back the next time this window opens; one you added is gone.")
-        self.b_remove.clicked.connect(self._remove_setups)
+        self.add_defaults = (m.total, m.threads, m.ram, cpu, ram)  # what Add test starts from, and its limits
         for widget in (label("Frames per setup"), self.s_frames, self.l_frames):
-            edit.addWidget(widget)
-        edit.addSpacing(24)
-        for widget in (label("Processes"), self.s_add_p, label("Threads"), self.s_add_t, label("Cache"), self.s_add_c,
-                       self.b_add, self.b_remove):
             edit.addWidget(widget)
         edit.addStretch(1)
         lay.addLayout(edit)
@@ -3513,7 +3508,30 @@ class ScriptTest(QtWidgets.QDialog):
             self.resize(min(wanted, room), self.height())
 
     def _add_setup(self):
-        setup = (self.s_add_p.value(), self.s_add_t.value(), self.s_add_c.value())
+        """A small window: Processes, Threads and Cache of a setup of your own."""
+        n, t, c, cpu, ram = self.add_defaults
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Add test")
+        form = QtWidgets.QFormLayout(dialog)
+        spins = []
+        for name, hi, value, suffix in (("Processes", cpu, n, ""), ("Threads", cpu, t, ""), ("Cache", ram, c, " GB")):
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(1, hi)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            form.addRow(name, spin)
+            spins.append(spin)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Add")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        accepted = dialog.exec() == QtWidgets.QDialog.Accepted
+        setup = tuple(spin.value() for spin in spins)
+        dialog.deleteLater()
+        if not accepted:
+            return
+        self.add_defaults = setup + (cpu, ram)
         self.added.add(setup)
         self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
@@ -3522,14 +3540,18 @@ class ScriptTest(QtWidgets.QDialog):
 
     def _remove_setups(self):
         rows = {i.row() for i in self.table.selectedIndexes()}
-        gone = {self.setups[r] for r in rows}
+        gone = set()
+        for row in rows:  # the rows may be sorted: each knows its setup
+            item = self.table.item(row, self.C_SETUP)
+            if item is not None and item.data(SortItem.KEY + 1) is not None:
+                gone.add(self.setups[item.data(SortItem.KEY + 1)])
         self.setups = [x for x in self.setups if x not in gone]
         self.added -= gone
         self.main._save_setting("test_setups", sorted(self.added))
         self._fill_table()
 
     def _idle(self, on):
-        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames, self.s_add_p, self.s_add_t, self.s_add_c):
+        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
 
