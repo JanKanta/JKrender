@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.88 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.88.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.88 alpha"
+APP_VERSION = "0.88.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -454,6 +454,58 @@ def machine_info():
         "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1) if psutil else None,
         "gpu": gpu, "vram_gb": vram, "os": "%s %s" % (platform.system(), platform.version())})  # 10.0.22000 and up is Windows 11
     return dict(_MACHINE)
+
+
+_CPU_LAYOUT = {}
+
+
+def cpu_layout():
+    """What Windows says of the CPU: cores, threads, performance and efficiency cores (Intel 12th gen and up), physical
+    CPUs (a server can have two) and processor groups (Windows splits more than 64 threads into groups, and one process
+    runs in one group). Empty where it cannot tell."""
+    if _CPU_LAYOUT:
+        return dict(_CPU_LAYOUT)
+    out = {"threads": os.cpu_count() or 0}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        size = wintypes.DWORD(0)
+        kernel.GetLogicalProcessorInformationEx(0xFFFF, None, ctypes.byref(size))
+        buf = ctypes.create_string_buffer(size.value)
+        if kernel.GetLogicalProcessorInformationEx(0xFFFF, buf, ctypes.byref(size)):
+            raw, at, classes, packages, groups, logical = buf.raw, 0, {}, 0, 0, 0
+            while at + 8 <= size.value:
+                kind = int.from_bytes(raw[at:at + 4], "little")
+                step = int.from_bytes(raw[at + 4:at + 8], "little")
+                if step <= 0:
+                    break
+                if kind == 0:  # a core: its efficiency class (higher = faster), SMT flag
+                    cls = raw[at + 9]
+                    classes[cls] = classes.get(cls, 0) + 1
+                elif kind == 3:  # a physical CPU
+                    packages += 1
+                elif kind == 4:  # processor groups: how many, and the threads in each
+                    groups = int.from_bytes(raw[at + 10:at + 12], "little")
+                    for g in range(groups):
+                        # PROCESSOR_GROUP_INFO: MaximumProcessorCount BYTE, ActiveProcessorCount BYTE, Reserved[38], Mask
+                        logical += raw[at + 8 + 4 + 20 + g * 48 + 1]
+                at += step
+            out["cores"] = sum(classes.values()) or None
+            if len(classes) > 1:  # hybrid: the fastest class are the performance cores
+                fast = max(classes)
+                out["p_cores"], out["e_cores"] = classes[fast], sum(n for c, n in classes.items() if c != fast)
+            out["packages"] = packages or None
+            out["groups"] = groups or None
+            if logical:
+                out["threads"] = max(out["threads"], logical)
+    except Exception:
+        pass
+    if not out.get("cores") and psutil:
+        out["cores"] = psutil.cpu_count(logical=False)
+    _CPU_LAYOUT.update(out)
+    return dict(out)
 
 
 def script_id(path):
@@ -3370,6 +3422,7 @@ class ScriptTest(QtWidgets.QDialog):
     TESTS = 7  # setups Create tests makes, from 1 process to the most this PC takes
     MIN_THREADS = 4  # a process gets at least this many threads
     MIN_CACHE = 4  # GB of cache a process gets at least: a heavy comp slows down a lot under that
+    MAX_THREADS = 64  # a process runs in one Windows processor group, at most 64 threads: more would sit unused
 
     @staticmethod
     def spread(most, count):
@@ -3390,7 +3443,9 @@ class ScriptTest(QtWidgets.QDialog):
         CPU (at least MIN_THREADS each) and the RAM (at least MIN_CACHE of cache each) take; each gets its share of the
         threads and of the RAM, less what a process takes besides its cache."""
         most = max(1, min(cpu // cls.MIN_THREADS, int(free_gb // (BESIDE_CACHE + cls.MIN_CACHE))))
-        return [(n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE))) for n in cls.spread(most, cls.TESTS)]
+        fewest = -(-cpu // cls.MAX_THREADS)  # past 64 threads: enough processes to use every group
+        counts = [fewest - 1 + n for n in cls.spread(most - fewest + 1, cls.TESTS)] if most >= fewest else [fewest]
+        return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE))) for n in counts]
 
     def _free_gb(self):
         """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
@@ -3404,9 +3459,15 @@ class ScriptTest(QtWidgets.QDialog):
     @staticmethod
     def hardware():
         """This PC in a line: CPU, cores and threads, RAM, graphics card."""
-        info = machine_info()
-        cores = psutil.cpu_count(logical=False) if psutil else None
-        parts = [info.get("cpu") or "CPU", "%s%d threads" % ("%d cores, " % cores if cores else "", os.cpu_count() or 0)]
+        info, cpu = machine_info(), cpu_layout()
+        cores = "%d cores" % cpu["cores"] if cpu.get("cores") else ""
+        if cpu.get("e_cores"):
+            cores += " (%d performance + %d efficiency)" % (cpu["p_cores"], cpu["e_cores"])
+        parts = [info.get("cpu") or "CPU", ", ".join(x for x in (cores, "%d threads" % (cpu.get("threads") or os.cpu_count() or 0)) if x)]
+        if (cpu.get("packages") or 1) > 1:
+            parts.append("%d CPUs" % cpu["packages"])
+        if (cpu.get("groups") or 1) > 1:
+            parts.append("%d processor groups (a process uses one, at most %d threads)" % (cpu["groups"], ScriptTest.MAX_THREADS))
         if info.get("ram_gb"):
             parts.append("%.0f GB RAM" % info["ram_gb"])
         if info.get("gpu"):
@@ -3588,6 +3649,7 @@ class ScriptTest(QtWidgets.QDialog):
     def _create_setups(self):
         """Create tests: this PC looked at again, and its setups in place of all in the table, your own too."""
         _MACHINE.clear()  # the graphics card or the RAM may have changed since
+        _CPU_LAYOUT.clear()
         self.l_hw.setText(self.hardware())
         self.added = set()
         self.main._save_setting("test_setups", [])

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.88.1 alpha — 2026-11-08
+
+- Test this script on a PC with more than 64 threads (a big Threadripper, a server): Windows splits the threads into processor groups of at most 64 and one process runs in one group, so a setup gives a process at most 64 threads and starts with enough processes to use every group (192 threads: from 3 x 64).
+- The line about the PC says how many performance and efficiency cores an Intel 12th gen or later has, how many physical CPUs a server has, and how many processor groups there are, from Windows (GetLogicalProcessorInformationEx).
+
 ## 0.88 alpha — 2026-11-08
 
 - Test this script: the cache of each setup comes from the whole RAM (its RAM limit, less what Windows usually holds) split by the number of processes, no longer from what is free when the window opens: with a render or a Nuke open, 8 x 4 got 1 GB of cache and lost for that. On 94 GB: 1 x 32 64 GB, 2 x 16 30, 4 x 8 13, 8 x 4 4.
