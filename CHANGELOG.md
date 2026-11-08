@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.83 alpha — 2026-11-08
+
+- Analyze script is gone, with its button in Settings: its recommendation did not hold on real comps. Its commands left the worker too (ANALYZE, TIMERS, PROFILE). Test this script stays: it measures the setups instead of guessing them.
+
 ## 0.82.1 alpha — 2026-11-08
 
 - Analyze script no longer counts Nuke's cache as RAM a process needs. Nuke fills the cache it is given (16 GB in the analysis), so a heavy comp that showed 23 GB was held to 2 x 16, while 4 x 8 with 12 GB of cache each rendered faster and kept the CPU busier. It now reads how much of the RAM is cache and allows the rest plus at least 4 GB of cache (8 GB on a script of 60 nodes or more). On the 25 test scripts its picks stay as good: 3 % off the fastest on average.
