@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.5 alpha — 2026-11-08
+
+- Test this script: a right click on a setup offers Edit test, the window of Add test with its Processes, Threads and Cache; Save replaces the setup, which is then kept as one of your own. Not while a test runs.
+
 ## 0.87.4 alpha — 2026-11-08
 
 - Test this script: no "Fastest for this script…" line under the table any more; the colours in the table say which is fastest, and the line still goes into the saved table. A line shows only when something went wrong (a frame that did not arrive in the test folder, no setup that finished a frame).

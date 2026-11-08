@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.4 alpha"
+APP_VERSION = "0.87.5 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3427,6 +3427,8 @@ class ScriptTest(QtWidgets.QDialog):
             self.table.horizontalHeaderItem(col).setToolTip(tip)
         self.table.horizontalHeader().setSortIndicator(0, QtCore.Qt.AscendingOrder)  # the setups in their order to start with
         self.table.setSortingEnabled(True)  # a click on a column sorts by it, again the other way
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -3533,11 +3535,12 @@ class ScriptTest(QtWidgets.QDialog):
         if self.width() < min(wanted, room):
             self.resize(min(wanted, room), self.height())
 
-    def _add_setup(self):
-        """A small window: Processes, Threads and Cache of a setup of your own."""
-        n, t, c, cpu, ram = self.add_defaults
+    def _setup_window(self, title, button, values):
+        """A small window with Processes, Threads and Cache; the setup, or None when cancelled."""
+        n, t, c = values
+        cpu, ram = self.add_defaults[3:]
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Add test")
+        dialog.setWindowTitle(title)
         form = QtWidgets.QFormLayout(dialog)
         spins = []
         for name, hi, value, suffix in (("Processes", cpu, n, ""), ("Threads", cpu, t, ""), ("Cache", ram, c, " GB")):
@@ -3548,20 +3551,51 @@ class ScriptTest(QtWidgets.QDialog):
             form.addRow(name, spin)
             spins.append(spin)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Add")
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(button)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         accepted = dialog.exec() == QtWidgets.QDialog.Accepted
         setup = tuple(spin.value() for spin in spins)
         dialog.deleteLater()
-        if not accepted:
+        return setup if accepted else None
+
+    def _add_setup(self):
+        """Add test: a setup of your own, kept for next time."""
+        setup = self._setup_window("Add test", "Add", self.add_defaults[:3])
+        if setup is None:
             return
-        self.add_defaults = setup + (cpu, ram)
+        self.add_defaults = setup + self.add_defaults[3:]
         self.added.add(setup)
         self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
             self.setups = sorted(self.setups + [setup])
+        self._fill_table()
+
+    def _table_menu(self, pos):
+        """Right click on a setup: Edit test."""
+        item = self.table.itemAt(pos)
+        row = item.row() if item is not None else -1
+        first = self.table.item(row, self.C_SETUP) if row >= 0 else None
+        if first is None or first.data(SortItem.KEY + 1) is None:
+            return
+        index = first.data(SortItem.KEY + 1)
+        menu = QtWidgets.QMenu(self)
+        edit = menu.addAction("Edit test")
+        edit.setEnabled(self.b_add.isEnabled())  # not while a test runs
+        edit.triggered.connect(lambda: QtCore.QTimer.singleShot(0, lambda: self._edit_setup(index)))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _edit_setup(self, index):
+        """Edit test: Processes, Threads and Cache of a setup; it is kept as one of your own."""
+        old = self.setups[index]
+        setup = self._setup_window("Edit test", "Save", old)
+        if setup is None or setup == old:
+            return
+        self.added.discard(old)
+        self.added.add(setup)
+        self.main._save_setting("test_setups", sorted(self.added))
+        self.setups = sorted(set(x for x in self.setups if x != old) | {setup})
         self._fill_table()
 
     def _remove_setups(self):
