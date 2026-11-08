@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.88.4 alpha — 2026-11-08
+
+- A render no longer hangs with a full graphics card. On a heavy comp at 4 x 8 the card filled, Nuke fell back to the CPU and all four processes sat on one frame each for 8 minutes: one waited to be replaced after its chunk and the VRAM limit waited for that, but the chunk never ended. Now, with VRAM over the limit and no frame finished for 4 x the usual frame time (a minute at least), the process started last closes at once and its chunk goes back to the queue.
+- The VRAM limit tooltip says the process started last closes at 97 % (since 0.88.2), not the one taking the most.
+
 ## 0.88.3 alpha — 2026-11-08
 
 - After processes closed for RAM or VRAM again within 10 minutes, they come back after half the wait: 30, 60 and 150 s instead of 60, 120 and 300 (the first time still 5 s).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.88.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.88.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.88.3 alpha"
+APP_VERSION = "0.88.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2906,6 +2906,20 @@ class RenderManager:
                     self._vram_lowered_at = pct
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
+            stalled = self._vram_stalled(now)
+            if stalled and live > 1 and now - self._last_vram_kill > 30 and now - self._last_kill > 5:
+                # The card is full and no process finishes a frame: Nuke falls back to the CPU and they all wait. One waiting
+                # to be replaced after its chunk never gets there, and neither does one to close after its chunk.
+                running = [(e, w) for e in self.engines for w in e.workers.values()
+                           if w.gpu and w.state in ("loading", "idle", "busy")]
+                if len(running) > 1:
+                    e, w = self._close_first(running)
+                    e.note("!! VRAM %.0f %%: no frame finished for %.0f s, the card is full: %s closed now%s"
+                           % (pct, stalled, w.name, self._chunk_back(w)), "err")
+                    w.closed_why = "VRAM limit"
+                    e._kill(w, requeue=True, note="stopped")
+                    self._fell_vram()
+                    self._last_vram_kill = now
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
@@ -2936,6 +2950,23 @@ class RenderManager:
                         self._note_running("VRAM is %.0f %%: up to %d Nuke processes" % (pct, self.vram_cap))
             else:
                 self._vram_ok_since = None
+
+    def _vram_stalled(self, now):
+        """Seconds since any GPU process of a running render finished a frame, when that is far longer than a frame takes
+        (4 x the usual, at least a minute); else 0."""
+        ends, secs = [], []
+        for e in self.engines:
+            if e.state != "rendering":
+                continue
+            for w in e.workers.values():
+                if w.gpu and w.state in ("loading", "idle", "busy"):
+                    ends.append(w.frame_ends[-1] if getattr(w, "frame_ends", None) else w.spawned)
+                    secs += w.frame_secs[-10:]
+        if not ends:
+            return 0.0
+        wait = max(60.0, 4 * statistics.median(secs)) if secs else 180.0
+        idle = now - max(ends)
+        return idle if idle > wait else 0.0
 
     def _more_fit_vram(self, pct, limit, one):
         """How many more Nuke processes fit on the graphics card: the % left under the limit, less a margin and what the
@@ -5507,7 +5538,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "the process that grew the most gets a fresh Nuke after its chunk.\n"
             "Over the limit, fewer processes, like the RAM limit: the last one started closes first (after its chunk,\n"
             "or now if it is still opening the script), one at a time; places come back when one more fits.\n"
-            "About to spill into the RAM (97 %), the one taking the most VRAM closes at once.\n"
+            "About to spill into the RAM (97 %), the last one started closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
