@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.89 alpha — 2026-11-08
+
+- VRAM per process (Settings > Performance, off by default): a Nuke process holding more VRAM than this clears its Blink cache after its frame, the VRAM Nuke keeps but no longer needs (on one comp it grew 1.5 GB a frame, to 15 GB; clearing took it from 16.3 GB to 7.7). It goes on, nothing restarts. It costs time, so it is off: a heavy comp at 4 x 8 rendered in 11:49 with a 5 GB cap against 8:32 without. Not the RAM cache: clearing that frees no VRAM and made the next frame 8 x slower.
+- Test this script: Add test and Edit test have VRAM per process too (off by default), so a setup can be tried with and without it side by side; the table shows it ("4 x 8, cache 13 GB, VRAM 6 GB"), and Use these settings sets it in Settings with the rest.
+
 ## 0.88.4 alpha — 2026-11-08
 
 - A render no longer hangs with a full graphics card. On a heavy comp at 4 x 8 the card filled, Nuke fell back to the CPU and all four processes sat on one frame each for 8 minutes: one waited to be replaced after its chunk and the VRAM limit waited for that, but the chunk never ended. Now, with VRAM over the limit and no frame finished for 4 x the usual frame time (a minute at least), the process started last closes at once and its chunk goes back to the queue.

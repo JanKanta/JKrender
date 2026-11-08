@@ -60,6 +60,21 @@ def execute(writes, first, last):
         nuke.executeMultiple(writes, ((first, last, 1),))
 
 
+def clear_vram():
+    """JKrender put the flag down: this Nuke holds more VRAM than VRAM per process. Its Blink cache goes: VRAM Nuke
+    keeps but no longer needs. Not the RAM cache: clearing that made the next frame 8 x slower."""
+    flag = os.environ.get("JKRENDER_CLEAR_FLAG")
+    if not flag or not os.path.exists(flag):
+        return
+    try:
+        os.remove(flag)
+        nuke.clearBlinkCache()
+        print("JKrender: over VRAM per process, Blink cache cleared")
+        sys.stdout.flush()
+    except Exception as exc:
+        print("JKrender: could not clear the Blink cache: %s" % exc)
+
+
 def render_frames(writes, chunk, frames):
     for frame in frames:
         active = [w for w in writes if in_limit(w, frame)]
@@ -80,6 +95,7 @@ def render_frames(writes, chunk, frames):
                 time.sleep(2 * attempt)
         say("FRAME", frame, "%.3f" % (time.time() - started))
         say_memory()
+        clear_vram()
     say("CHUNK", chunk)
 
 

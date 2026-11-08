@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.88.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.88.4 alpha"
+APP_VERSION = "0.89 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -72,7 +72,7 @@ SLOW_START = 15  # seconds of Nuke starting before the script opens that are wor
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
-                    "vram_guard": True, "vram_limit": 95,
+                    "vram_guard": True, "vram_limit": 95, "vram_cap": 0,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True}
@@ -1675,6 +1675,14 @@ class RenderEngine:
         kwargs["env"]["JKRENDER_ARGS"] = json.dumps(self._worker_args())
         if self.job.get("test_out"):
             kwargs["env"]["JKRENDER_TEST_OUT"] = self.job["test_out"]
+        # VRAM per process: JKrender puts this file down when the process is over it; after its frame the process
+        # clears its Blink cache, the VRAM Nuke keeps but no longer needs
+        clear_flag = self.log_dir / ("clear_vram_%02d.flag" % wid)
+        try:
+            clear_flag.unlink()
+        except OSError:
+            pass
+        kwargs["env"]["JKRENDER_CLEAR_FLAG"] = str(clear_flag)
         script_dir = Path(self.job.get("script") or "").parent
         if script_dir.is_dir():
             kwargs["cwd"] = str(script_dir)
@@ -1687,6 +1695,7 @@ class RenderEngine:
             self.state = "failed"
             return None
         w = Worker(wid, proc, log_path, *self._process_size())
+        w.clear_flag = clear_flag
         w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
         w.gpu = use_gpu
         if old:
@@ -2968,6 +2977,32 @@ class RenderManager:
         idle = now - max(ends)
         return idle if idle > wait else 0.0
 
+    def _vram_cap(self):
+        """VRAM per process (Settings, off by default): a process over it clears its Blink cache after its frame. Nuke
+        keeps VRAM it no longer needs and grows frame after frame (a comp: 1.5 GB a frame, to 15 GB); clearing gives it
+        back at once (16.3 GB to 7.7). It costs time: a heavy comp at 4 x 8 rendered 11:49 with a 5 GB cap against 8:32
+        without, so it is a thing to try, in Test this script first."""
+        cap = float(self.settings.get("vram_cap", 0) or 0)
+        now = time.time()
+        if cap <= 0 or not self.settings.get("use_gpu", True) or now - getattr(self, "_cap_checked", 0) < 2:
+            return
+        self._cap_checked = now
+        for e in self.engines:
+            for w in e.workers.values():
+                flag = getattr(w, "clear_flag", None)
+                if flag is None or not w.gpu or w.state != "busy":
+                    continue
+                held = self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024.0 ** 3
+                if held > cap and not flag.exists():
+                    try:
+                        flag.write_text("%.2f" % held)
+                    except OSError:
+                        continue
+                    w.vram_clears = getattr(w, "vram_clears", 0) + 1
+                    if w.vram_clears == 1:
+                        e.note("%s holds %.1f GB of VRAM, over %.0f GB a process: it clears its Blink cache after its frame"
+                               % (w.name, held, cap))
+
     def _more_fit_vram(self, pct, limit, one):
         """How many more Nuke processes fit on the graphics card: the % left under the limit, less a margin and what the
         processes still starting are going to take, split by the size of one process (what they took after their first chunk)."""
@@ -3046,6 +3081,7 @@ class RenderManager:
         self._vram_idle_update()
         self._ram_guard()
         self._vram_guard()
+        self._vram_cap()
         changed = self._start_next() or changed
         self._admit()
         self._allocate()
@@ -3493,7 +3529,7 @@ class ScriptTest(QtWidgets.QDialog):
         most = max(1, min(cpu // cls.MIN_THREADS, int(free_gb // (BESIDE_CACHE + cls.MIN_CACHE))))
         fewest = -(-cpu // cls.MAX_THREADS)  # past 64 threads: enough processes to use every group
         counts = [fewest - 1 + n for n in cls.spread(most - fewest + 1, cls.TESTS)] if most >= fewest else [fewest]
-        return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE))) for n in counts]
+        return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE)), 0) for n in counts]
 
     def _free_gb(self):
         """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
@@ -3529,9 +3565,10 @@ class ScriptTest(QtWidgets.QDialog):
         self.resize(1400, 580)
         cpu = os.cpu_count() or 8
         m = window.manager
-        cur = (m.total, m.threads, m.ram)
+        cur = (m.total, m.threads, m.ram, int(window.settings.get("vram_cap", 0) or 0))
         self.current = cur
-        self.added = {tuple(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
+        # your own, kept for next time; older ones have no VRAM per process
+        self.added = {tuple(list(x) + [0] * (4 - len(x)))[:4] for x in window.settings.get("test_setups", [])}
         self.setups = sorted(set(self.plan(cpu, self._free_gb())) | self.added)
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
@@ -3610,7 +3647,8 @@ class ScriptTest(QtWidgets.QDialog):
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
         self.l_frames = label("")
         self.s_frames.valueChanged.connect(self._frames_note)
-        self.add_defaults = (m.total, m.threads, m.ram, cpu, ram)  # what Add test starts from, and its limits
+        card = int(round(machine_info().get("vram_gb") or 48))
+        self.add_defaults = cur + (cpu, ram, card)  # what Add test starts from, and its limits
         for widget in (label("Frames per setup"), self.s_frames, self.l_frames):  # top right, after Add test and Remove test
             top.addWidget(widget)
         buttons = QtWidgets.QHBoxLayout()
@@ -3639,9 +3677,9 @@ class ScriptTest(QtWidgets.QDialog):
         self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(self.setups))
-        for i, (n, t, c) in enumerate(self.setups):
-            item = SortItem("%d x %d, cache %d GB" % (n, t, c))
-            item.setData(SortItem.KEY, n * 10000 + t * 100 + c)
+        for i, (n, t, c, v) in enumerate(self.setups):
+            item = SortItem("%d x %d, cache %d GB%s" % (n, t, c, ", VRAM %d GB" % v if v else ""))
+            item.setData(SortItem.KEY, n * 1000000 + t * 10000 + c * 100 + v)
             item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
             self.table.setItem(i, self.C_SETUP, item)
             self._cell(i, self.C_STATE, "waiting")
@@ -3670,18 +3708,22 @@ class ScriptTest(QtWidgets.QDialog):
             self.resize(min(wanted, room), self.height())
 
     def _setup_window(self, title, button, values):
-        """A small window with Processes, Threads and Cache; the setup, or None when cancelled."""
-        n, t, c = values
-        cpu, ram = self.add_defaults[3:]
+        """A small window with Processes, Threads, Cache and VRAM per process; the setup, or None when cancelled."""
+        n, t, c, v = values
+        cpu, ram, card = self.add_defaults[4:]
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(title)
         form = QtWidgets.QFormLayout(dialog)
         spins = []
-        for name, hi, value, suffix in (("Processes", cpu, n, ""), ("Threads", cpu, t, ""), ("Cache", ram, c, " GB")):
+        for name, lo, hi, value, suffix in (("Processes", 1, cpu, n, ""), ("Threads", 1, cpu, t, ""), ("Cache", 1, ram, c, " GB"),
+                                            ("VRAM per process", 0, card, v, " GB")):
             spin = QtWidgets.QSpinBox()
-            spin.setRange(1, hi)
+            spin.setRange(lo, hi)
             spin.setValue(value)
             spin.setSuffix(suffix)
+            if lo == 0:
+                spin.setSpecialValueText("off")
+                spin.setToolTip("Over it, a process clears its Blink cache after its frame. Off: nothing is cleared.")
             form.addRow(name, spin)
             spins.append(spin)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -3706,10 +3748,10 @@ class ScriptTest(QtWidgets.QDialog):
 
     def _add_setup(self):
         """Add test: a setup of your own, kept for next time."""
-        setup = self._setup_window("Add test", "Add", self.add_defaults[:3])
+        setup = self._setup_window("Add test", "Add", self.add_defaults[:4])
         if setup is None:
             return
-        self.add_defaults = setup + self.add_defaults[3:]
+        self.add_defaults = setup + self.add_defaults[4:]
         self.added.add(setup)
         self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
@@ -3864,9 +3906,9 @@ class ScriptTest(QtWidgets.QDialog):
             self._finish()
             return
         self.index = self.queue.pop(0)
-        n, t, c = self.setups[self.index]
+        n, t, c, v = self.setups[self.index]
         settings = dict(self.main.settings)
-        settings.update(processes=n, threads=t, ram=c, max_renders=1, _test=True)
+        settings.update(processes=n, threads=t, ram=c, vram_cap=v, max_renders=1, _test=True)
         settings.pop("script_ram", None)  # what the script took with another cache would keep processes out
         root = TEST_DIR / ("%s_%dx%d_%d" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c))
         out = root / "out"
@@ -4125,10 +4167,11 @@ class ScriptTest(QtWidgets.QDialog):
             pass
 
     def use(self):
-        n, t, c = self.best
+        n, t, c, v = self.best
         self.main.s_workers.setValue(n)
         self.main.s_threads.setValue(t)
         self.main.s_ram.setValue(c)
+        self.main.s_vram_cap.setValue(v)
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
@@ -5533,6 +5576,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_vram.setEnabled(self.c_vram.isChecked() and self.c_gpu.isChecked())
         self.c_vram.setEnabled(self.c_gpu.isChecked())
         self.c_gpu.toggled.connect(lambda v: (self.c_vram.setEnabled(v), self.s_vram.setEnabled(v and self.c_vram.isChecked())))
+        self.s_vram_cap = QtWidgets.QSpinBox()
+        self.s_vram_cap.setRange(0, 256)
+        self.s_vram_cap.setSuffix(" GB")
+        self.s_vram_cap.setSpecialValueText("off")
+        self.s_vram_cap.setValue(int(self.settings.get("vram_cap", 0) or 0))
+        self.s_vram_cap.valueChanged.connect(lambda v: self._save_setting("vram_cap", v))
+        self.s_vram_cap.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_vram_cap.setEnabled)
         row(perf, "VRAM limit", [self.c_vram, self.s_vram],
             "Every Nuke process uses the GPU. With room on the card nothing restarts. Close to the limit\n"
             "the process that grew the most gets a fresh Nuke after its chunk.\n"
@@ -5541,6 +5592,11 @@ class MainWindow(QtWidgets.QMainWindow):
             "About to spill into the RAM (97 %), the last one started closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
+        row(perf, "VRAM per process", [self.s_vram_cap],
+            "Off by default. A Nuke process holding more VRAM than this clears its Blink cache after its frame: the VRAM\n"
+            "Nuke keeps but no longer needs, which grows frame after frame on some scripts (one comp: 1.5 GB a frame, to 15 GB).\n"
+            "Clearing gives it back at once, but the next frames take longer (a heavy comp: 11:49 instead of 8:32).\n"
+            "Try it in Test this script first: Add test has the same field.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
