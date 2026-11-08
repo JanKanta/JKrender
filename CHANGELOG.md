@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.6 alpha — 2026-11-08
+
+- Test this script: Winner, written last, also gets the width it needs.
+
 ## 0.89.5 alpha — 2026-11-08
 
 - Test this script: the columns grow with what they show again. The last column stretching with the window counted as sizing a column by hand, which stopped them growing, so the times came out cut ("1:09 (24 of 2…").
