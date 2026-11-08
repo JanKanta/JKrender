@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.3 alpha — 2026-11-08
+
+- Test this script: every setup of a round renders the same frames, as many as the setup with the most processes needs (Round 1: 3 a process of that one, Round 2: Frames per setup and at least 4 a process of the finalist with the most). Before, a setup with more processes rendered more frames (1 x 32 12, 6 x 6 18), which was confusing and compared them on different frames.
+
 ## 0.87.2 alpha — 2026-11-08
 
 - Test this script: the column Average processes is called Avg processes. Columns can be made wider or narrower and dragged elsewhere; they grow with what they show until you size one yourself, and stay as you left them the next time the window opens.

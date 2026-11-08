@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.2 alpha"
+APP_VERSION = "0.87.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3581,7 +3581,8 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_stop.setEnabled(not on)
 
     def _wanted(self, processes):
-        """How many frames a setup renders: the quick round a few a process, the final Frames per setup and at least 4 a process."""
+        """How many frames a setup of so many processes needs: Round 1 a few a process, Round 2 Frames per setup and at least 4
+        a process. Every setup of a round renders the most any of them needs, the same frames."""
         if self.round == "quick":
             return max(self.QUICK_FRAMES * processes, 6)
         return max(self.s_frames.value(), 4 * processes)
@@ -3605,7 +3606,8 @@ class ScriptTest(QtWidgets.QDialog):
         stretches at the same places. A shot with no more frames than that: all of them."""
         frames = self.all_frames
         total = len(frames)
-        count = self._wanted(processes)
+        # the same frames for every setup of the round: as many as the one with the most processes needs
+        count = max(self._wanted(p) for p in (getattr(self, "round_procs", None) or [processes]))
         if count >= total:
             return list(frames)
         places = max(1, min(self.PLACES, total // 3))
@@ -3666,6 +3668,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.results, self.quick = {}, {}
         self.round = "quick"  # every setup a little, then the best ones with all the frames
         self.queue = list(range(len(self.setups)))
+        self.round_procs = [k[0] for k in self.setups]
         self.index = -1
         self.slow_in_a_row = 0
         self._next()
@@ -3712,6 +3715,7 @@ class ScriptTest(QtWidgets.QDialog):
         top = self.quick[rated[0]]["rate"]
         final = [k for i, k in enumerate(rated) if i < self.FINALISTS or self.quick[k]["rate"] >= top * (1 - self.CLOSE)]
         self.round = "final"
+        self.round_procs = [k[0] for k in final]
         self.slow_in_a_row = 0
         for i, k in enumerate(self.setups):
             if k in final:
