@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.85 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.86 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.85 alpha"
+APP_VERSION = "0.86 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3337,6 +3337,18 @@ class Gantt(QtWidgets.QWidget):
         QtWidgets.QToolTip.hideText()
 
 
+class SortItem(QtWidgets.QTableWidgetItem):
+    """A cell that sorts by its key (a number) when it has one; cells without one go last."""
+
+    KEY = QtCore.Qt.UserRole + 1
+
+    def __lt__(self, other):
+        a, b = self.data(self.KEY), other.data(self.KEY)
+        if a is None or b is None:
+            return (a is not None) > (b is not None) if (a is None) != (b is None) else self.text() < other.text()
+        return a < b
+
+
 class ScriptTest(QtWidgets.QDialog):
     """Test this script: frames from the middle of the render, rendered with each Processes x Threads x
     Cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
@@ -3399,15 +3411,18 @@ class ScriptTest(QtWidgets.QDialog):
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "Renders frames spread over this render with each setup below: first a few frames each (quick round), then\n"
-            "the fastest ones again with all the frames (final round). Frames per minute once the processes are going: each\n"
+            "Renders frames spread over this render with each setup below: first a few frames each (Round 1), then\n"
+            "the fastest ones again with all the frames (Round 2). Frames per minute once the processes are going: each\n"
             "process's first frame and the start are left out, as in a long render. The frames go to a test folder and are\n"
             "deleted; your render's files stay as they are. Nothing else should render meanwhile.")
         intro.setObjectName("dim")
         lay.addWidget(intro)
-        self.table = QtWidgets.QTableWidget(len(self.setups), 11)
-        self.table.setHorizontalHeaderLabels(["Processes x threads", "Ran", "Took", "Frames / min", "Frame", "CPU avg", "RAM avg", "GPU avg",
-                                              "VRAM avg", "Fell", "State"])
+        self.table = QtWidgets.QTableWidget(len(self.setups), len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
+        for col, (_, tip) in enumerate(self.COLUMNS):
+            self.table.horizontalHeaderItem(col).setToolTip(tip)
+        self.table.horizontalHeader().setSortIndicator(0, QtCore.Qt.AscendingOrder)  # the setups in their order to start with
+        self.table.setSortingEnabled(True)  # a click on a column sorts by it, again the other way
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -3434,7 +3449,7 @@ class ScriptTest(QtWidgets.QDialog):
         edit = QtWidgets.QHBoxLayout()
         wanted = int(window.settings.get("test_frames", self.FRAMES))
         self.s_frames = box(1, 9999, wanted)  # more than the shot has stays set: it says so and renders them all
-        self.s_frames.setToolTip("Frames each setup renders in the final round: stretches of frames in a row at the same 6 places spread\n"
+        self.s_frames.setToolTip("Frames each setup renders in Round 2: stretches of frames in a row at the same 6 places spread\n"
                                  "over the whole shot for every setup; at least 4 per process, so a setup with many gets more.\n"
                                  "A shot with no more frames than that: all of them, and it says so.")
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
@@ -3477,12 +3492,16 @@ class ScriptTest(QtWidgets.QDialog):
         self._fill_table()
 
     def _fill_table(self):
+        self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(self.setups))
         for i, (n, t, c) in enumerate(self.setups):
-            mark = "  (yours)" if (n, t, c) == self.current else ("  (added)" if (n, t, c) in self.added else "")
-            self._cell(i, 0, "%d x %d, cache %d GB%s" % (n, t, c, mark))
-            self._cell(i, 10, "waiting")
+            item = SortItem("%d x %d, cache %d GB" % (n, t, c))
+            item.setData(SortItem.KEY, n * 10000 + t * 100 + c)
+            item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
+            self.table.setItem(i, self.C_SETUP, item)
+            self._cell(i, self.C_STATE, "waiting")
+        self.table.setSortingEnabled(True)
         self._fit_columns()
 
     def _fit_columns(self):
@@ -3521,6 +3540,16 @@ class ScriptTest(QtWidgets.QDialog):
         return max(self.s_frames.value(), 4 * processes)
 
     PLACES = 6  # places spread over the shot, the same for every setup
+    COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
+               ("Running", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
+               ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
+               ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
+               ("Frames / min", "Once the processes are going: each process's first frame and the start left out. From round 2 where it ran"),
+               ("Frame", "Time of one frame in one process"),
+               ("CPU avg", "CPU use and the threads it means"), ("RAM avg", "RAM use of the PC"), ("GPU avg", "Graphics card use"),
+               ("VRAM avg", "Graphics card memory"), ("Fell", "Processes that crashed or were closed for RAM or VRAM"),
+               ("Slower", "How much longer the whole shot would take than with the fastest setup"), ("State", ""))
+    C_SETUP, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_SLOWER, C_STATE = range(13)
 
     def _frames_for(self, processes):
         """Frames from the same places spread over the whole shot for every setup, a stretch of frames in a row at each: a shot
@@ -3552,12 +3581,25 @@ class ScriptTest(QtWidgets.QDialog):
             self.l_frames.setText("of %d, from %d places spread over the whole shot" % (total, max(1, min(self.PLACES, total // 3))))
             self.l_frames.setStyleSheet("")
 
-    def _cell(self, row, col, text):
+    def _row(self, index):
+        """The table row of setup number index: sorting moves the rows."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, self.C_SETUP)
+            if item is not None and item.data(SortItem.KEY + 1) == index:
+                return row
+        return index
+
+    def _cell(self, index, col, text, key=None):
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)  # or the row moves away while it is written
+        row = self._row(index)
         item = self.table.item(row, col)
         if item is None:
-            item = QtWidgets.QTableWidgetItem()
+            item = SortItem()
             self.table.setItem(row, col, item)
         item.setText(text)
+        item.setData(SortItem.KEY, key)
+        self.table.setSortingEnabled(sorting)
 
     def start(self):
         if self.src.movie:
@@ -3585,7 +3627,7 @@ class ScriptTest(QtWidgets.QDialog):
     def _next(self):
         while (self.round == "quick" and self.queue and self.slow_in_a_row >= self.GIVE_UP
                and self.setups[self.queue[0]] != self.current and self.setups[self.queue[0]] not in self.added):
-            self._cell(self.queue.pop(0), 10, "left out: slower")
+            self._cell(self.queue.pop(0), self.C_STATE, "left out: slower")
         if not self.queue and self.round == "quick":
             self._to_final()
         if not self.queue:
@@ -3612,7 +3654,7 @@ class ScriptTest(QtWidgets.QDialog):
                     "cpu": [], "ram": [], "ram_gb": [], "gpu": [], "vram": [], "vram_gb": [], "busy": [], "stopping": False}
         if psutil:
             psutil.cpu_percent(None)  # from here on
-        self._cell(self.index, 10, "rendering")
+        self._cell(self.index, self.C_STATE, "%s: starting" % self._round_name())
 
     def _to_final(self):
         """After the quick round: the fastest setups again with all the frames; the rest are left as the quick round had them."""
@@ -3627,10 +3669,10 @@ class ScriptTest(QtWidgets.QDialog):
         for i, k in enumerate(self.setups):
             if k in final:
                 self.queue.append(i)
-                self._cell(i, 10, "final round: waiting")
+                self._cell(i, self.C_STATE, "Round 2: waiting")
             elif k in self.quick:
                 self.results[k] = self.quick[k]
-                self._cell(i, 10, "quick round only: slower")
+                self._cell(i, self.C_STATE, "Round 1 only: slower")
 
     @staticmethod
     def steady(workers):
@@ -3714,28 +3756,76 @@ class ScriptTest(QtWidgets.QDialog):
                 pass
         shutil.rmtree(r["root"], ignore_errors=True)
 
+    def _round_name(self):
+        return "Round 1" if self.round == "quick" else "Round 2"
+
     def _show(self, i, r, rate, done, final=False):
         busy = r["busy"][len(r["busy"]) // 3:] or r["busy"]  # once it has settled
-        self._cell(i, 1, "%.1f" % (sum(busy) / float(len(busy))) if busy else "")
-        # the whole render of these frames, from the start with the script loads; when the limit ended it, how far it got
-        took = fmt_secs(r.get("took", time.time() - r["t0"]))
+        running = sum(busy) / float(len(busy)) if busy else None
+        self._cell(i, self.C_RUN, "%.1f" % running if running is not None else "", running)
+        # this round of this setup, from the start with the script loads; when the limit ended it, how far it got
+        took = r.get("took", time.time() - r["t0"])
+        text = fmt_secs(took)
         if final:
-            took += "  (%d of %d%s)" % (done, len(r["frames"]), ", start %.0f s" % r["start"] if r.get("start") is not None else "")
-        self._cell(i, 2, took)
-        self._cell(i, 3, "%.1f" % rate if rate is not None else "")
+            text += "  (%d of %d%s)" % (done, len(r["frames"]), ", start %.0f s" % r["start"] if r.get("start") is not None else "")
+        self._cell(i, self.C_R1 if self.round == "quick" else self.C_R2, text, took)
+        self._cell(i, self.C_RATE, "%.1f" % rate if rate is not None else "", rate)
         if final:
-            self._cell(i, 4, "%.1f s" % r["frame"] if r.get("frame") else "")
+            self._cell(i, self.C_FRAME, "%.1f s" % r["frame"] if r.get("frame") else "", r.get("frame") or None)
         average = lambda v: sum(v) / float(len(v))
         cpus = os.cpu_count() or 1
-        self._cell(i, 5, "%.0f %% · %.1f threads" % (average(r["cpu"]), average(r["cpu"]) * cpus / 100.0) if r["cpu"] else "")
-        self._cell(i, 6, "%.0f %% · %.1f GB" % (average(r["ram"]), average(r["ram_gb"])) if r["ram"] else "")
-        self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
-        self._cell(i, 8, "%.0f %% · %.1f GB" % (average(r["vram"]), average(r["vram_gb"])) if r["vram"] else "")
-        self._cell(i, 9, str(r.get("fell", "")) if final else "")
-        stage = "quick round" if self.round == "quick" else "final round"
-        self._cell(i, 10, ("%s: %s" % (stage, "stopped, slower" if r.get("slower") else "done")) if final
-                   else "%s: rendering, %d frames" % (stage, done))
+        if r["cpu"]:
+            self._cell(i, self.C_CPU, "%.0f %% · %.1f threads" % (average(r["cpu"]), average(r["cpu"]) * cpus / 100.0), average(r["cpu"]))
+        if r["ram"]:
+            self._cell(i, self.C_RAM, "%.0f %% · %.1f GB" % (average(r["ram"]), average(r["ram_gb"])), average(r["ram"]))
+        if r["gpu"]:
+            self._cell(i, self.C_GPU, "%.0f %%" % average(r["gpu"]), average(r["gpu"]))
+        if r["vram"]:
+            self._cell(i, self.C_VRAM, "%.0f %% · %.1f GB" % (average(r["vram"]), average(r["vram_gb"])), average(r["vram"]))
+        if final:
+            self._cell(i, self.C_FELL, str(r.get("fell", "")), r.get("fell"))
+        self._cell(i, self.C_STATE, ("%s: %s" % (self._round_name(), "stopped, slower" if r.get("slower") else "done")) if final
+                   else "%s: rendering, %d frames" % (self._round_name(), done))
         self._fit_columns()
+
+    def _rank(self, best):
+        """Slower: how much longer the whole shot would take than with the fastest, in time and per cent; the fastest and the
+        next one coloured."""
+        frames = len(self.all_frames)
+        top = self.results[best]["rate"]
+        order = sorted((k for k in self.results if self.results[k]["rate"]), key=lambda k: -self.results[k]["rate"])
+        if best in order:
+            order.remove(best)
+        order.insert(0, best)
+        colours = {order[0]: QtGui.QColor(C["done"])}
+        if len(order) > 1:
+            colours[order[1]] = QtGui.QColor(C["accent"])
+        for i, k in enumerate(self.setups):
+            r = self.results.get(k)
+            if r is None:
+                continue
+            rate = r["rate"]
+            if rate:
+                self._cell(i, self.C_RATE, "%.1f" % rate, rate)
+            if k == best:
+                self._cell(i, self.C_SLOWER, "fastest", 0.0)
+            elif rate:
+                extra = frames / rate * 60 - frames / top * 60
+                self._cell(i, self.C_SLOWER, "+%s  (+%.0f %%)" % (fmt_secs(max(0.0, extra)), max(0.0, (top / rate - 1) * 100)), extra)
+            else:
+                self._cell(i, self.C_SLOWER, "no frame", 1e12)
+            colour = colours.get(k)
+            row = self._row(i)
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item is None:
+                    continue
+                if colour is not None:
+                    tint = QtGui.QColor(colour)
+                    tint.setAlpha(70)
+                    item.setBackground(tint)
+                else:
+                    item.setBackground(QtGui.QBrush())
 
     def stop(self):
         self.timer.stop()
@@ -3744,7 +3834,7 @@ class ScriptTest(QtWidgets.QDialog):
             if r["engine"].state in ("rendering", "paused", "finishing", "waiting"):
                 r["engine"].stop("Test stopped")
             self._drop(r)
-            self._cell(self.index, 10, "stopped")
+            self._cell(self.index, self.C_STATE, "stopped")
             self.run = None
         self._idle(True)
         for k, v in getattr(self, "quick", {}).items():
@@ -3768,6 +3858,7 @@ class ScriptTest(QtWidgets.QDialog):
             return
         best = max(whole, key=lambda k: self.results[k]["rate"])
         self.best = best
+        self._rank(best)
         rate = self.results[best]["rate"]
         mine = self.results.get(self.current)
         if best == self.current:

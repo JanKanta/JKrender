@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.86 alpha — 2026-11-08
+
+- Test this script's table: the quick and the final round are Round 1 and Round 2, each with its own column (how long it took, the frames done and the start) instead of one Took. A new column Slower says how much longer the whole shot would take than with the fastest setup, in time and per cent.
+- The fastest setup is green and the next one orange. A click on a column sorts by it (numbers as numbers), a second click the other way; the test goes on writing into the right rows.
+- Ran is called Running (processes rendering at once on average), and every column has a tooltip. The setups no longer say (yours) or (added).
+
 ## 0.85 alpha — 2026-11-08
 
 - Test this script takes its frames from 6 places spread over the whole shot, from its first frame to its last, instead of the middle: a shot heavier at its start or end counts as it is. Every setup renders the same places, so they are compared on the same frames; at each a stretch of frames in a row (at least 2), as a render hands a process a chunk, so a node that looks at other frames is not always starting cold. A setup that needs more frames gets longer stretches.
