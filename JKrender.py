@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.6 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.7 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.6 alpha"
+APP_VERSION = "0.87.7 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -71,7 +71,7 @@ JKR_LINE = re.compile(r"JKR (BOOT|READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b 
 SLOW_START = 15  # seconds of Nuke starting before the script opens that are worth a warning
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "resume_after_crash": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
                     "slate": True, "slate_frame": 1000,
@@ -5286,10 +5286,6 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Start next render when one ends", [self.c_next],
             "When a render finishes, the next render still waiting to be started starts by itself, in the order of the\n"
             "cards, and so on. A render you stopped stays stopped and does not start the next one.")
-        self.c_resume = toggle("resume_after_crash", False)
-        row(gen, "Go on after a crash", [self.c_resume],
-            "If JKrender went down while rendering, its cards come back the next time it opens, with what is on disk counted.\n"
-            "On: the renders that were going start again by themselves. Off: they wait for Render.")
         self.c_frames = toggle("check_frames", True)
         row(gen, "Check frames as they render", [self.c_frames],
             "Each frame right after it renders: is the file there, not empty, whole and readable, and is it far smaller than the rest.\n"
@@ -5576,7 +5572,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_resume, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -7465,10 +7461,6 @@ def main():
     if missing:
         win.engine.note("!! %d render(s) from before the crash could not come back: their folders are gone" % missing, "err")
     win.select(win.manager.engines[0])
-    going = [e for e in going if e in win.manager.engines]
-    if going and win.settings.get("resume_after_crash", False):
-        for e in going:
-            win.manager.request_start(e)
     if not alone:
         win.listen()
     win.show()

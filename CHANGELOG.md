@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.7 alpha — 2026-11-08
+
+- Go on after a crash is gone from Settings > General. After a crash the cards still come back the next time JKrender opens, with what is on disk counted; a render that was going waits for Render.
+
 ## 0.87.6 alpha — 2026-11-08
 
 - Test this script: the column Slower is called Winner.

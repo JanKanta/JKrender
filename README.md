@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.87.6 alpha.** It works in tests; expect rough edges.
+**Version 0.87.7 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -21,7 +21,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   With **Start next render when one ends** (Settings > General, off by default), the next card not yet started starts by itself when a render
   finishes or fails. A render you stopped stays stopped and starts nothing.
 - **Render asks before it clears the cache of open Nukes.** With a Nuke open, Render asks whether it should free its buffers, playback cache and Blink cache, so the render has the memory. The render starts either way, and No is the default.
-  The disk cache stays. Resume, the next render starting by itself and a render resuming after a crash clear nothing. A Nuke has to be restarted once after an update to take part.
+  The disk cache stays. Resume, the next render starting by itself clear nothing. A Nuke has to be restarted once after an update to take part.
 - **Output check.**
   - Image sequences, as each frame renders or with Check frames: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames. Settings > General can turn the automatic check off.
   - Pixels, when a render opens, when it ends or with Check pixels: black, empty or one-colour frames, frames exactly the same as another anywhere in the sequence, and a size, channels or bit depth unlike the rest, in EXR, PNG, JPEG, TIFF and DPX; in EXR also NaN and inf, and the compression. Other formats: only frames that are the same file. In the background, it only reports, and Render stops the check at opening (Settings > General, both on by default).
@@ -60,8 +60,8 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   one process of the size seen this run (before that, its cache + 4 GB), and there must be room in the VRAM. They come back one at a time,
   each after the one before has rendered a frame. After an overload the next waits 5 s and its memory has to stay free for 5 s, then 60, 120 and 300 s if it happens again within 10 minutes. Meanwhile the State column of the System table says in short what it waits for, like wait: RAM 99 % / 95 %.
 - **After a crash.** If JKrender goes down, its cards come back the next time it opens (the next render sent from Nuke).
-  What is on disk counts, and Nuke processes left behind are ended. A render that was going waits for Render, unless
-  **Go on after a crash** (Settings > General, off by default) is on. Closing the window properly brings nothing back.
+  What is on disk counts, and Nuke processes left behind are ended. A render that was going waits for Render.
+  Closing the window properly brings nothing back.
 
 ## Files
 
