@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.83 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.84 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.83 alpha"
+APP_VERSION = "0.84 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1013,6 +1013,7 @@ class Worker:
         self.frames_done = 0
         self.frames_here = 0  # by this very Nuke; frames_done and frame_secs go on from the one it replaced
         self.frame_secs = []
+        self.frame_ends = []  # when this very Nuke finished each frame (time.time()), for Test this script
         self.segments = []  # [kind, label, t0, t1 or None, state]
         self.tail = collections.deque(maxlen=200)
         self.log = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)  # line by line: readable while it runs
@@ -1953,6 +1954,7 @@ class RenderEngine:
             w.frames_done += 1
             w.frames_here += 1
             w.frame_secs.append(secs)
+            w.frame_ends.append(now)
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
             fr = self.frames.get(f)
@@ -3342,7 +3344,11 @@ class ScriptTest(QtWidgets.QDialog):
     Nothing changes unless you press it. The frames go to a test folder, deleted after each setup; the render's own
     files stay as they are."""
 
-    LIMIT = 360  # seconds a setup may take; a slow one is measured on the frames it got done
+    LIMIT = 360  # seconds a setup may take in the final round; a slow one is measured on the frames it got done
+    QUICK_LIMIT = 180  # and in the quick round
+    QUICK_FRAMES = 3  # per process in the quick round: the first is left out of the rate, so two count
+    FINALISTS = 2  # setups the quick round sends to the final, with any within CLOSE of the best
+    CLOSE = 0.05
     # Once a setup has rendered the frames, one that takes this much longer cannot win and stops. After two like that
     # in a row the setups with still more processes are left out: each has less cache and fewer threads
     # (a heavy comp: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
@@ -3393,9 +3399,10 @@ class ScriptTest(QtWidgets.QDialog):
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "Renders frames from the middle of this render with each setup below, at most %d minutes each, and measures\n"
-            "frames per minute. The frames go to a test folder and are deleted; your render's files stay as they are.\n"
-            "Nothing else should render meanwhile." % (self.LIMIT // 60))
+            "Renders frames from the middle of this render with each setup below: first a few frames each (quick round), then\n"
+            "the fastest ones again with all the frames (final round). Frames per minute once the processes are going: each\n"
+            "process's first frame and the start are left out, as in a long render. The frames go to a test folder and are\n"
+            "deleted; your render's files stay as they are. Nothing else should render meanwhile.")
         intro.setObjectName("dim")
         lay.addWidget(intro)
         self.table = QtWidgets.QTableWidget(len(self.setups), 11)
@@ -3458,7 +3465,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_start.clicked.connect(self.start)
         self.b_stop.clicked.connect(self.stop)
         self.b_use.clicked.connect(self.use)
-        self.results = {}
+        self.results, self.quick, self.round, self.queue = {}, {}, "quick", []
         self.index = -1
         self.run = None
         self.timer = QtCore.QTimer(self)
@@ -3504,8 +3511,12 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_stop.setEnabled(not on)
 
     def _frames_for(self, processes):
-        """Frames from the middle of the render, the same for every setup but for those that need more."""
-        count = min(len(self.all_frames), max(self.s_frames.value(), 2 * processes))
+        """Frames from the middle of the render, the same for every setup but for those that need more. The quick round
+        gives each process a few; the final Frames per setup, and at least 4 a process."""
+        if self.round == "quick":
+            count = min(len(self.all_frames), max(self.QUICK_FRAMES * processes, 6))
+        else:
+            count = min(len(self.all_frames), max(self.s_frames.value(), 4 * processes))
         first = (len(self.all_frames) - count) // 2
         return self.all_frames[first:first + count]
 
@@ -3531,21 +3542,24 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_use.setEnabled(False)
         self.verdict.setText("")
         self._fill_table()
-        self.results = {}
+        self.results, self.quick = {}, {}
+        self.round = "quick"  # every setup a little, then the best ones with all the frames
+        self.queue = list(range(len(self.setups)))
         self.index = -1
         self.slow_in_a_row = 0
         self._next()
         self.timer.start(1000)
 
     def _next(self):
-        self.index += 1
-        while (self.index < len(self.setups) and self.slow_in_a_row >= self.GIVE_UP
-               and self.setups[self.index] != self.current and self.setups[self.index] not in self.added):
-            self._cell(self.index, 10, "left out: slower")
-            self.index += 1
-        if self.index >= len(self.setups):
+        while (self.round == "quick" and self.queue and self.slow_in_a_row >= self.GIVE_UP
+               and self.setups[self.queue[0]] != self.current and self.setups[self.queue[0]] not in self.added):
+            self._cell(self.queue.pop(0), 10, "left out: slower")
+        if not self.queue and self.round == "quick":
+            self._to_final()
+        if not self.queue:
             self._finish()
             return
+        self.index = self.queue.pop(0)
         n, t, c = self.setups[self.index]
         settings = dict(self.main.settings)
         settings.update(processes=n, threads=t, ram=c, max_renders=1, _test=True)
@@ -3567,6 +3581,40 @@ class ScriptTest(QtWidgets.QDialog):
         if psutil:
             psutil.cpu_percent(None)  # from here on
         self._cell(self.index, 10, "rendering")
+
+    def _to_final(self):
+        """After the quick round: the fastest setups again with all the frames; the rest are left as the quick round had them."""
+        rated = sorted((k for k in self.quick if self.quick[k]["rate"]), key=lambda k: -self.quick[k]["rate"])
+        if len(rated) < 2:
+            self.results = dict(self.quick)  # nothing to choose between: the quick round is the answer
+            return
+        top = self.quick[rated[0]]["rate"]
+        final = [k for i, k in enumerate(rated) if i < self.FINALISTS or self.quick[k]["rate"] >= top * (1 - self.CLOSE)]
+        self.round = "final"
+        self.slow_in_a_row = 0
+        for i, k in enumerate(self.setups):
+            if k in final:
+                self.queue.append(i)
+                self._cell(i, 10, "final round: waiting")
+            elif k in self.quick:
+                self.results[k] = self.quick[k]
+                self._cell(i, 10, "quick round only: slower")
+
+    @staticmethod
+    def steady(workers):
+        """Frames per minute once the processes are going: each process's frames after its first, over the time from the end
+        of its first frame to the end of its last. So the start (once in a whole render) and the first frame (Nuke warming
+        up, a frame that looks at other frames filling its cache) are left out, and the handing out of frames between
+        them is in, as in a long render. A process with one frame only: its frame time."""
+        rate, secs = 0.0, []
+        for w in workers:
+            ends = getattr(w, "frame_ends", [])
+            if len(ends) >= 2 and ends[-1] > ends[0]:
+                rate += 60.0 * (len(ends) - 1) / (ends[-1] - ends[0])
+            elif w.frame_secs:
+                rate += 60.0 / max(w.frame_secs[-1], 1e-3)
+            secs += w.frame_secs[1:] if len(w.frame_secs) > 1 else w.frame_secs
+        return rate, (statistics.median(secs) if secs else 0.0)
 
     def tick(self):
         r = self.run
@@ -3597,23 +3645,26 @@ class ScriptTest(QtWidgets.QDialog):
             r["vram"].append(m.vram[1] / m.vram[2] * 100)
             r["vram_gb"].append(m.vram[1] / 1024.0)
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
-        rate = done / ((now - (r["open"] or r["t0"])) / 60.0) if done else None
+        rate = self.steady(e.workers.values())[0] if done else None
         self._show(self.index, r, rate, done)
-        # time per frame: a setup with many processes renders more of them
-        paces = [x["took"] / len(x["frames"]) for x in self.results.values() if x["complete"]]
+        # time per frame: a setup with many processes renders more of them; only against the same round's frames
+        same = self.quick if self.round == "quick" else {k: v for k, v in self.results.items() if v.get("round") == "final"}
+        paces = [x["took"] / len(x["frames"]) for x in same.values() if x["complete"]]
         slower = bool(paces) and now - r["t0"] >= min(paces) * len(r["frames"]) * self.SLOWER and e.state == "rendering"
-        if not r["stopping"] and (slower or now - r["t0"] >= self.LIMIT or e.state in ("done", "failed", "stopped")):
+        limit = self.QUICK_LIMIT if self.round == "quick" else self.LIMIT
+        if not r["stopping"] and (slower or now - r["t0"] >= limit or e.state in ("done", "failed", "stopped")):
             r["stopping"] = True
             r["slower"] = slower
             r["complete"] = done >= len(r["frames"])
             r["took"] = now - r["t0"]
-            r["rate"] = rate or 0.0  # no rate means no frame done yet
-            r["frame"] = statistics.median([sec for w in e.workers.values() for sec in w.frame_secs] or [0])
+            r["rate"], r["frame"] = self.steady(e.workers.values()) if done else (0.0, 0.0)  # no frame done: no rate
+            r["start"] = (r["open"] - r["t0"]) if r["open"] else None
+            r["round"] = self.round
             r["fell"] = sum("closed now" in x[1] for x in e.log) + e.crashes
             if e.state in ("rendering", "paused", "finishing", "waiting"):
                 e.stop("Test setup done")
         if r["stopping"] and all(w.state == "gone" for w in e.workers.values()):
-            self.results[self.setups[self.index]] = r
+            (self.quick if self.round == "quick" else self.results)[self.setups[self.index]] = r
             self.slow_in_a_row = self.slow_in_a_row + 1 if r["slower"] or not done else 0
             self._show(self.index, r, r["rate"], done, final=True)
             self._drop(r)
@@ -3637,7 +3688,7 @@ class ScriptTest(QtWidgets.QDialog):
         # the whole render of these frames, from the start with the script loads; when the limit ended it, how far it got
         took = fmt_secs(r.get("took", time.time() - r["t0"]))
         if final:
-            took += "  (%d of %d)" % (done, len(r["frames"]))
+            took += "  (%d of %d%s)" % (done, len(r["frames"]), ", start %.0f s" % r["start"] if r.get("start") is not None else "")
         self._cell(i, 2, took)
         self._cell(i, 3, "%.1f" % rate if rate is not None else "")
         if final:
@@ -3649,8 +3700,9 @@ class ScriptTest(QtWidgets.QDialog):
         self._cell(i, 7, "%.0f %%" % average(r["gpu"]) if r["gpu"] else "")
         self._cell(i, 8, "%.0f %% · %.1f GB" % (average(r["vram"]), average(r["vram_gb"])) if r["vram"] else "")
         self._cell(i, 9, str(r.get("fell", "")) if final else "")
-        self._cell(i, 10, ("stopped: slower" if r.get("slower") else "done") if final
-                   else "rendering, %d frames" % done)
+        stage = "quick round" if self.round == "quick" else "final round"
+        self._cell(i, 10, ("%s: %s" % (stage, "stopped, slower" if r.get("slower") else "done")) if final
+                   else "%s: rendering, %d frames" % (stage, done))
         self._fit_columns()
 
     def stop(self):
@@ -3663,6 +3715,8 @@ class ScriptTest(QtWidgets.QDialog):
             self._cell(self.index, 10, "stopped")
             self.run = None
         self._idle(True)
+        for k, v in getattr(self, "quick", {}).items():
+            self.results.setdefault(k, v)  # what the quick round found, where the final did not get to it
         if self.results:
             self._finish(partial=True)
 
@@ -3672,8 +3726,9 @@ class ScriptTest(QtWidgets.QDialog):
         self._idle(True)
         if not self.results:
             return
-        # a setup that rendered all the frames; the rate of one stopped early says less
-        whole = [k for k in self.results if self.results[k]["complete"]] or [k for k in self.results if self.results[k]["rate"]]
+        # the final round's, which rendered all the frames; then any complete one; the rate of one stopped early says less
+        whole = ([k for k in self.results if self.results[k]["complete"] and self.results[k].get("round") == "final"]
+                 or [k for k in self.results if self.results[k]["complete"]] or [k for k in self.results if self.results[k]["rate"]])
         if not whole:
             text = "No setup finished a frame, so there is nothing to recommend."
             self.verdict.setText(text)

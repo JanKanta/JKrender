@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.84 alpha — 2026-11-08
+
+- Test this script runs in two rounds: a quick one of 3 frames a process for every setup (3 minutes at most each), then only the two fastest, and any within 5 % of the best, with all the frames (Frames per setup, at least 4 a process). The slower ones keep their quick result. A test that took 20-30 minutes takes about a third of that.
+- Frames per minute are counted once the processes are going: from the end of each process's first frame to the end of its last. The start of Nuke and the first frame (warming up, a time node filling its cache) no longer count, as they come once in a whole render; before, they made the light scripts look fastest with one process and a heavy frame slower than it is. The start shows in Took.
+
 ## 0.83 alpha — 2026-11-08
 
 - Analyze script is gone, with its button in Settings: its recommendation did not hold on real comps. Its commands left the worker too (ANALYZE, TIMERS, PROFILE). Test this script stays: it measures the setups instead of guessing them.

@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.83 alpha.** It works in tests; expect rough edges.
+**Version 0.84 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -30,9 +30,10 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   - Rendered frames: a frame bar with Play and a slider under the preview, and an enlarged view over the panes.
   - Output lists what is on disk: All has every frame rendered or found there, also one queued to render again (`on disk, queued again`) until the new one replaces it; Rendered only those rendered in the run now. Framerange shows every frame of the range.
 - **Delete** in Output removes all rendered frames (the default) or a frame range, after asking.
-- **Test this script** (Settings > Performance and Optimization): renders 20 frames from the middle of the selected render (you can set
-  how many) with a few recommended Processes x Threads x Cache setups taken from the CPU and RAM, and any you add,
-  and recommends the fastest. The frames go to a test folder and are deleted; nothing changes unless you press
+- **Test this script** (Settings > Performance and Optimization): renders frames from the middle of the selected render with a few
+  recommended Processes x Threads x Cache setups taken from the CPU and RAM, and any you add, in two rounds: a quick one of 3 frames
+  a process for every setup, then the two fastest (and any within 5 %) again with 20 frames (you can set how many). Frames per minute
+  are counted once the processes are going, each process's first frame and the start left out, as in a long render. It recommends the fastest. The frames go to a test folder and are deleted; nothing changes unless you press
   Use these settings. Tables stay in `~/.jkrender/test_results`. A Write's render hooks do not run in a test, so it cannot write
   to the real output; a frame that does not arrive in the test folder stops the test.
 - A render says so when processes keep closing for VRAM, and suggests fewer processes with more threads. It changes nothing by itself.
