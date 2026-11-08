@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.6 alpha — 2026-11-08
+
+- Test this script: the column Slower is called Winner.
+
 ## 0.87.5 alpha — 2026-11-08
 
 - Test this script: a right click on a setup offers Edit test, the window of Add test with its Processes, Threads and Cache; Save replaces the setup, which is then kept as one of your own. Not while a test runs.
