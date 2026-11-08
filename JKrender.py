@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.7 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.88 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.7 alpha"
+APP_VERSION = "0.88 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3366,34 +3366,52 @@ class ScriptTest(QtWidgets.QDialog):
     # (a heavy comp: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
     SLOWER = 1.5
     GIVE_UP = 2
-    # The recommended ones, on 32 threads 1x32, 2x16, 4x8, 6x6, 8x4. (n, None): n processes share the CPU's
-    # threads; (None, t): processes of t threads each fill it; 6 x 6 keeps its share (6/32).
-    # 10x3, 16x2 and 32x1 are not among them: on a heavy comp, with 1-2 GB of cache, not one frame in 6 minutes. They can be added.
-    SETUPS = ((1, None), (2, None), (4, None), (None, 4), (6, 6 / 32.0))
     FRAMES = 20  # per setup by default (Frames per setup), and at least 2 per process, or a setup with many has them all on its first frame
+    TESTS = 7  # setups Create tests makes, from 1 process to the most this PC takes
+    MIN_THREADS = 4  # a process gets at least this many threads
+    MIN_CACHE = 4  # GB of cache a process gets at least: a heavy comp slows down a lot under that
+
+    @staticmethod
+    def spread(most, count):
+        """count numbers of processes from 1 to most, closer together where few processes are (2 to 3 is a bigger step than
+        6 to 7): 1, 2, 3, 4, 5, 6, 8 on 32 threads."""
+        if most <= count:
+            return list(range(1, most + 1))
+        picked = {max(1, int(round(most ** (i / float(count - 1))))) for i in range(count)} | {1, most}
+        while len(picked) < count:  # fill the widest gap
+            ordered = sorted(picked)
+            gap = max(zip(ordered, ordered[1:]), key=lambda p: p[1] - p[0])
+            picked.add((gap[0] + gap[1]) // 2)
+        return sorted(picked)
 
     @classmethod
     def plan(cls, cpu, free_gb):
-        """The setups for this PC: (processes, threads, Cache GB). The RAM free for Nuke, split by the number
-        of processes, less what a process takes besides its cache. A setup that cannot fit gets 1 GB of cache
-        and starts what the RAM limit lets it (the Ran column shows how many)."""
-        setups = []
-        for n, t in cls.SETUPS:
-            if n is None:
-                procs, threads = max(1, cpu // t), t
-            else:
-                procs, threads = n, max(1, round(cpu * t) if t else cpu // n)
-            if procs <= cpu and (procs, threads) not in [x[:2] for x in setups]:
-                setups.append((procs, threads, max(1, int(free_gb / procs - BESIDE_CACHE))))
-        return sorted(setups)
+        """The setups for this PC: (processes, threads, Cache GB), from 1 process with all the threads to as many as the
+        CPU (at least MIN_THREADS each) and the RAM (at least MIN_CACHE of cache each) take; each gets its share of the
+        threads and of the RAM, less what a process takes besides its cache."""
+        most = max(1, min(cpu // cls.MIN_THREADS, int(free_gb // (BESIDE_CACHE + cls.MIN_CACHE))))
+        return [(n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE))) for n in cls.spread(most, cls.TESTS)]
 
     def _free_gb(self):
-        """RAM Nuke processes may take: up to the RAM limit, less what the PC uses now (nothing should render)."""
+        """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
+        usually hold. Not what is free this moment: a render or a Nuke open now would leave every setup a little cache
+        (8 x 4 with 1 GB), and a test should not run beside them anyway."""
         if not psutil:
             return float(self.main.manager.ram * self.main.manager.total)
-        vm = psutil.virtual_memory()
-        limit = float(self.main.settings.get("ram_limit", 90)) / 100
-        return max(1.0, (vm.total * limit - vm.used) / 1024 ** 3)
+        total = psutil.virtual_memory().total / 1024.0 ** 3
+        return max(1.0, total * float(self.main.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2))
+
+    @staticmethod
+    def hardware():
+        """This PC in a line: CPU, cores and threads, RAM, graphics card."""
+        info = machine_info()
+        cores = psutil.cpu_count(logical=False) if psutil else None
+        parts = [info.get("cpu") or "CPU", "%s%d threads" % ("%d cores, " % cores if cores else "", os.cpu_count() or 0)]
+        if info.get("ram_gb"):
+            parts.append("%.0f GB RAM" % info["ram_gb"])
+        if info.get("gpu"):
+            parts.append("%s %s GB" % (info["gpu"], info.get("vram_gb") or "?"))
+        return "  ·  ".join(parts)
 
     def __init__(self, window, engine):
         super().__init__(window)
@@ -3405,12 +3423,16 @@ class ScriptTest(QtWidgets.QDialog):
         cur = (m.total, m.threads, m.ram)
         self.current = cur
         self.added = {tuple(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
-        # your own settings stand in for a planned setup with the same processes and threads and about the same cache
-        self.setups = sorted({x for x in self.plan(cpu, self._free_gb())
-                              if not (x[:2] == cur[:2] and abs(x[2] - cur[2]) <= 2)} | {cur} | self.added)
+        self.setups = sorted(set(self.plan(cpu, self._free_gb())) | self.added)
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
+        self.b_create = QtWidgets.QPushButton("Create tests")
+        self.b_create.setToolTip("Looks at this PC (CPU threads, RAM) and makes %d setups, from 1 process with all the threads to\n"
+                                 "as many as it takes, each with its share of the threads and the RAM. Replaces the setups in the table."
+                                 % self.TESTS)
+        self.b_create.clicked.connect(self._create_setups)
+        top.addWidget(self.b_create)
         self.b_add = QtWidgets.QPushButton("Add test")
         self.b_add.setToolTip("A setup of your own: Processes, Threads and Cache. It is kept for the next time.")
         self.b_add.clicked.connect(self._add_setup)
@@ -3421,6 +3443,9 @@ class ScriptTest(QtWidgets.QDialog):
         top.addWidget(self.b_remove)
         top.addStretch(1)
         lay.addLayout(top)
+        self.l_hw = QtWidgets.QLabel(self.hardware())
+        self.l_hw.setObjectName("dim")
+        lay.addWidget(self.l_hw)
         self.table = QtWidgets.QTableWidget(len(self.setups), len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
         for col, (_, tip) in enumerate(self.COLUMNS):
@@ -3560,6 +3585,15 @@ class ScriptTest(QtWidgets.QDialog):
         dialog.deleteLater()
         return setup if accepted else None
 
+    def _create_setups(self):
+        """Create tests: this PC looked at again, and its setups in place of all in the table, your own too."""
+        _MACHINE.clear()  # the graphics card or the RAM may have changed since
+        self.l_hw.setText(self.hardware())
+        self.added = set()
+        self.main._save_setting("test_setups", [])
+        self.setups = sorted(self.plan(os.cpu_count() or 8, self._free_gb()))
+        self._fill_table()
+
     def _add_setup(self):
         """Add test: a setup of your own, kept for next time."""
         setup = self._setup_window("Add test", "Add", self.add_defaults[:3])
@@ -3611,7 +3645,7 @@ class ScriptTest(QtWidgets.QDialog):
         self._fill_table()
 
     def _idle(self, on):
-        for widget in (self.b_start, self.b_add, self.b_remove, self.s_frames):
+        for widget in (self.b_start, self.b_create, self.b_add, self.b_remove, self.s_frames):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
 

@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.87.7 alpha.** It works in tests; expect rough edges.
+**Version 0.88 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -31,7 +31,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   - Output lists what is on disk: All has every frame rendered or found there, also one queued to render again (`on disk, queued again`) until the new one replaces it; Rendered only those rendered in the run now. Framerange shows every frame of the range.
 - **Delete** in Output removes all rendered frames (the default) or a frame range, after asking.
 - **Test this script** (Settings > Performance and Optimization): renders frames from 6 places spread over the whole shot (the same for every setup, a stretch of frames in a row at each; a shot with no more frames than that renders them all and says so) with a few
-  recommended Processes x Threads x Cache setups taken from the CPU and RAM, and any you add with Add test (right click on one: Edit test), in two rounds: Round 1 of 3 frames
+  Processes x Threads x Cache setups made by Create tests from this PC (7 of them, from 1 process with all the threads to as many as the CPU, at least 4 threads each, and the RAM, at least 4 GB of cache each, take; each with its share of the threads and of the RAM limit), and any you add with Add test (right click on one: Edit test), in two rounds: Round 1 of 3 frames
   a process for every setup, then Round 2: the two fastest (and any within 5 %) again with 20 frames (you can set how many). Frames per minute
   are counted once the processes are going, each process's first frame and the start left out, as in a long render. It recommends the fastest.
   The table shows each round's time, Winner (the fastest, and how much longer the whole shot would take than with the fastest, in time and per cent),

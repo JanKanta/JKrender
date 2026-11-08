@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.88 alpha — 2026-11-08
+
+- Test this script: the cache of each setup comes from the whole RAM (its RAM limit, less what Windows usually holds) split by the number of processes, no longer from what is free when the window opens: with a render or a Nuke open, 8 x 4 got 1 GB of cache and lost for that. On 94 GB: 1 x 32 64 GB, 2 x 16 30, 4 x 8 13, 8 x 4 4.
+- Create tests (above the table) looks at the PC, shown in a line under the buttons (CPU, cores and threads, RAM, graphics card), and makes 7 setups from 1 process with all the threads to as many as the CPU (at least 4 threads each) and the RAM (at least 4 GB of cache each) take: on 32 threads 1 x 32, 2 x 16, 3 x 10, 4 x 8, 5 x 6, 6 x 5, 8 x 4. They replace the setups in the table, your own too. The window opens with them as well.
+
 ## 0.87.7 alpha — 2026-11-08
 
 - Go on after a crash is gone from Settings > General. After a crash the cards still come back the next time JKrender opens, with what is on disk counted; a render that was going waits for Render.
