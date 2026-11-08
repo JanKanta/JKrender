@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.1 alpha — 2026-11-08
+
+- Settings: VRAM per process sits in Processes and Chunks, under Cache and above Chunk.
+
 ## 0.89 alpha — 2026-11-08
 
 - VRAM per process (Settings > Performance, off by default): a Nuke process holding more VRAM than this clears its Blink cache after its frame, the VRAM Nuke keeps but no longer needs (on one comp it grew 1.5 GB a frame, to 15 GB; clearing took it from 16.3 GB to 7.7). It goes on, nothing restarts. It costs time, so it is off: a heavy comp at 4 x 8 rendered in 11:49 with a 5 GB cap against 8:32 without. Not the RAM cache: clearing that frees no VRAM and made the next frame 8 x slower.

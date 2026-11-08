@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89 alpha"
+APP_VERSION = "0.89.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -5592,11 +5592,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "About to spill into the RAM (97 %), the last one started closes at once.\n"
             "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
-        row(perf, "VRAM per process", [self.s_vram_cap],
-            "Off by default. A Nuke process holding more VRAM than this clears its Blink cache after its frame: the VRAM\n"
-            "Nuke keeps but no longer needs, which grows frame after frame on some scripts (one comp: 1.5 GB a frame, to 15 GB).\n"
-            "Clearing gives it back at once, but the next frames take longer (a heavy comp: 11:49 instead of 8:32).\n"
-            "Try it in Test this script first: Add test has the same field.")
         self.c_guard = toggle("ram_guard", True, self._guard_changed)
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
@@ -5632,6 +5627,11 @@ class MainWindow(QtWidgets.QMainWindow):
         row(procs, "Threads", [self.s_threads])
         row(procs, "Cache", [self.s_ram])
         self.l_ram_need = note(procs, QtWidgets.QLabel(""))
+        row(procs, "VRAM per process", [self.s_vram_cap],
+            "Off by default. A Nuke process holding more VRAM than this clears its Blink cache after its frame: the VRAM\n"
+            "Nuke keeps but no longer needs, which grows frame after frame on some scripts (one comp: 1.5 GB a frame, to 15 GB).\n"
+            "Clearing gives it back at once, but the next frames take longer (a heavy comp: 11:49 instead of 8:32).\n"
+            "Try it in Test this script first: Add test has the same field.")
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")
         self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
