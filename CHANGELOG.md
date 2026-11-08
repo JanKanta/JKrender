@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.88.2 alpha — 2026-11-08
+
+- VRAM limit like the RAM limit: when the card has room again, as many processes come back at once as fit under the limit (with what the ones still starting will take), not one at a time. On the edge of spilling into the RAM (97 %) the process started last closes at once, as with the RAM, instead of the one taking the most VRAM: it has the least work to lose.
+
 ## 0.88.1 alpha — 2026-11-08
 
 - Test this script on a PC with more than 64 threads (a big Threadripper, a server): Windows splits the threads into processor groups of at most 64 and one process runs in one group, so a setup gives a process at most 64 threads and starts with enough processes to use every group (192 threads: from 3 x 64).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.88.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.88.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.88.1 alpha"
+APP_VERSION = "0.88.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2848,7 +2848,8 @@ class RenderManager:
         or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
-        About to spill into the RAM (97 %), the one taking the most closes at once."""
+        About to spill into the RAM (97 %), the last one started closes at once, as with the RAM. When it drops, as many
+        come back at once as fit under the limit."""
         now = time.time()
         if now - self._vram_checked < 2:
             return
@@ -2911,19 +2912,21 @@ class RenderManager:
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
                 if len(running) > 1:
-                    # the one taking the most: a new one frees little while an old one keeps 11-15 GB. By hand last.
-                    e, w = max(running, key=lambda ew: (not ew[1].pinned, vram_of(ew[1])))
+                    # as with the RAM: the last one started, it has the least work to lose. By hand last.
+                    e, w = self._close_first(running)
                     e.note("!! VRAM %.0f %%: %s (%.1f GB) closed now%s" % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM limit"
                     e._kill(w, requeue=True, note="stopped")
                     self._fell_vram()
                     self._last_vram_kill = now
         elif self.vram_cap is not None:
-            if pct + one < limit - 2:
+            more = self._more_fit_vram(pct, limit, one)
+            if more > 0:
+                # as many as fit under the limit at once, as with the RAM; one more would push it over again
                 if self._vram_ok_since is None:
                     self._vram_ok_since = now
                 elif now - self._vram_ok_since >= RETURN_CHECK and not self.fall_wait():
-                    self.vram_cap += 1
+                    self.vram_cap += more
                     self._vram_ok_since = now
                     self._vram_lowered_at = None
                     if self.vram_cap >= self.total:
@@ -2933,6 +2936,20 @@ class RenderManager:
                         self._note_running("VRAM is %.0f %%: up to %d Nuke processes" % (pct, self.vram_cap))
             else:
                 self._vram_ok_since = None
+
+    def _more_fit_vram(self, pct, limit, one):
+        """How many more Nuke processes fit on the graphics card: the % left under the limit, less a margin and what the
+        processes still starting are going to take, split by the size of one process (what they took after their first chunk)."""
+        if not self.vram or not self.vram[2] or not one:
+            return 0
+        total = float(self.vram[2])
+        room = limit - 2 - pct
+        for e in self.engines:
+            size = self.vram_one(e)
+            for w in e.workers.values():
+                if size and w.gpu and w.state != "gone" and w.vram_base is None:
+                    room -= max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
+        return max(0, int(room // one))
 
     def _recycle_grown(self, vram_of):
         """The GPU process that grew the most past what it took after its first chunk is replaced by a fresh Nuke
