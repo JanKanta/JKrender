@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.82 alpha — 2026-11-08
+
+- Analyze script recommends from an estimate of frames per minute for each Processes x Threads setup of this CPU, shown in a new table: how many threads one Nuke keeps busy (a script that keeps nearly all busy gains nothing from more processes), what processes lose sharing the memory and the one graphics card, and what fits in the RAM and the VRAM. Fitted on 24 scripts measured with Test this script (light and heavy comps, CPU and GPU nodes, 3D, time nodes, reading from disk): its pick was within 5 % of the fastest on 19 and 3 % off on average, against 15 % before. The rule before nearly always said 8 x 4; on a TimeBlur over a heavy tree that rendered no frame in 6 minutes.
+- When its frames are quick (more than 180 a minute in any setup) it picks the setup with the fewest processes: they all render about as fast, and it takes the least RAM.
+- One slow frame says little about the RAM a script takes later, so with fewer than 3 frames over 20 s it allows for three times as much.
+- When Nuke goes down during the analysis, the frames it rendered until then still count, and it says so. Before, everything measured was lost.
+
 ## 0.81.1 alpha — 2026-11-08
 
 - A script that Nuke opens with errors (a knob it cannot read, such as a node saved by another version) renders as Nuke opened it, like the GUI does, as long as its Writes are there. Before, every process stopped with "Nuke did not open the script" and not one frame rendered. The message goes to the process log.

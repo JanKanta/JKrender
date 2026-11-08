@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.81.1 alpha.** It works in tests; expect rough edges.
+**Version 0.82 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -38,7 +38,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
 - **Analyze script** (right under it): one Nuke with all threads opens the script, shows the nodes that really feed the Write (disabled branches left out),
   those on the GPU and those that look at other frames, then renders frames from the middle to a test folder, 90 s at most in all, and one more with Nuke's timers on when it fits.
   It shows how long Nuke takes to start and the script to open, the frame time, the threads one Nuke keeps busy, the GPU use, RAM and VRAM and how
-  the VRAM grows per frame, and the slowest nodes, and recommends as many processes as fit in the VRAM and the RAM, with the reasons.
+  the VRAM grows per frame, and the slowest nodes. From that it estimates frames per minute for each Processes x Threads setup of this CPU (how many threads one Nuke keeps busy, processes sharing the memory and the one graphics card, what fits in the RAM and the VRAM), shows the table and recommends the fastest, with the reasons; when two come out the same, the one with fewer processes.
   It is a quick estimate, so Test this script has the last word.
 - A render says so when processes keep closing for VRAM, and suggests fewer processes with more threads. It changes nothing by itself.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.

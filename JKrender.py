@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.81.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.82 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.81.1 alpha"
+APP_VERSION = "0.82 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3463,8 +3463,11 @@ class ScriptAnalysis(QtWidgets.QDialog):
             if self.probing:
                 self.stage = "Rendering frames from the middle: %d s at most in all, less on a light script…" % self.LIMIT
                 info["probe"] = self._frames(proc, until, t0, info["above"])
-            proc.stdin.write("QUIT\n")
-            proc.stdin.flush()
+            try:
+                proc.stdin.write("QUIT\n")
+                proc.stdin.flush()
+            except OSError:
+                pass  # it is gone already
             return info
         except (OSError, ValueError) as exc:
             return "Nuke stopped: %s\n%s" % (exc, "".join(tail)[-800:])
@@ -3516,8 +3519,11 @@ class ScriptAnalysis(QtWidgets.QDialog):
                 break  # the next frame would end past LAST_FRAME, or there are enough
             got["rendering"] = True
             first_start = first_start or time.time()
-            proc.stdin.write("RENDER A %d\n" % frame)
-            proc.stdin.flush()
+            try:
+                proc.stdin.write("RENDER A %d\n" % frame)
+                proc.stdin.flush()
+            except OSError:
+                break  # Nuke went down: what it rendered until then still counts
             if until("CHUNK", t0 + self.LIMIT) is None:
                 break
             got["rendering"] = False
@@ -3532,18 +3538,22 @@ class ScriptAnalysis(QtWidgets.QDialog):
         typical = (sum(secs[1:]) / len(secs[1:])) if len(secs) > 1 else (secs[0] if secs else 0)
         guess = typical * (1 + nodes_count / float(self.TIMER_NODES))
         left = self.LIMIT - (time.time() - t0) - 3
-        if secs and guess <= left:
+        died = proc.poll() is not None
+        if secs and guess <= left and not died:
             self.stage = "One more frame with Nuke's timers on, for the time of each node (about %.0f s)…" % guess
-            proc.stdin.write("TIMERS\n")
-            proc.stdin.write("RENDER T %d\n" % frames[min(len(secs), len(frames) - 1)])
-            proc.stdin.flush()
-            if until("CHUNK", t0 + self.LIMIT + 5) is not None:
-                timed = self.frame_lines[-1][1]
-                proc.stdin.write("PROFILE\n")
+            try:
+                proc.stdin.write("TIMERS\n")
+                proc.stdin.write("RENDER T %d\n" % frames[min(len(secs), len(frames) - 1)])
                 proc.stdin.flush()
-                profile = until("INFO", t0 + self.LIMIT + 5)
-                nodes = json.loads(profile[0])["nodes"] if profile else []
-        elif secs:
+                if until("CHUNK", t0 + self.LIMIT + 5) is not None:
+                    timed = self.frame_lines[-1][1]
+                    proc.stdin.write("PROFILE\n")
+                    proc.stdin.flush()
+                    profile = until("INFO", t0 + self.LIMIT + 5)
+                    nodes = json.loads(profile[0])["nodes"] if profile else []
+            except OSError:
+                died = True
+        elif secs and not died:
             timed = -guess  # left out: a frame with the timers would take about this long
         cpus = sorted(got["cpu"])[len(got["cpu"]) // 2:] or [0.0]  # all threads busy at their best, not while it reads files
         # Growth per frame over the second half of the frames only: the first ones are the warm-up every Nuke has (1.0 -> 2.3 GB
@@ -3552,7 +3562,8 @@ class ScriptAnalysis(QtWidgets.QDialog):
         n = len(after) - 1  # frames with a reading after them; the last reading is again the last frame's
         mid = n // 2
         growth = max(0.0, (after[-1] - after[mid]) / max(1, n - 1 - mid)) if n >= 3 else None  # None: too few frames to tell
-        return {"failed": self.failed if not secs else "", "frames": len(secs), "secs": sum(secs) / max(1, len(secs)),
+        return {"failed": self.failed if not secs else "", "died": died or proc.poll() is not None,
+                "frames": len(secs), "secs": sum(secs) / max(1, len(secs)),
                 "first": secs[0] if secs else None, "rest": (sum(secs[1:]) / len(secs[1:])) if len(secs) > 1 else None,
                 "threads": sum(cpus) / len(cpus), "rss": got["rss"], "vram": max([got["vram"]] + after), "growth": growth,
                 "gpu_use": (sum(got["gpu"]) / len(got["gpu"])) if got["gpu"] else None, "nodes": nodes,
@@ -3597,50 +3608,96 @@ class ScriptAnalysis(QtWidgets.QDialog):
             self._analysis_proc.kill()
         super().closeEvent(event)
 
+    # The estimate of frames per minute for each setup (estimate). Fitted on 24 scripts measured with Test this script on 32
+    # threads (light and heavy comps, CPU and GPU, 3D, time nodes, disk): its pick was within 5 % of the fastest on 19, 3 % off
+    # on average, also judging each script with the numbers fitted on the others; the rule before it was 15 % off.
+    CONTENTION = 0.08  # each process more makes every process this much slower: they share the memory and its caches
+    GPU_SHARE = 0.4  # of the card's measured use, the share of a frame the card is the one working
+    QUICK = 180  # frames per minute past which the setups do not differ: handing frames out is then the work
+    VRAM_FRAMES = 1.5  # frames of VRAM growth a process is given room for; Nuke frees some when the card is full
+    SLOW_ONE = 20  # s: one frame this slow, and too few of them, says little of the RAM it takes later
+    UNSURE_RAM = 3  # times the RAM then (a TimeBlur over a heavy tree took 3 x what its first frame showed)
+
+    @staticmethod
+    def setups(cpu):
+        """Processes x threads to weigh: the CPU's threads shared out, at least 2 threads a process."""
+        most = max(8, cpu // 4)
+        return [(n, cpu // n) for n in (1, 2, 3, 4, 6, 8, 12, 16, 24, 32) if n <= most and cpu // n >= 2] or [(1, cpu)]
+
+    @classmethod
+    def estimate(cls, probe, n, t, cpu, free_gb, card_gb=None, floor=4):
+        """(frames per minute, why it cannot run, frames per minute if it could) for n processes of t threads, from what one Nuke with all threads did.
+        One Nuke that kept B of its threads busy runs a share p of each frame in parallel (Amdahl: 1 / ((1 - p) + p / cpu) = B),
+        so with t threads its frame takes T x S(cpu) / S(t); every process more slows all a little; one graphics card
+        serves them all; and the RAM and the card's memory have to hold them."""
+        T = probe.get("rest") or probe["secs"]
+        busy = min(max(probe.get("threads") or 1.0, 1.0), cpu * 0.999)
+        p = (1 - 1 / busy) / (1 - 1 / float(cpu)) if cpu > 1 else 0.0
+        speed = lambda th: 1 / ((1 - p) + p / float(th))
+        frame = T * speed(cpu) / speed(t) * (1 + cls.CONTENTION * (n - 1))
+        rate = n * 60.0 / max(frame, 1e-3)
+        gpu = (probe.get("gpu_use") or 0) / 100.0 * cls.GPU_SHARE
+        if gpu > 0.05:
+            rate = min(rate, 60.0 / (gpu * T))
+        rate = min(rate, cls.QUICK)
+        need = max(probe.get("rss") or 0.0, 1.0) + 2.0
+        if probe["frames"] < 3 and T > cls.SLOW_ONE:
+            need *= cls.UNSURE_RAM
+        if n * need > free_gb or (n > 1 and free_gb / n - BESIDE_CACHE < floor):
+            return 0.0, "RAM", rate
+        grow = probe.get("growth") or 0.0
+        if card_gb and n > 1 and probe.get("vram", 0) > 0.3 and n * (probe["vram"] + cls.VRAM_FRAMES * grow) > card_gb * 1.05:
+            return 0.0, "VRAM", rate
+        return rate, "", rate
+
     @staticmethod
     def advise(info, cpu, free_gb, card_gb=None):
-        """Processes, threads, Cache and why. As many processes of 4 threads as fit in the graphics card and the RAM, from
-        what one Nuke did in the short render. Measured, several small processes beat one big one as long as they fit, also
-        when one process uses all its threads: what stops them is memory. Without the render, from the number of nodes."""
+        """Processes, threads, Cache and why. With the short render: the setup with the most frames per minute by estimate(),
+        the one with fewer processes when they come out the same (less RAM, less to go wrong). Without it, from the nodes."""
         probe = info.get("probe") or {}
         floor = 4 if info["above"] < 60 else 8  # GB of cache: a heavy script slows down a lot under about that
-        n = max(1, cpu // 4)
-        n = min(n, 8)
+        cache = lambda n: max(1, int(free_gb / n - BESIDE_CACHE))
+        if not probe.get("frames"):
+            n = max(x for x in (1, 2, 4, 6, 8) if x <= max(1, min(8, cpu // 4)))
+            while n > 1 and free_gb / n - BESIDE_CACHE < floor:
+                n = max(x for x in (1, 2, 4, 6) if x < n)
+            why = ("Few nodes: several smaller processes usually make the best use of the CPU." if info["above"] < 60 else
+                   "Many nodes: a script like this needs a big cache, and with too little it can slow down a lot.")
+            info["estimates"] = []
+            return n, max(1, cpu // n), cache(n), why
+        rows = [(n, t) + ScriptAnalysis.estimate(probe, n, t, cpu, free_gb, card_gb, floor) for n, t in ScriptAnalysis.setups(cpu)]
+        info["estimates"] = rows
+        top = max(r[2] for r in rows)
+        n, t = (min((r for r in rows if r[2] >= top), key=lambda r: r[0]) if top > 0 else rows[0])[:2]
         why = []
-        growth = probe.get("growth") or 0.0
-        if probe.get("frames") and card_gb and probe["vram"] > 0.3:
-            # a process that keeps growing is a lot bigger after a few more frames
-            grown = probe["vram"] + growth * 10
-            fit = max(1, int(card_gb // grown))
-            if fit < n:
-                n = fit
-                why.append("Its VRAM %s, %.1f GB%s: the card holds %d such process%s." % (
-                    "keeps growing" if growth >= 0.3 else "is high", probe["vram"],
-                    " and %.1f GB more per frame" % growth if growth >= 0.3 else "", n, "" if n == 1 else "es"))
-        # less than a script wants slows it down far more than one process fewer: measured 5 x 6 with 10 GB 12 frames / min,
-        # 4 x 8 with 14 GB 16. So what the short render took, less a little, and only numbers of processes measured.
-        # A script that fills the short render's cache only shows it takes all it gets, so past ENOUGH_CACHE more says nothing:
-        # a heavy comp, 2 x 16 with 30 GB 17.7 frames / min, 4 x 8 with 13 GB 23.6.
-        size = max(floor, min(ScriptAnalysis.ENOUGH_CACHE, probe.get("rss", 0.0) - 2))
-        fit = n
-        while fit > 1 and free_gb / fit - BESIDE_CACHE < size:
-            fit -= 1
-        fit = max(x for x in (1, 2, 4, 6, 8) if x <= fit)
-        if fit < n:
-            why.append("The RAM holds %d with at least %.0f GB of cache each, and a script with too little cache slows down a lot." % (fit, size))
-            n = fit
-        if not why:
-            why.append("It fits in the RAM and the graphics card, so as many small processes as the CPU takes." if probe.get("frames") else
-                       ("Few nodes: several smaller processes usually make the best use of the CPU." if info["above"] < 60 else
-                        "Many nodes: a script like this needs a big cache, and with too little it can slow down a lot."))
-        if probe.get("frames"):
-            # what was measured besides, said so it can be checked; the numbers above decide
-            why.append("One Nuke with all %d threads kept %.0f of them busy, %.1f s a frame." % (cpu, probe["threads"], probe["secs"]))
-            if growth >= 0.3 and not any("VRAM" in w for w in why):
-                why.append("Its VRAM grows %.1f GB per frame: a long chunk may run out of the card's memory." % growth)
-            if probe.get("growth") is None:
-                why.append("Too few frames to see whether its VRAM grows.")
-        return n, max(1, cpu // n), max(1, int(free_gb / n - BESIDE_CACHE)), " ".join(why)
+        busy = probe.get("threads") or 0
+        if top >= ScriptAnalysis.QUICK:
+            why.append("Its frames are quick: %s renders them about as fast, so %s, which takes the least RAM." % (
+                "any setup" if n == 1 else "from %d processes on every setup" % n, "one process" if n == 1 else "%d" % n))
+        elif n == 1:
+            why.append("One Nuke kept %.0f of the %d threads busy, so more processes would only share them." % (busy, cpu)
+                       if busy >= cpu * 0.6 else "One process is the fastest here.")
+        else:
+            why.append("One Nuke kept only %.0f of the %d threads busy: %d processes use the CPU better." % (busy, cpu, n)
+                       if busy < cpu * 0.6 else "%d processes come out fastest: each loses little with fewer threads." % n)
+        chosen = next(r[2] for r in rows if r[:2] == (n, t))
+        cut = sorted({r[3] for r in rows if r[3] and r[4] > chosen * 1.02})  # only what would have been faster
+        if "VRAM" in cut:
+            grow = probe.get("growth") or 0.0
+            why.append("More would not fit in the graphics card: %.1f GB of VRAM each%s." % (
+                probe["vram"], " and %.1f GB more per frame" % grow if grow >= 0.3 else ""))
+        if "RAM" in cut:
+            why.append("More would not fit in the RAM: %.1f GB each%s, with enough cache." % (
+                probe["rss"], " (more is allowed for, one slow frame says little)" if probe["frames"] < 3 and
+                (probe.get("rest") or probe["secs"]) > ScriptAnalysis.SLOW_ONE else ""))
+        if (probe.get("gpu_use") or 0) >= 40 and n > 1:
+            why.append("The graphics card is busy %.0f %% of the time, and all processes share it." % probe["gpu_use"])
+        why.append("One Nuke with all %d threads: %.1f s a frame." % (cpu, probe.get("rest") or probe["secs"]))
+        if probe.get("growth") is None:
+            why.append("Too few frames to see whether its VRAM grows.")
+        if probe.get("died"):
+            why.append("Nuke went down during the analysis, after %d frame%s: from those." % (probe["frames"], "" if probe["frames"] == 1 else "s"))
+        return n, t, cache(n), " ".join(why)
 
     @staticmethod
     def tips(probe, gpu_on):
@@ -3754,6 +3811,19 @@ class ScriptAnalysis(QtWidgets.QDialog):
                                  % (", because a render is going" if not self.probing and not self.src.movie else
                                     (" (a movie)" if self.src.movie else (": the short render failed, %s" % probe["failed"] if probe.get("failed") else ""))), dim=True))
         self.lay.addWidget(frame)
+        estimates = info.get("estimates") or []
+        if estimates:
+            est, ebox = self._card("Estimate for each setup", "Frames per minute on this PC, worked out from the short render: "
+                                   "a guide, not a measurement. Test this script measures them.")
+            note = {"RAM": "does not fit in the RAM", "VRAM": "does not fit in the graphics card"}
+            rows = [("%d x %d" % (en, et), ("%d or more" % self.QUICK if rate >= self.QUICK else ("%.1f" if rate < 20 else "%.0f") % rate) if rate else "—",
+                     "recommended" if (en, et) == (n, t) else note.get(cut, "")) for en, et, rate, cut, _ in estimates]
+            table = self._table(["Processes x threads", "Frames / min", ""], rows)
+            table.resizeRowsToContents()
+            table.setFixedHeight(table.horizontalHeader().sizeHint().height() + sum(table.rowHeight(i) for i in range(len(rows)))
+                                 + 2 * table.frameWidth() + 2)
+            ebox.addWidget(table)
+            self.lay.addWidget(est)
         start = info.get("start") or {}
         tiles = QtWidgets.QHBoxLayout()
         parts = [("Nodes doing the work", str(info["above"]), "of %d in the script" % info["all"], "Only nodes that reach this Write. Disabled branches do not count."),
@@ -3804,6 +3874,8 @@ class ScriptAnalysis(QtWidgets.QDialog):
             TEST_RESULTS.mkdir(parents=True, exist_ok=True)
             path = TEST_RESULTS / ("%s_analyze_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
             lines = ["Recommended: %d x %d, Cache %d GB" % self.best, why] + self.tips(probe, self.main.settings.get("use_gpu", True))
+            lines += ["%d x %d: %s frames / min%s" % (en, et, "%.0f" % rate if rate else "-", " (%s)" % cut if cut else "")
+                      for en, et, rate, cut, _ in info.get("estimates") or []]
             if probe.get("nodes"):
                 lines += [""] + [" | ".join(r) for r in self._slow_rows(probe)]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
