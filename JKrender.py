@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87 alpha"
+APP_VERSION = "0.87.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3450,7 +3450,6 @@ class ScriptTest(QtWidgets.QDialog):
             lab.setObjectName("dim")
             return lab
 
-        edit = QtWidgets.QHBoxLayout()
         wanted = int(window.settings.get("test_frames", self.FRAMES))
         self.s_frames = box(1, 9999, wanted)  # more than the shot has stays set: it says so and renders them all
         self.s_frames.setToolTip("Frames each setup renders in Round 2: stretches of frames in a row at the same 6 places spread\n"
@@ -3460,10 +3459,8 @@ class ScriptTest(QtWidgets.QDialog):
         self.l_frames = label("")
         self.s_frames.valueChanged.connect(self._frames_note)
         self.add_defaults = (m.total, m.threads, m.ram, cpu, ram)  # what Add test starts from, and its limits
-        for widget in (label("Frames per setup"), self.s_frames, self.l_frames):
-            edit.addWidget(widget)
-        edit.addStretch(1)
-        lay.addLayout(edit)
+        for widget in (label("Frames per setup"), self.s_frames, self.l_frames):  # top right, after Add test and Remove test
+            top.addWidget(widget)
         buttons = QtWidgets.QHBoxLayout()
         self.b_start = QtWidgets.QPushButton("Start")
         self.b_start.setObjectName("primary")

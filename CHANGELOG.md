@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.1 alpha — 2026-11-08
+
+- Test this script: Frames per setup sits top right, on the row of Add test and Remove test.
+
 ## 0.87 alpha — 2026-11-08
 
 - Test this script: no text above the table, only Add test and Remove test. Add test opens a small window with Processes, Threads and Cache for a setup of your own (kept for next time); Remove test removes the selected setups, also when the table is sorted. The Processes / Threads / Cache boxes are gone from the bottom; Frames per setup stays there.
