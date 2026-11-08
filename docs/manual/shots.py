@@ -210,22 +210,23 @@ try:
     shot("10_problems")
     w.out_filter.setCurrentText("All")
     popup("d1_delete", w._delete_dialog)
-    # Test this script and Analyze script
+    # Render again on a finished render: the question
     w.select(e1)
+    pump(0.5)
+    popup("d3_render_again", lambda: w._ask_render_again(e1))
+    # Test this script: 4 of the setups Create tests makes, run with the stand-in Nuke, then the Add test window
     t = jk.ScriptTest(w, e1)
-    t.resize(1100, 640)
+    t.setups = [x for x in t.setups if x[0] in (1, 2, 4, 8)]
+    t._fill_table()
+    t.resize(1500, 300)
     t.show()
+    pump(0.5)
+    t.start()
+    wait(lambda: not t.timer.isActive() and t.run is None, 600, "test")
+    pump(1.0)
     shot("11_test", t)
+    popup("d2_add_test", t._add_setup)
     t.close()
-    a = jk.ScriptAnalysis(w, e1)
-    a.resize(1100, 900)
-    a.show()
-    pump(1.0)
-    shot("12_analyze_running", a)
-    wait(lambda: a._analysis is not None and not a.timer.isActive(), 150, "analysis")
-    pump(1.0)
-    shot("13_analyze", a)
-    a.close()
 except Exception:
     traceback.print_exc()
 for x in m.engines:
