@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.81.1 alpha — 2026-11-08
+
+- A script that Nuke opens with errors (a knob it cannot read, such as a node saved by another version) renders as Nuke opened it, like the GUI does, as long as its Writes are there. Before, every process stopped with "Nuke did not open the script" and not one frame rendered. The message goes to the process log.
+
 ## 0.81 alpha — 2026-11-06
 
 - Render again on a render with frames on disk asks: **Only missing** renders just the frames missing or broken on disk, **All frames again** renders every frame anew, Cancel leaves it. A movie is always rendered whole.

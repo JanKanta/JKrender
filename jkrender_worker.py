@@ -184,7 +184,15 @@ def main():
         # paths with Czech letters
         script, original, names = json.loads(os.environ["JKRENDER_ARGS"])
     opened = time.time()
-    nuke.scriptOpen(script)
+    try:
+        nuke.scriptOpen(script)
+    except RuntimeError as exc:
+        # Nuke raises for knobs it could not read (a node saved by another version, a missing plug-in's knob),
+        # yet the script is open, as the GUI opens it with the same message. Go on when the Writes are there.
+        if not names or not all(nuke.toNode(n) is not None for n in names.split("|")):
+            raise
+        print("JKrender: the script opened with errors, rendering it as Nuke opened it: %s"
+              % str(exc).replace("\n", " ")[:400], flush=True)
     if original:
         # The snapshot behaves as the original: [value root.name], relative paths, project settings.
         nuke.root()["name"].setValue(original)
