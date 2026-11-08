@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.86.1 alpha — 2026-11-08
+
+- Test this script: the column Running is called Average processes.
+
 ## 0.86 alpha — 2026-11-08
 
 - Test this script's table: the quick and the final round are Round 1 and Round 2, each with its own column (how long it took, the frames done and the start) instead of one Took. A new column Slower says how much longer the whole shot would take than with the fastest setup, in time and per cent.

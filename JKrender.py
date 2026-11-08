@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.86 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.86.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.86 alpha"
+APP_VERSION = "0.86.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3541,7 +3541,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     PLACES = 6  # places spread over the shot, the same for every setup
     COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
-               ("Running", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
+               ("Average processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
                ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
                ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
                ("Frames / min", "Once the processes are going: each process's first frame and the start left out. From round 2 where it ran"),
