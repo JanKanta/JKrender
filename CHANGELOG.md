@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.89.4 alpha — 2026-11-08
+
+- A full graphics card with no frame finishing is told from the last frame the render finished, not from when a process last started: a process started again would have hidden that nothing renders.
+- Test this script counts the frames of a process that closed and started again (RAM or VRAM) as one lane, the restart included; before, the frames from before the restart dropped out of its frames per minute.
+
 ## 0.89.3 alpha — 2026-11-08
 
 - VRAM per process is gone again, from Settings, from Add test / Edit test and from the worker. It cleared the Blink cache after frames (230 times in one render), yet the processes still grew to 7 GB within each frame and the card filled: the VRAM a frame needs while it renders is not what clearing frees. Setups saved with it come back without it.

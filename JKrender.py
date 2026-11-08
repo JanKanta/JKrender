@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89.3 alpha"
+APP_VERSION = "0.89.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1697,6 +1697,7 @@ class RenderEngine:
             if ended and 0 <= load[2] - ended < 30:
                 load[2] = ended  # from when the old one finished: closing it and starting this one is the reload too
             w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
+            w.frame_ends = list(old.frame_ends)  # one lane: Test this script counts its frames across the restart
         w.pinned = by_hand
         self.workers[wid] = w
         self.last_spawn = time.time()
@@ -2007,6 +2008,7 @@ class RenderEngine:
             w.frames_here += 1
             w.frame_secs.append(secs)
             w.frame_ends.append(now)
+            self.last_frame_at = now
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
             fr = self.frames.get(f)
@@ -2954,15 +2956,17 @@ class RenderManager:
     def _vram_stalled(self, now):
         """Seconds since any GPU process of a running render finished a frame, when that is far longer than a frame takes
         (4 x the usual, at least a minute); else 0."""
-        ends, secs = [], []
+        ends, secs, gpu = [], [], False
         for e in self.engines:
             if e.state != "rendering":
                 continue
+            # the last frame any process of it finished (a process just started again is no progress), or its start
+            ends.append(max(getattr(e, "last_frame_at", None) or 0, e.started or 0) or now)  # this run's, not the last one's
             for w in e.workers.values():
                 if w.gpu and w.state in ("loading", "idle", "busy"):
-                    ends.append(w.frame_ends[-1] if getattr(w, "frame_ends", None) else w.spawned)
+                    gpu = True
                     secs += w.frame_secs[-10:]
-        if not ends:
+        if not ends or not gpu:
             return 0.0
         wait = max(60.0, 4 * statistics.median(secs)) if secs else 180.0
         idle = now - max(ends)
@@ -3450,11 +3454,11 @@ class SortItem(QtWidgets.QTableWidgetItem):
 
 
 class ScriptTest(QtWidgets.QDialog):
-    """Test this script: frames from the middle of the render, rendered with each Processes x Threads x
-    Cache setup: a few recommended ones (the RAM split between the processes) and your own, added here. Frames
-    per minute from when the script is open. It recommends the fastest; Use these settings puts it into Settings.
-    Nothing changes unless you press it. The frames go to a test folder, deleted after each setup; the render's own
-    files stay as they are."""
+    """Test this script: the same frames from 6 places spread over the shot, rendered with each Processes x Threads x
+    Cache setup (Create tests makes them from this PC; Add test adds your own) in two rounds: Round 1 a few frames each,
+    Round 2 the fastest again with all the frames. Frames per minute once the processes are going. The fastest is green,
+    the next orange; Use these settings puts it into Settings. Nothing changes unless you press it. The frames go to a
+    test folder, deleted after each setup; the render's own files stay as they are."""
 
     LIMIT = 360  # seconds a setup may take in the final round; a slow one is measured on the frames it got done
     QUICK_LIMIT = 180  # and in the quick round
