@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.5 alpha — 2026-11-08
+
+- Test this script: the columns grow with what they show again. The last column stretching with the window counted as sizing a column by hand, which stopped them growing, so the times came out cut ("1:09 (24 of 2…").
+
 ## 0.89.4 alpha — 2026-11-08
 
 - A full graphics card with no frame finishing is told from the last frame the render finished, not from when a process last started: a process started again would have hidden that nothing renders.
