@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.85 alpha — 2026-11-08
+
+- Test this script takes its frames from 6 places spread over the whole shot, from its first frame to its last, instead of the middle: a shot heavier at its start or end counts as it is. Every setup renders the same places, so they are compared on the same frames; at each a stretch of frames in a row (at least 2), as a render hands a process a chunk, so a node that looks at other frames is not always starting cold. A setup that needs more frames gets longer stretches.
+- Frames per setup can be set above the shot's length: next to it, it says the shot has only N frames and every setup renders all of them, and so does the result.
+
 ## 0.84 alpha — 2026-11-08
 
 - Test this script runs in two rounds: a quick one of 3 frames a process for every setup (3 minutes at most each), then only the two fastest, and any within 5 % of the best, with all the frames (Frames per setup, at least 4 a process). The slower ones keep their quick result. A test that took 20-30 minutes takes about a third of that.

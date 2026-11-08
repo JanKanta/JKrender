@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.84 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.85 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.84 alpha"
+APP_VERSION = "0.85 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3399,7 +3399,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "Renders frames from the middle of this render with each setup below: first a few frames each (quick round), then\n"
+            "Renders frames spread over this render with each setup below: first a few frames each (quick round), then\n"
             "the fastest ones again with all the frames (final round). Frames per minute once the processes are going: each\n"
             "process's first frame and the start are left out, as in a long render. The frames go to a test folder and are\n"
             "deleted; your render's files stay as they are. Nothing else should render meanwhile.")
@@ -3432,18 +3432,21 @@ class ScriptTest(QtWidgets.QDialog):
             return lab
 
         edit = QtWidgets.QHBoxLayout()
-        total = max(1, len(self.all_frames))
-        self.s_frames = box(1, total, min(total, int(window.settings.get("test_frames", self.FRAMES))))
-        self.s_frames.setToolTip("Frames each setup renders; at least 2 per process, so a setup with many gets more.\n"
-                                 "Few frames are quick but less exact: run the two best again with more to be sure.")
+        wanted = int(window.settings.get("test_frames", self.FRAMES))
+        self.s_frames = box(1, 9999, wanted)  # more than the shot has stays set: it says so and renders them all
+        self.s_frames.setToolTip("Frames each setup renders in the final round: stretches of frames in a row at the same 6 places spread\n"
+                                 "over the whole shot for every setup; at least 4 per process, so a setup with many gets more.\n"
+                                 "A shot with no more frames than that: all of them, and it says so.")
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
+        self.l_frames = label("")
+        self.s_frames.valueChanged.connect(self._frames_note)
         self.s_add_p, self.s_add_t, self.s_add_c = box(1, cpu, m.total), box(1, cpu, m.threads), box(1, ram, m.ram, " GB")
         self.b_add = QtWidgets.QPushButton("Add setup")
         self.b_add.clicked.connect(self._add_setup)
         self.b_remove = QtWidgets.QPushButton("Remove selected")
         self.b_remove.setToolTip("A recommended setup comes back the next time this window opens; one you added is gone.")
         self.b_remove.clicked.connect(self._remove_setups)
-        for widget in (label("Frames per setup"), self.s_frames):
+        for widget in (label("Frames per setup"), self.s_frames, self.l_frames):
             edit.addWidget(widget)
         edit.addSpacing(24)
         for widget in (label("Processes"), self.s_add_p, label("Threads"), self.s_add_t, label("Cache"), self.s_add_c,
@@ -3466,6 +3469,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_stop.clicked.connect(self.stop)
         self.b_use.clicked.connect(self.use)
         self.results, self.quick, self.round, self.queue = {}, {}, "quick", []
+        self._frames_note()
         self.index = -1
         self.run = None
         self.timer = QtCore.QTimer(self)
@@ -3510,15 +3514,43 @@ class ScriptTest(QtWidgets.QDialog):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
 
-    def _frames_for(self, processes):
-        """Frames from the middle of the render, the same for every setup but for those that need more. The quick round
-        gives each process a few; the final Frames per setup, and at least 4 a process."""
+    def _wanted(self, processes):
+        """How many frames a setup renders: the quick round a few a process, the final Frames per setup and at least 4 a process."""
         if self.round == "quick":
-            count = min(len(self.all_frames), max(self.QUICK_FRAMES * processes, 6))
+            return max(self.QUICK_FRAMES * processes, 6)
+        return max(self.s_frames.value(), 4 * processes)
+
+    PLACES = 6  # places spread over the shot, the same for every setup
+
+    def _frames_for(self, processes):
+        """Frames from the same places spread over the whole shot for every setup, a stretch of frames in a row at each: a shot
+        heavier at its start or end counts as it is, every setup renders the same parts of it, and a node that looks at other
+        frames works as in a render (a lone frame would always start cold). A setup that needs more frames gets longer
+        stretches at the same places. A shot with no more frames than that: all of them."""
+        frames = self.all_frames
+        total = len(frames)
+        count = self._wanted(processes)
+        if count >= total:
+            return list(frames)
+        places = max(1, min(self.PLACES, total // 3))
+        size = max(2, -(-count // places))  # at least 2 in a row: the first of a stretch warms up
+        if size * places >= total:
+            return list(frames)
+        picked = set()
+        for k in range(places):  # the first at the shot's start, the last at its end, the rest evenly between
+            start = int(round(k * (total - size) / float(places - 1))) if places > 1 else (total - size) // 2
+            picked.update(frames[start:start + size])
+        return sorted(picked)
+
+    def _frames_note(self, *_):
+        """Next to Frames per setup: how many the shot has, and when it has no more than that, that every setup renders them all."""
+        total = len(self.all_frames)
+        if self.s_frames.value() >= total:
+            self.l_frames.setText("the shot has only %d frames: every setup renders all of them" % total)
+            self.l_frames.setStyleSheet("color: %s;" % C["small"])
         else:
-            count = min(len(self.all_frames), max(self.s_frames.value(), 4 * processes))
-        first = (len(self.all_frames) - count) // 2
-        return self.all_frames[first:first + count]
+            self.l_frames.setText("of %d, from %d places spread over the whole shot" % (total, max(1, min(self.PLACES, total // 3))))
+            self.l_frames.setStyleSheet("")
 
     def _cell(self, row, col, text):
         item = self.table.item(row, col)
@@ -3748,6 +3780,9 @@ class ScriptTest(QtWidgets.QDialog):
             self.b_use.setEnabled(True)
         if partial:
             text = "(Stopped before all setups were tested.) " + text
+        if any(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()):
+            text += "  The shot has only %d frames, so %s rendered all of them." % (
+                len(self.all_frames), "every setup" if all(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()) else "some setups")
         self.verdict.setText(text)
         self._save_results(text)
 
@@ -3759,7 +3794,8 @@ class ScriptTest(QtWidgets.QDialog):
             rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
                     for r in range(self.table.rowCount())]
             path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
-            lines = ["%s, %d frames per setup or more, %d threads" % (self.src.name, self.s_frames.value(), os.cpu_count() or 0),
+            lines = ["%s, %d frames per setup or more (of %d in the shot), %d threads" % (
+                self.src.name, self.s_frames.value(), len(self.all_frames), os.cpu_count() or 0),
                      " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError:
