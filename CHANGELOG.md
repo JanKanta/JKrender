@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.3 alpha — 2026-11-08
+
+- VRAM per process is gone again, from Settings, from Add test / Edit test and from the worker. It cleared the Blink cache after frames (230 times in one render), yet the processes still grew to 7 GB within each frame and the card filled: the VRAM a frame needs while it renders is not what clearing frees. Setups saved with it come back without it.
+
 ## 0.89.2 alpha — 2026-11-08
 
 - VRAM per process takes tenths of a GB (5.5 GB), in Settings and in Add test / Edit test; the arrows step by 0.5.
