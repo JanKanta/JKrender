@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89.1 alpha"
+APP_VERSION = "0.89.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3565,7 +3565,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.resize(1400, 580)
         cpu = os.cpu_count() or 8
         m = window.manager
-        cur = (m.total, m.threads, m.ram, int(window.settings.get("vram_cap", 0) or 0))
+        cur = (m.total, m.threads, m.ram, round(float(window.settings.get("vram_cap", 0) or 0), 1))
         self.current = cur
         # your own, kept for next time; older ones have no VRAM per process
         self.added = {tuple(list(x) + [0] * (4 - len(x)))[:4] for x in window.settings.get("test_setups", [])}
@@ -3678,8 +3678,8 @@ class ScriptTest(QtWidgets.QDialog):
         self.table.clearContents()
         self.table.setRowCount(len(self.setups))
         for i, (n, t, c, v) in enumerate(self.setups):
-            item = SortItem("%d x %d, cache %d GB%s" % (n, t, c, ", VRAM %d GB" % v if v else ""))
-            item.setData(SortItem.KEY, n * 1000000 + t * 10000 + c * 100 + v)
+            item = SortItem("%d x %d, cache %d GB%s" % (n, t, c, ", VRAM %g GB" % v if v else ""))
+            item.setData(SortItem.KEY, n * 1000000 + t * 10000 + c * 100 + float(v))
             item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
             self.table.setItem(i, self.C_SETUP, item)
             self._cell(i, self.C_STATE, "waiting")
@@ -3717,7 +3717,10 @@ class ScriptTest(QtWidgets.QDialog):
         spins = []
         for name, lo, hi, value, suffix in (("Processes", 1, cpu, n, ""), ("Threads", 1, cpu, t, ""), ("Cache", 1, ram, c, " GB"),
                                             ("VRAM per process", 0, card, v, " GB")):
-            spin = QtWidgets.QSpinBox()
+            spin = QtWidgets.QDoubleSpinBox() if lo == 0 else QtWidgets.QSpinBox()  # VRAM in tenths of a GB
+            if lo == 0:
+                spin.setDecimals(1)
+                spin.setSingleStep(0.5)
             spin.setRange(lo, hi)
             spin.setValue(value)
             spin.setSuffix(suffix)
@@ -3732,7 +3735,7 @@ class ScriptTest(QtWidgets.QDialog):
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         accepted = dialog.exec() == QtWidgets.QDialog.Accepted
-        setup = tuple(spin.value() for spin in spins)
+        setup = tuple(spin.value() for spin in spins[:3]) + (round(spins[3].value(), 1),)
         dialog.deleteLater()
         return setup if accepted else None
 
@@ -5576,12 +5579,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_vram.setEnabled(self.c_vram.isChecked() and self.c_gpu.isChecked())
         self.c_vram.setEnabled(self.c_gpu.isChecked())
         self.c_gpu.toggled.connect(lambda v: (self.c_vram.setEnabled(v), self.s_vram.setEnabled(v and self.c_vram.isChecked())))
-        self.s_vram_cap = QtWidgets.QSpinBox()
+        self.s_vram_cap = QtWidgets.QDoubleSpinBox()
+        self.s_vram_cap.setDecimals(1)
+        self.s_vram_cap.setSingleStep(0.5)
         self.s_vram_cap.setRange(0, 256)
         self.s_vram_cap.setSuffix(" GB")
         self.s_vram_cap.setSpecialValueText("off")
-        self.s_vram_cap.setValue(int(self.settings.get("vram_cap", 0) or 0))
-        self.s_vram_cap.valueChanged.connect(lambda v: self._save_setting("vram_cap", v))
+        self.s_vram_cap.setValue(float(self.settings.get("vram_cap", 0) or 0))
+        self.s_vram_cap.valueChanged.connect(lambda v: self._save_setting("vram_cap", round(v, 1)))
         self.s_vram_cap.setEnabled(self.c_gpu.isChecked())
         self.c_gpu.toggled.connect(self.s_vram_cap.setEnabled)
         row(perf, "VRAM limit", [self.c_vram, self.s_vram],

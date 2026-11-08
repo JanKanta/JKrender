@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.2 alpha — 2026-11-08
+
+- VRAM per process takes tenths of a GB (5.5 GB), in Settings and in Add test / Edit test; the arrows step by 0.5.
+
 ## 0.89.1 alpha — 2026-11-08
 
 - Settings: VRAM per process sits in Processes and Chunks, under Cache and above Chunk.
