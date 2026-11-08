@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.3 alpha"
+APP_VERSION = "0.87.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3448,8 +3448,9 @@ class ScriptTest(QtWidgets.QDialog):
         self._sizing = False
         head.sectionResized.connect(self._sized)
         lay.addWidget(self.table, 1)
-        self.verdict = QtWidgets.QLabel("")
+        self.verdict = QtWidgets.QLabel("")  # only when something went wrong: the colours in the table say which is fastest
         self.verdict.setWordWrap(True)
+        self.verdict.hide()
         lay.addWidget(self.verdict)
         ram = max(1, int(psutil.virtual_memory().total / 1024 ** 3)) if psutil else 256
 
@@ -3664,6 +3665,7 @@ class ScriptTest(QtWidgets.QDialog):
         self._idle(False)
         self.b_use.setEnabled(False)
         self.verdict.setText("")
+        self.verdict.hide()
         self._fill_table()
         self.results, self.quick = {}, {}
         self.round = "quick"  # every setup a little, then the best ones with all the frames
@@ -3755,6 +3757,7 @@ class ScriptTest(QtWidgets.QDialog):
             # Nuke says it wrote a frame that is not in the test folder: it went somewhere else, so stop at once
             self.stop()
             self.b_use.setEnabled(False)
+            self.verdict.show()
             self.verdict.setText("Test stopped: a frame did not arrive in the test folder, so it may have gone to the "
                                  "render's own folder. Check that folder before you render.")
             return
@@ -3905,6 +3908,7 @@ class ScriptTest(QtWidgets.QDialog):
         if not whole:
             text = "No setup finished a frame, so there is nothing to recommend."
             self.verdict.setText(text)
+            self.verdict.show()
             self._save_results(text)
             return
         best = max(whole, key=lambda k: self.results[k]["rate"])
@@ -3925,8 +3929,7 @@ class ScriptTest(QtWidgets.QDialog):
         if any(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()):
             text += "  The shot has only %d frames, so %s rendered all of them." % (
                 len(self.all_frames), "every setup" if all(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()) else "some setups")
-        self.verdict.setText(text)
-        self._save_results(text)
+        self._save_results(text)  # the line goes into the saved table only
 
     def _save_results(self, verdict):
         """The table as text, to look at or compare later: ~/.jkrender/test_results."""
@@ -3948,7 +3951,6 @@ class ScriptTest(QtWidgets.QDialog):
         self.main.s_workers.setValue(n)
         self.main.s_threads.setValue(t)
         self.main.s_ram.setValue(c)
-        self.verdict.setText(self.verdict.text() + "  Set: Processes %d, Threads %d, Cache %d GB." % (n, t, c))
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):

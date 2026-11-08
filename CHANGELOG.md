@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.4 alpha — 2026-11-08
+
+- Test this script: no "Fastest for this script…" line under the table any more; the colours in the table say which is fastest, and the line still goes into the saved table. A line shows only when something went wrong (a frame that did not arrive in the test folder, no setup that finished a frame).
+
 ## 0.87.3 alpha — 2026-11-08
 
 - Test this script: every setup of a round renders the same frames, as many as the setup with the most processes needs (Round 1: 3 a process of that one, Round 2: Frames per setup and at least 4 a process of the finalist with the most). Before, a setup with more processes rendered more frames (1 x 32 12, 6 x 6 18), which was confusing and compared them on different frames.
