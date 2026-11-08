@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.87.2 alpha — 2026-11-08
+
+- Test this script: the column Average processes is called Avg processes. Columns can be made wider or narrower and dragged elsewhere; they grow with what they show until you size one yourself, and stay as you left them the next time the window opens.
+
 ## 0.87.1 alpha — 2026-11-08
 
 - Test this script: Frames per setup sits top right, on the row of Add test and Remove test.

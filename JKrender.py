@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.87.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.87.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.87.1 alpha"
+APP_VERSION = "0.87.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3430,8 +3430,23 @@ class ScriptTest(QtWidgets.QDialog):
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)  # columns can be made wider or narrower
+        head.setSectionsMovable(True)  # and dragged elsewhere
+        head.setStretchLastSection(True)
+        self._sizing, self._auto_width = True, True  # columns grow with what they show until you size one yourself
+        self.table.resizeColumnsToContents()
+        saved = window.settings.get("test_header")
+        if saved:  # as you left them last time
+            try:
+                head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
+                if head.count() != len(self.COLUMNS):
+                    raise ValueError
+                self._auto_width = False
+            except (ValueError, UnicodeError):
+                self.table.resizeColumnsToContents()
+        self._sizing = False
+        head.sectionResized.connect(self._sized)
         lay.addWidget(self.table, 1)
         self.verdict = QtWidgets.QLabel("")
         self.verdict.setWordWrap(True)
@@ -3496,8 +3511,21 @@ class ScriptTest(QtWidgets.QDialog):
         self.table.setSortingEnabled(True)
         self._fit_columns()
 
+    def _sized(self, *_):
+        if not self._sizing:
+            self._auto_width = False  # you sized a column: it stays as you left it
+
     def _fit_columns(self):
-        """The window grows to show every column whole, as far as the screen allows."""
+        """Columns grow to show what they hold (until you size one yourself); the window grows to show them all, as far
+        as the screen allows."""
+        if self._auto_width:
+            self._sizing = True
+            head = self.table.horizontalHeader()
+            for col in range(self.table.columnCount() - 1):
+                wanted = max(head.sectionSizeHint(col), self.table.sizeHintForColumn(col))
+                if head.sectionSize(col) < wanted:
+                    head.resizeSection(col, wanted)
+            self._sizing = False
         wanted = sum(max(self.table.horizontalHeader().sectionSizeHint(c), self.table.sizeHintForColumn(c))
                      for c in range(self.table.columnCount())) + 60
         room = self.screen().availableGeometry().width() - 40
@@ -3560,7 +3588,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     PLACES = 6  # places spread over the shot, the same for every setup
     COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
-               ("Average processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
+               ("Avg processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
                ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
                ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
                ("Frames / min", "Once the processes are going: each process's first frame and the start left out. From round 2 where it ran"),
@@ -3921,6 +3949,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     def closeEvent(self, event):
         self.stop()
+        self.main._save_setting("test_header", bytes(self.table.horizontalHeader().saveState().toBase64()).decode("ascii"))
         super().closeEvent(event)
 
 
