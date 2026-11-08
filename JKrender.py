@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.88.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.88.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.88.2 alpha"
+APP_VERSION = "0.88.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2666,7 +2666,7 @@ class RenderManager:
                 e.note("!! %d processes closed for VRAM within 5 minutes. %s" % (recent, e.notice[0]), "warn")
 
     def fall_wait(self):
-        """Seconds until a process may come back after one closed for memory: RETURN_CHECK, then 60, 120 and 300 as it happens
+        """Seconds until a process may come back after one closed for memory: RETURN_CHECK, then 30, 60 and 150 as it happens
         again within 10 minutes, so a script that does not fit does not go round and round. Processes closing one
         after another within a minute are one overload, not several."""
         now = time.time()
@@ -2674,7 +2674,7 @@ class RenderManager:
         if not recent:
             return 0.0
         times = 1 + sum(1 for a, b in zip(recent, recent[1:]) if b - a >= 60)
-        return max(0.0, recent[-1] + (RETURN_CHECK, 60, 120, 300)[min(times, 4) - 1] - now)
+        return max(0.0, recent[-1] + (RETURN_CHECK, 30, 60, 150)[min(times, 4) - 1] - now)
 
     def _vram_idle_update(self):
         """VRAM in use while no Nuke process of JKrender runs: Windows, other programs. The rest is ours, including

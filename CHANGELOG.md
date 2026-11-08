@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.88.3 alpha — 2026-11-08
+
+- After processes closed for RAM or VRAM again within 10 minutes, they come back after half the wait: 30, 60 and 150 s instead of 60, 120 and 300 (the first time still 5 s).
+
 ## 0.88.2 alpha — 2026-11-08
 
 - VRAM limit like the RAM limit: when the card has room again, as many processes come back at once as fit under the limit (with what the ones still starting will take), not one at a time. On the edge of spilling into the RAM (97 %) the process started last closes at once, as with the RAM, instead of the one taking the most VRAM: it has the least work to lose.
