@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.82 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.82.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.82 alpha"
+APP_VERSION = "0.82.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -3445,9 +3445,14 @@ class ScriptAnalysis(QtWidgets.QDialog):
                     self.boot = at - t0
                 if m.group(1) == "FRAME":
                     self.frame_lines.append((at, float(m.group(2).split()[1])))
+                if m.group(1) == "MEM":
+                    try:  # what of its RAM is Nuke's cache: it takes what it is given, so that part says little
+                        self.cache_used = max(self.cache_used, int(m.group(2).split()[0]) / 1024.0 ** 3)
+                    except (ValueError, IndexError):
+                        pass
             return None
 
-        self.failed, self.boot, self.frame_lines = "", None, []
+        self.failed, self.boot, self.frame_lines, self.cache_used = "", None, [], 0.0
         try:
             ready = until("READY", t0 + self.LIMIT)
             if ready is None:
@@ -3565,7 +3570,8 @@ class ScriptAnalysis(QtWidgets.QDialog):
         return {"failed": self.failed if not secs else "", "died": died or proc.poll() is not None,
                 "frames": len(secs), "secs": sum(secs) / max(1, len(secs)),
                 "first": secs[0] if secs else None, "rest": (sum(secs[1:]) / len(secs[1:])) if len(secs) > 1 else None,
-                "threads": sum(cpus) / len(cpus), "rss": got["rss"], "vram": max([got["vram"]] + after), "growth": growth,
+                "threads": sum(cpus) / len(cpus), "rss": got["rss"], "cache": getattr(self, "cache_used", 0.0) or None,
+                "vram": max([got["vram"]] + after), "growth": growth,
                 "gpu_use": (sum(got["gpu"]) / len(got["gpu"])) if got["gpu"] else None, "nodes": nodes,
                 "timed": timed, "took": time.time() - t0}
 
@@ -3640,9 +3646,16 @@ class ScriptAnalysis(QtWidgets.QDialog):
         if gpu > 0.05:
             rate = min(rate, 60.0 / (gpu * T))
         rate = min(rate, cls.QUICK)
-        need = max(probe.get("rss") or 0.0, 1.0) + 2.0
+        rss = max(probe.get("rss") or 0.0, 1.0)
+        if probe.get("cache"):
+            # Nuke fills the cache it is given (PROBE_CACHE in the analysis), so that part of its RAM is not what it needs:
+            # the rest, and at least floor GB of cache. A heavy comp, 23 GB in the analysis of which 16 GB cache, rendered
+            # faster as 4 x 8 with 12 GB of cache each than as 2 x 16 with 32.
+            need = max(rss - probe["cache"], 1.0) + floor + 1.0
+        else:
+            need = rss + 2.0
         if probe["frames"] < 3 and T > cls.SLOW_ONE:
-            need *= cls.UNSURE_RAM
+            need = max(need, rss) * cls.UNSURE_RAM  # one slow frame says little: a TimeBlur's cache took 3 x more later
         if n * need > free_gb or (n > 1 and free_gb / n - BESIDE_CACHE < floor):
             return 0.0, "RAM", rate
         grow = probe.get("growth") or 0.0

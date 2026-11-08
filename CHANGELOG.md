@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.82.1 alpha — 2026-11-08
+
+- Analyze script no longer counts Nuke's cache as RAM a process needs. Nuke fills the cache it is given (16 GB in the analysis), so a heavy comp that showed 23 GB was held to 2 x 16, while 4 x 8 with 12 GB of cache each rendered faster and kept the CPU busier. It now reads how much of the RAM is cache and allows the rest plus at least 4 GB of cache (8 GB on a script of 60 nodes or more). On the 25 test scripts its picks stay as good: 3 % off the fastest on average.
+
 ## 0.82 alpha — 2026-11-08
 
 - Analyze script recommends from an estimate of frames per minute for each Processes x Threads setup of this CPU, shown in a new table: how many threads one Nuke keeps busy (a script that keeps nearly all busy gains nothing from more processes), what processes lose sharing the memory and the one graphics card, and what fits in the RAM and the VRAM. Fitted on 24 scripts measured with Test this script (light and heavy comps, CPU and GPU nodes, 3D, time nodes, reading from disk): its pick was within 5 % of the fastest on 19 and 3 % off on average, against 15 % before. The rule before nearly always said 8 x 4; on a TimeBlur over a heavy tree that rendered no frame in 6 minutes.
