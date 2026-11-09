@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.4 alpha"
+APP_VERSION = "0.93.5 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6422,8 +6422,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.range_edit.setText(e.frames_text)
         if hasattr(self, "e_frames") and not self.e_frames.hasFocus():
             self.e_frames.setText(e.frames_text)
-        self.l_info["processes"].setText(str(m.total))
-        self.l_info["threads"].setText(str(m.threads))
+        threads = e._process_size()[0]
+        self.l_info["processes"].setText("1" if e.movie else str(m.total))  # a movie renders in one process
+        self.l_info["threads"].setText(str(threads))
         self.l_info["cache"].setText("%d GB" % m.ram)
         self.l_info["chunk"].setText("whole movie" if e.movie else "%d fr" % e.chunk_size)
 
@@ -6452,6 +6453,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._slow_tick()
         self.frame_map.update()
         self._save_queue()
+
+    TIP_WORKERS = ("Nuke processes for all renders together. One render gets them all;\n"
+                   "renders side by side share them (8 -> 4 + 4 -> 3 + 3 + 2).")
+    TIP_THREADS = "Threads per Nuke process (-m)."
+
+    def _show_process_size(self):
+        """Settings > Processes and Threads as the picked render runs: a movie is one file, rendered in one process with
+        every thread, whatever is set for the other renders. Shown only: what is set for the rest stays as it is."""
+        e, m = self.engine, self.manager
+        movie = bool(e.movie)
+        for box, value in ((self.s_workers, 1 if movie else m.total), (self.s_threads, e._process_size()[0])):
+            if box.value() != value:
+                box.blockSignals(True)  # shown, not changed: nothing is saved
+                box.setValue(value)
+                box.blockSignals(False)
+            if movie:
+                box.setEnabled(False)
+        note = "A movie is one file: it renders in one Nuke process with all %d threads.\n" \
+               "The Processes and Threads set for the other renders stay as they are." % e._process_size()[0]
+        self.s_workers.setToolTip(note if movie else self.TIP_WORKERS)
+        self.s_threads.setToolTip(note if movie else self.TIP_THREADS)
 
     def _workers_changed(self, v):
         self.manager.set_budget(total=v)
@@ -6493,6 +6515,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
         for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
             widget.setEnabled(not any_running)
+        self._show_process_size()
         targets = self._targets()
         if len(targets) > 1:  # several renders picked with Shift: the buttons act on all of them
             startable = any(x.state in ("ready", "stopped", "failed") and not x.nothing_to_render() for x in targets)

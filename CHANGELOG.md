@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.5 alpha — 2026-11-09
+
+- A movie render picked: Settings > Processes shows 1 and Threads every thread, both locked, and the row by the Render button says the same; a movie is one file and always rendered so. What is set for the other renders stays as it is and comes back when one of them is picked.
+
 ## 0.93.4 alpha — 2026-11-09
 
 - State of a process waiting for VRAM shows the whole target: with the room kept for the processes still starting (just started or a fresh Nuke, each counted at the size one process takes), e.g. "wait: VRAM 75 → 14 % (3 starting)". Before, it showed "75 → 68 %" while the decision also counted those, so it looked as if the process should be back already.
