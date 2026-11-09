@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89.8 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.90 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89.8 alpha"
+APP_VERSION = "0.90 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -73,7 +73,7 @@ PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
                     "vram_guard": True, "vram_limit": 95,
-                    "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 7,
+                    "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True, "slate_frame": 1000,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
@@ -4939,7 +4939,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Before the window shows: frames the Write already rendered appear as done.
         self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
         if self.settings.get("log_cleanup", True):
-            days = int(self.settings.get("log_days", 7))
+            days = int(self.settings.get("log_days", 15))
             deleted, freed = clean_render_folders(job_path.parent.parent, days, keep=[job_path.parent])
             if deleted:
                 self.engine.note("Deleted %d render log folder(s) older than %d days (%s)" % (deleted, days, fmt_size(freed)))
@@ -5152,7 +5152,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.frames_model.engine = e
         self.frames_model.refilter()
         self.gantt.selected = e
-        if hasattr(self, "l_ram_need"):
+        if hasattr(self, "r_chunk_auto"):  # Settings are built
             self._show_chunk()
         if hasattr(self, "e_frames"):
             self.e_frames.setText(e.frames_text)
@@ -5346,7 +5346,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.gantt.workerMenu.connect(self._worker_menu)
         self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
         self.gantt.dim_others = bool(self.settings.get("dim_others", True))
-        self.gantt.hide_old_done = bool(self.settings.get("hide_old_done", True))
+        self.gantt.hide_old_done = True  # rendering again, the timeline shows the new run only
         self.pages = QtWidgets.QStackedWidget()
         for page in (self.gantt, self._log_tab()):
             self.pages.addWidget(page)
@@ -5439,6 +5439,15 @@ class MainWindow(QtWidgets.QMainWindow):
             c.grid.setRowMinimumHeight(r, 0)
             return lab
 
+        def line(c):
+            """A thin line across the card, between groups of settings."""
+            frame = QtWidgets.QFrame()
+            frame.setFixedHeight(1)
+            frame.setStyleSheet("background: %s; border: none;" % C["line"])
+            r = c.grid.rowCount()
+            c.grid.addWidget(frame, r, 0, 1, 3)
+            return frame
+
         def toggle(key, default, slot=None):
             t = Toggle()
             t.setChecked(bool(self.settings.get(key, default)))
@@ -5453,6 +5462,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Start next render when one ends", [self.c_next],
             "When a render finishes, the next render still waiting to be started starts by itself, in the order of the\n"
             "cards, and so on. A render you stopped stays stopped and does not start the next one.")
+        self.c_sound = toggle("end_sound", True)
+        row(gen, "Sound when a render ends", [self.c_sound],
+            "One sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem.\n"
+            "It comes when the checks that are on are through: the frame check, then the pixel check. With several renders,\n"
+            "for each of them. A render you stopped and a render already on disk when it opens stay silent.")
+        line(gen)
         self.c_frames = toggle("check_frames", True)
         row(gen, "Check frames as they render", [self.c_frames],
             "Each frame right after it renders: is the file there, not empty, whole and readable, and is it far smaller than the rest.\n"
@@ -5467,12 +5482,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Check pixels when a render opens", [self.c_open],
             "The same check on the frames already on disk, in the background, as soon as a render opens here.\n"
             "Render stops it, and a render that ends checks them all anyway. Frames on disk are always checked for missing, empty or cut-off files when a render opens.")
-        self.c_sound = toggle("end_sound", True)
-        row(gen, "Sound when a render ends", [self.c_sound],
-            "One sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem.\n"
-            "It comes when the checks that are on are through: the frame check, then the pixel check. With several renders,\n"
-            "for each of them. A render you stopped and a render already on disk when it opens stay silent.")
         threading.Thread(target=lambda: [sound_file(name) for name in SOUNDS], daemon=True).start()
+        line(gen)
         self.s_max = QtWidgets.QSpinBox()
         self.s_max.setRange(1, MAX_RENDERS)
         self.s_max.setValue(self.manager.max_renders)
@@ -5490,28 +5501,18 @@ class MainWindow(QtWidgets.QMainWindow):
         row(gen, "Dim other renders in Workers", [self.c_dim],
             "On: in the Workers timeline the chunks of the render you picked are bright, the others dimmed.\n"
             "Off: every render's chunks are equally bright.")
-        self.c_hide_done = toggle("hide_old_done", True, self._hide_done_changed)
-        row(gen, "Hide done chunks when rendering again", [self.c_hide_done],
-            "On: when you render a render again (Render again, Render this frame / batch, Render after Done),\n"
-            "the Workers timeline shows only the new run, without the chunks that were done before.\n"
-            "Off: the earlier run's done chunks stay on the timeline.")
         self.c_clean = toggle("log_cleanup", True, lambda v: (self._save_setting("log_cleanup", v),
                                                                self.s_days.setEnabled(v)))
         self.s_days = QtWidgets.QSpinBox()
         self.s_days.setRange(1, 3650)
         self.s_days.setSuffix(" days")
-        self.s_days.setValue(int(self.settings.get("log_days", 7)))
+        self.s_days.setValue(int(self.settings.get("log_days", 15)))
         self.s_days.setEnabled(self.c_clean.isChecked())
         self.s_days.valueChanged.connect(lambda v: self._save_setting("log_days", v))
         row(gen, "Delete old render logs", [self.c_clean, self.s_days],
             "When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
             "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.")
         note(gen, "Snapshots and logs in the log folder; rendered frames are never touched.")
-        self.b_export = QtWidgets.QPushButton("Export render data…")
-        self.b_export.clicked.connect(self._export_render_data)
-        row(gen, "Render data", [self.b_export],
-            "Every render's report (this PC, settings, speed, memory, how the processes started, the kinds of nodes)\n"
-            "in one file, to send to whoever tunes JKrender's recommendations. No script names, paths or errors in it.")
         self.b_reset = QtWidgets.QPushButton("Reset to defaults")
         self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
         self.b_reset.clicked.connect(self._reset_settings)
@@ -5537,6 +5538,11 @@ class MainWindow(QtWidgets.QMainWindow):
             "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
             "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
             "Frames already on disk stay where they are. Locked while this render runs.")
+        self.b_test = QtWidgets.QPushButton("Test this script…")
+        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Cache setups\n"
+                               "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
+        self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
+        row(jobs, "Test", [self.b_test])
 
         # -- Performance and Optimization, under Job
         perf = card("Performance and Optimization")
@@ -5578,11 +5584,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: nothing watches RAM; Windows starts swapping when it runs out.")
         note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
 
-        self.b_test = QtWidgets.QPushButton("Test this script…")
-        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Cache setups\n"
-                               "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
-        self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
-        row(perf, "Test", [self.b_test])
         cards.remove(jobs)
         cards.remove(perf)
         column = QtWidgets.QWidget()  # Job over Performance: one place among the cards
@@ -5598,7 +5599,6 @@ class MainWindow(QtWidgets.QMainWindow):
         row(procs, "Processes", [self.s_workers])
         row(procs, "Threads", [self.s_threads])
         row(procs, "Cache", [self.s_ram])
-        self.l_ram_need = note(procs, QtWidgets.QLabel(""))
         # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
         self.r_chunk_auto = QtWidgets.QPushButton("Auto")
         self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
@@ -5662,8 +5662,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_chunk.blockSignals(True)
         self.s_chunk.setValue(self.engine.chunk_size)
         self.s_chunk.blockSignals(False)
-        need = self.engine.ram_need()
-        self.l_ram_need.setText("this script took %.1f GB per process last time" % need if need else "")
         self._sync_controls()
 
     def _tables(self):
@@ -5696,33 +5694,6 @@ class MainWindow(QtWidgets.QMainWindow):
         for col in range(1, self.worker_table.columnCount()):
             self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in SYSTEM_HIDDEN)
 
-    def _export_render_data(self):
-        """Settings > Export render data: the reports of every render in the log folder, without names, paths or errors."""
-        root = self.engine.dir.parent
-        renders = []
-        for path in sorted(root.glob("*/report.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if data.get("report") != 2:
-                continue  # from before JKrender measured renders
-            data.pop("error", None)
-            data.pop("bad_frames", None)
-            renders.append(data)
-        if not renders:
-            QtWidgets.QMessageBox.information(self, "JKrender", "No render has a report to export yet.\n"
-                                              "Renders finished with this version of JKrender write one.")
-            return
-        name = "jkrender_render_data_%s_%s.json" % (machine_info()["id"], datetime.date.today().isoformat())
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export render data", str(Path.home() / "Desktop" / name), "JSON (*.json)")
-        if not path:
-            return
-        Path(path).write_text(json.dumps({"exported": datetime.datetime.now().isoformat(timespec="seconds"),
-                                          "jkrender": APP_VERSION, "renders": renders}, indent=1), encoding="utf-8")
-        self.engine.note("Exported %d render report(s) to %s" % (len(renders), path), "ok")
-        QtWidgets.QMessageBox.information(self, "JKrender", "%d render report(s) saved to\n%s" % (len(renders), path))
-
     def _reset_settings(self):
         if (QtWidgets.QMessageBox.question(self, "Reset to defaults",
                                           "Put every setting back to how JKrender comes?\n"
@@ -5736,10 +5707,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 7),
+                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 15),
                            (self.s_vram, 95)):
             box.setValue(value)
-        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hide_done, True), (self.c_clean, True),
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
@@ -5757,11 +5728,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _dim_changed(self, on):
         self._save_setting("dim_others", on)
         self.gantt.dim_others = on
-        self.gantt.update()
-
-    def _hide_done_changed(self, on):
-        self._save_setting("hide_old_done", on)
-        self.gantt.hide_old_done = on
         self.gantt.update()
 
     def _all_workers_changed(self, on):
