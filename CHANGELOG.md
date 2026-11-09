@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.92 alpha — 2026-11-09
+
+- State says it ahead: a process that gets a fresh Nuke after its chunk shows "busy → fresh Nuke (memory short)", or "busy → fresh Nuke" with Always.
+- The old renewing is gone, Fresh Nuke after every chunk does it: the process that grew the most in VRAM between 90 and 95 % (When memory is short now renews every process from 90 %), and a process whose RAM grew past 1.5 times (it cost a script load also with plenty of RAM free). With Off no process is renewed. At the VRAM limit fewer processes run straight away, as before when none had grown.
+
 ## 0.91 alpha — 2026-11-09
 
 - **Fresh Nuke after every chunk** (Settings > Processes and Chunks): Off / When memory is short (default) / Always. A process closes after its chunk and a new one opens the script again in its place, with its RAM and VRAM back at the start; it starts at once, without waiting its turn to come back. When memory is short: only while a process waits for RAM or VRAM, or the PC is within 5 % of a limit. Never for the last chunks, when there is nothing left to hand out.

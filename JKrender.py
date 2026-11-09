@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.91 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.92 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.91 alpha"
+APP_VERSION = "0.92 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1475,8 +1475,8 @@ class RenderEngine:
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → %d %s" % (state, w.leave_to.number, w.leave_to.name)
-        if getattr(w, "recycle_vram", False) and state == "busy":
-            return "busy → fresh Nuke (VRAM)"
+        if state == "busy" and not (w.retire or w.handover or w.leave) and self._fresh_due():
+            return "busy → fresh Nuke" if self.settings.get("fresh_after_chunk", "short") == "always" else "busy → fresh Nuke (memory short)"
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
             return "%s → closes (%s)" % (state, w.why_leaving)
         if w.handover or (w.retire and state == "busy"):
@@ -2083,16 +2083,7 @@ class RenderEngine:
             if vram_now and w.vram_base is None:
                 w.vram_base = vram_now
                 self._vram_seen = max(getattr(self, "_vram_seen", 0.0), vram_now)
-            # A process normally takes its cache and BESIDE_CACHE more, and the first chunk can be well under that.
-            if w.rss > max(w.ram + 2 * BESIDE_CACHE, w.rss_base * 1.5):
-                self._quit(w, "recycled:%.1f GB RAM, up from %.1f GB after its first chunk" % (w.rss, w.rss_base))
-            elif getattr(w, "recycle_vram", False):
-                # Picked only with the card close to the limit (_recycle_grown). Some scripts make Nuke keep VRAM it no
-                # longer needs, frame after frame; with room on the card that costs nothing, and a restart costs a script load.
-                w.closed_why = "recycled, VRAM"
-                self._quit(w, "recycled: %.1f GB VRAM, up from %.1f GB after its first chunk"
-                           % (vram_now / 1024, (w.vram_base or 0) / 1024))
-            elif w.retire or w.handover:
+            if w.retire or w.handover:
                 self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
                            else "not needed")
             elif self._fresh_due():
@@ -2936,12 +2927,7 @@ class RenderManager:
         # (only a guess while the VRAM of other programs is unknown: ours also grow, frame after frame)
         no_help = others is None and self._vram_lowered_at is not None and live <= (self.vram_cap or live) \
             and pct > self._vram_lowered_at - one / 2
-        pending = any(getattr(w, "recycle_vram", False) for e in self.engines for w in e.workers.values()
-                      if w.state != "gone")
-        if limit - 5 <= pct < limit and not pending:
-            # Close to the limit already: the process that grew the most gets a fresh Nuke after its chunk, so it
-            # is done before the card fills (a grown process takes 1 GB more in one frame; 95 % to 97 % is 0.5 GB)
-            self._recycle_grown(vram_of)
+        # within 5 % of the limit the processes get a fresh Nuke after their chunk (Fresh Nuke after every chunk)
         if pct >= limit:
             self._vram_ok_since = None
             theirs = others is not None and others + one >= limit
@@ -2954,11 +2940,6 @@ class RenderManager:
                         why = "the last process closed for it freed almost none"
                     self._note_running("VRAM %.0f %% (limit %.0f %%), but %s: closing more of JKrender's processes "
                                        "would not help, so %d keep going" % (pct, limit, why, live), "warn")
-            elif any(getattr(w, "recycle_vram", False) for e in self.engines for w in e.workers.values()
-                     if w.state != "gone"):
-                pass  # one is already to be replaced by a fresh Nuke after its chunk: see what that frees first
-            elif self._recycle_grown(vram_of):
-                pass
             elif live > 1:
                 cap = max(1, min(self.budget(), live) - 1)
                 if (self.vram_cap is None or (live <= self.vram_cap and cap < self.vram_cap)) and now >= self.started_by_hand:
@@ -3044,21 +3025,6 @@ class RenderManager:
                 if size and w.gpu and w.state != "gone" and w.vram_base is None:
                     room -= max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
         return max(0, int(room // one))
-
-    def _recycle_grown(self, vram_of):
-        """The GPU process that grew the most past what it took after its first chunk is replaced by a fresh Nuke
-        after its chunk. Nuke keeps VRAM it no longer needs (one script: 5 GB after the first chunk, 14 GB later), so
-        at the limit the card is full of that, not of too many processes. True when one was picked."""
-        grown = [(vram_of(w) - w.vram_base, e, w) for e in self.engines for w in e.workers.values()
-                 if w.gpu and w.state == "busy" and w.vram_base and not (w.retire or w.handover or w.leave)
-                 and vram_of(w) > w.vram_base * 1.3]
-        if not grown:
-            return False
-        _, e, w = max(grown, key=lambda g: g[0])
-        w.recycle_vram = True
-        e.note("VRAM close to the limit: %s has grown to %.1f GB (%.1f GB after its first chunk); after its chunk a fresh "
-               "Nuke takes over" % (w.name, vram_of(w) / 1024, w.vram_base / 1024), "warn")
-        return True
 
     def take_wid(self, engine=None):
         """The lowest process number no running process has. When a render is done, the process a render
@@ -5713,7 +5679,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
             "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: fresh ones leave room for more processes.\n"
             "Each costs one script load.\n\n"
-            "Off: a process renders chunk after chunk (it is still renewed when its RAM or VRAM keeps growing).\n"
+            "Off: a process renders chunk after chunk, never a fresh one.\n"
             "When memory is short: only while a process waits for RAM or VRAM to come back, or the PC is within 5 % of a limit.\n"
             "Always: after every chunk. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
