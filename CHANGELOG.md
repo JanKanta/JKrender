@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.94 alpha — 2026-11-09
+
+- Frames are checked once the render ends, not each right after it renders: render, then Check frames (is each file there, not empty, whole, readable, not far smaller than the rest), then Check pixels. Stop checks what was rendered before it. Nothing reads the output folder while Nuke writes into it. The setting is now Check frames when a render ends. Test this script still checks each frame as it comes, it counts its frames by that.
+
 ## 0.93.9 alpha — 2026-11-09
 
 - A frame not on disk says "not on disk" again, also when other frames of the render are on disk: with one frame on disk, 0.93.7 called all the others "missing" and warned about them. Output All lists them anyway (0.93.8), and Check frames no longer calls them broken (0.93.6).

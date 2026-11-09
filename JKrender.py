@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.9 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.94 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.9 alpha"
+APP_VERSION = "0.94 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1599,6 +1599,16 @@ class RenderEngine:
         self.state = "stopped"
         self.ended = time.time()
         self.note(reason)
+        self.check_rendered()  # what it rendered before Stop
+
+    def check_rendered(self):
+        """Settings > Check frames when a render ends: each frame this run rendered, once, after the render (or Stop): is the
+        file there, not empty, whole and readable. Not while it renders, so nothing reads the disk next to Nuke writing."""
+        if self.movie or self.job.get("test_out") or not self.settings.get("check_frames", True):
+            return
+        for f, fr in self.frames.items():
+            if fr.state == "done" and fr.worker != "on disk" and not fr.checks:
+                self._submit_check(f)
 
     def set_workers(self, n):
         self.workers_target = max(0, int(n))
@@ -2072,7 +2082,7 @@ class RenderEngine:
             if fr is not None:
                 fr.state, fr.secs, fr.worker = "done", secs, w.name
                 fr.ran_in = w.chunk.name if w.chunk else None
-                if self.settings.get("check_frames", True) or self.job.get("test_out"):  # Test this script counts its frames by this
+                if self.job.get("test_out"):  # Test this script counts its frames by this; a render checks them when it ends
                     self._submit_check(f)
             if w.chunk and w.chunk.whole_range:
                 nxt = f + 1
@@ -2407,6 +2417,7 @@ class RenderEngine:
         if self.state == "rendering" and not any(c.state == "rendering" or (c.state == "queued" and self.in_scope(c))
                                                  for c in self.chunks):
             self.state = "finishing"
+            self.check_rendered()  # _finish waits for these, then the pixel check runs
             for w in list(self.workers.values()):
                 if w.state in ("idle", "loading"):
                     self._quit(w, "render finished")
@@ -5573,8 +5584,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "for each of them. A render you stopped and a render already on disk when it opens stay silent.")
         line(gen)
         self.c_frames = toggle("check_frames", True)
-        row(gen, "Check frames as they render", [self.c_frames],
-            "Each frame right after it renders: is the file there, not empty, whole and readable, and is it far smaller than the rest.\n"
+        row(gen, "Check frames when a render ends", [self.c_frames],
+            "When a render ends (or you stop it), each frame it rendered: is the file there, not empty, whole and readable,\n"
+            "and is it far smaller than the rest. Then the pixel check, when that is on.\n"
             "Off: a frame that came out broken counts as done until you press Check frames. Render still checks what is on disk before it starts.")
         self.c_pixels = toggle("check_pixels", True)
         row(gen, "Check pixels when a render ends", [self.c_pixels],
@@ -6629,8 +6641,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._banner("%s, but the pixel check found %d frame(s) with NaN, inf, black, duplicated or different pixels. "
                              "Output: Problems shows them." % (done_in, pixels), C["failed"])
             else:
-                if unchecked:  # Check frames as they render was off: nothing says these files are whole
-                    text = "%s. All %d frames are on disk; %d of them were not checked (Check frames as they render is off)." % (
+                if unchecked:  # Check frames when a render ends was off: nothing says these files are whole
+                    text = "%s. All %d frames are on disk; %d of them were not checked (Check frames when a render ends is off)." % (
                         done_in, len(frames), unchecked)
                 else:
                     text = "%s. All %d frames are on disk and pass the check." % (done_in, len(frames))
