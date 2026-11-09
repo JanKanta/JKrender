@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.6 alpha — 2026-11-09
+
+- Check frames no longer calls a frame that is simply not on disk yet "broken on disk" (red, counted as bad). The check when a render opens had it right, "not on disk"; the button now says the same. A frame rendered or found on disk that is gone since is still reported.
+
 ## 0.93.5 alpha — 2026-11-09
 
 - A movie render picked: Settings > Processes shows 1 and Threads every thread, both locked, and the row by the Render button says the same; a movie is one file and always rendered so. What is set for the other renders stays as it is and comes back when one of them is picked.

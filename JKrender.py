@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.5 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.6 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.5 alpha"
+APP_VERSION = "0.93.6 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2240,7 +2240,12 @@ class RenderEngine:
         fr = self.frames.get(frame)
         if fr is None:
             return
-        fr.checks[idx] = result
+        if result[0] == "missing" and fr.state not in ("done", "skipped"):
+            # not rendered yet and not on disk: nothing to report, as the check when a render opens. Kept, it read as
+            # "broken on disk" after Check frames. A frame rendered or found on disk that is gone now is reported below.
+            fr.checks.pop(idx, None)
+        else:
+            fr.checks[idx] = result
         if result[0] in PROBLEMS and fr.state in ("done", "skipped"):
             fr.state = "bad"
             self.note("!! frame %d: %s %s %s" % (frame, result[0], os.path.basename(self.output_files(frame)[idx]), result[2]), "err")
