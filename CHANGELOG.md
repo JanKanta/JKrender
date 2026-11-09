@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.92.2 alpha — 2026-11-09
+
+- RAM limit 95 % by default, like the VRAM limit (was 90 %). Settings saved before keep their own value; Reset to defaults sets 95.
+
 ## 0.92.1 alpha — 2026-11-09
 
 - Workers timeline: every script load is grey, a fresh Nuke after a chunk too (the darker green for a fresh Nuke for the VRAM is gone with it).

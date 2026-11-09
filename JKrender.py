@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.92.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.92.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.92.1 alpha"
+APP_VERSION = "0.92.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -71,7 +71,7 @@ JKR_LINE = re.compile(r"JKR (BOOT|READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b 
 SLOW_START = 15  # seconds of Nuke starting before the script opens that are worth a warning
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 90,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True, "slate_frame": 1000,
@@ -1887,7 +1887,7 @@ class RenderEngine:
             return False
         if m.ram_cap is not None or m.vram_cap is not None:
             return True
-        if psutil and self.settings.get("ram_guard", True) and m.ram_percent() >= float(self.settings.get("ram_limit", 90)) - 5:
+        if psutil and self.settings.get("ram_guard", True) and m.ram_percent() >= float(self.settings.get("ram_limit", 95)) - 5:
             return True
         if m.vram and m.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
             return float(m.vram[1]) / float(m.vram[2]) * 100 >= float(self.settings.get("vram_limit", 95)) - 5
@@ -2773,7 +2773,7 @@ class RenderManager:
             if first is not None:
                 return "%s has not rendered its first frame yet" % first.name
         if psutil and self.settings.get("ram_guard", True):
-            limit = float(self.settings.get("ram_limit", 90))
+            limit = float(self.settings.get("ram_limit", 95))
             pct = self.ram_percent()
             if self._more_fit(pct, limit) < 1:
                 return self._ram_target(pct, limit)
@@ -2843,7 +2843,7 @@ class RenderManager:
         if not self.settings.get("ram_guard", True):
             self.ram_cap = None
             return
-        limit = float(self.settings.get("ram_limit", 90))
+        limit = float(self.settings.get("ram_limit", 95))
         pct = self.ram_percent()
         live = self.live_count()
         rendering = any(e.state == "rendering" for e in self.engines)
@@ -3544,7 +3544,7 @@ class ScriptTest(QtWidgets.QDialog):
         if not psutil:
             return float(self.main.manager.ram * self.main.manager.total)
         total = psutil.virtual_memory().total / 1024.0 ** 3
-        return max(1.0, total * float(self.main.settings.get("ram_limit", 90)) / 100 - min(16.0, total * 0.2))
+        return max(1.0, total * float(self.main.settings.get("ram_limit", 95)) / 100 - min(16.0, total * 0.2))
 
     @staticmethod
     def hardware():
@@ -5604,7 +5604,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_limit = QtWidgets.QSpinBox()
         self.s_limit.setRange(50, 98)
         self.s_limit.setSuffix(" %")
-        self.s_limit.setValue(int(self.settings.get("ram_limit", 90)))
+        self.s_limit.setValue(int(self.settings.get("ram_limit", 95)))
         self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
         self.s_limit.setEnabled(self.c_guard.isChecked())
         row(perf, "RAM limit", [self.c_guard, self.s_limit],
@@ -5749,7 +5749,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 90), (self.s_days, 15),
+                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 95), (self.s_days, 15),
                            (self.s_vram, 95)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
@@ -6829,7 +6829,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     return "VRAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
                 return m._vram_target(pct, limit, m.vram_one() or 10.0)
             if m.ram_cap is not None:
-                pct, limit = m.ram_percent(), float(m.settings.get("ram_limit", 90))
+                pct, limit = m.ram_percent(), float(m.settings.get("ram_limit", 95))
                 if m._ram_ok_since is not None:
                     return "RAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
                 return m._ram_target(pct, limit)
