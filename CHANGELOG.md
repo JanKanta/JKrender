@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.91 alpha — 2026-11-09
+
+- **Fresh Nuke after every chunk** (Settings > Processes and Chunks): Off / When memory is short (default) / Always. A process closes after its chunk and a new one opens the script again in its place, with its RAM and VRAM back at the start; it starts at once, without waiting its turn to come back. When memory is short: only while a process waits for RAM or VRAM, or the PC is within 5 % of a limit. Never for the last chunks, when there is nothing left to hand out.
+- Test this script: Add test and Edit test have the same field, so a setup can be compared with and without it; the table shows "never fresh" or "fresh every chunk", Use these settings sets it too. Setups saved before keep the setting as it is now.
+- Measured on a heavy comp, 199 frames: 3 x 8 without it 9:43, 4 x 8 Always 8:00 (29 script loads), 4 x 8 When memory is short 7:43.
+
 ## 0.90.4 alpha — 2026-11-09
 
 - Frames already on disk when a render opens show as on disk, skipped (dark green) straight away, not green as if this render had made them; Rendered lists nothing until the render runs. Frames this render made earlier stay green when the Framerange changes or frames are deleted.

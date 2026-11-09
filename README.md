@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.90.4 alpha.** It works in tests; expect rough edges.
+**Version 0.91 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -15,6 +15,11 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
 - **Chunks across processes.** By default the work is spread over 8 Nuke processes with 4 threads each
   (Settings > Processes and Chunks). 4 × 8 can be faster for comps one Nuke already fills (Defocus, Denoise) and takes half the RAM.
   Chunks go to whichever process is free and shrink towards the end, so none sits idle.
+- **Fresh Nuke after every chunk** (Settings > Processes and Chunks): a process closes after its chunk and a new one opens the
+  script again, with its RAM and VRAM back at the start. Some scripts make Nuke keep memory it no longer needs, chunk after chunk;
+  fresh ones leave room for more processes, at the cost of a script load per chunk. *When memory is short* (default) does it only
+  while a process waits for RAM or VRAM, or the PC is within 5 % of a limit; *Always* after every chunk; *Off* never.
+  Test this script takes it as a fourth field of Add test and Edit test, so you can compare.
 - **Several renders in one window.** Each Write is a card at the top. They share one budget of
   Nuke processes, and up to 3 run side by side. Shift+click cards to pick several: Render, Pause and Stop then act on all of them.
   Right of the cards: when all renders should be done and how long they have taken so far; once through, how long they took altogether.

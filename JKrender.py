@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.90.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.91 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.90.4 alpha"
+APP_VERSION = "0.91 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -75,7 +75,11 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True, "slate_frame": 1000,
-                    "auto_chunk": True, "hide_old_done": True, "end_sound": True}
+                    "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
+# Fresh Nuke after every chunk: a process closes after its chunk and a new one opens the script again, with its RAM and VRAM
+# back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
+FRESH_MODES = (("off", "Off"), ("short", "When memory is short"), ("always", "Always"))
+FRESH_SHORT = {"off": "never fresh", "short": "", "always": "fresh every chunk"}
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
@@ -1157,6 +1161,7 @@ class RenderEngine:
         self.chunks = []
         self.workers = {}
         self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
+        self.refresh_ids = []  # closed after their chunk for a fresh Nuke: started again at once, in the same place
         self.filling = True  # all its processes still to start (see _may_spawn)
         self.size_seen = 0.0  # GB of the largest process of this run that has rendered a few frames
         self.preferred_wids = []  # names moved here with Work on, taken by the next processes started
@@ -1340,6 +1345,7 @@ class RenderEngine:
             self.workers = {}
             self.next_wid = 1
         self.held, self.restart_ids = set(), []
+        self.refresh_ids = []
         self.error = ""
         self.state = "rendering"
         self.rerun_at = time.time() if self.started else None
@@ -1555,6 +1561,7 @@ class RenderEngine:
         if all(w.state == "gone" for w in self.workers.values()):
             self.workers = {}
             self.held, self.restart_ids = set(), []
+            self.refresh_ids = []
 
     def stop(self, reason="Stopped by user"):
         self.scope = None
@@ -1647,7 +1654,7 @@ class RenderEngine:
                    for i, x in e.workers.items() if x.state != "gone"}
         wanted = [i for i in self.preferred_wids if i not in running]  # Work on: the name the user moved here
         # never a number that runs in another render meanwhile (W03 closed here, W03 already started in render 1)
-        restart = [i for i in getattr(self, "restart_ids", [])
+        restart = [i for i in getattr(self, "restart_ids", []) + getattr(self, "refresh_ids", [])
                    if i in self.workers and self.workers[i].state == "gone" and i not in running]
         gone = restart or sorted(i for i, x in self.workers.items()
                                  if x.state == "gone" and i not in getattr(self, "held", ()) and i not in running)
@@ -1656,6 +1663,8 @@ class RenderEngine:
             self.preferred_wids.remove(wanted[0])
             old = self.workers.get(wanted[0]) if wanted[0] in self.workers else None
         by_hand = bool(old and old.id in getattr(self, "restart_ids", []))
+        if old and old.id in getattr(self, "refresh_ids", []):
+            self.refresh_ids.remove(old.id)
         if by_hand:
             self.restart_ids.remove(old.id)
         if wanted and wanted[0] in self.hand_wids:
@@ -1820,8 +1829,8 @@ class RenderEngine:
             return True
         if m.free_slots() <= 0:
             return False
-        if self.restart_ids or self.hand_wids:
-            return True
+        if self.restart_ids or self.hand_wids or any(self.workers[i].state == "gone" for i in getattr(self, "refresh_ids", []) if i in self.workers):
+            return True  # a fresh Nuke takes the place and the memory the one before it just left
         if self.filling:
             # Render starts all its processes straight away, also ones it has a place for only later (the renders share
             # the places). The rule for coming back starts when one falls: _fell, _on_exit.
@@ -1862,6 +1871,27 @@ class RenderEngine:
                       if w.state in ("loading", "idle", "busy") and (w.retire or w.handover) and not w.user_leaving][:-extra]:
                 w.retire = w.handover = False
                 w.why_leaving = w.closed_why = None
+
+    def _fresh_due(self):
+        """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when a process waits to come back
+        for RAM or VRAM, or the PC is within 5 % of a limit. Never with no chunk left to hand out: the new one would have nothing to do."""
+        mode = self.settings.get("fresh_after_chunk", "short")
+        if mode not in ("short", "always") or self.movie:
+            return False
+        if not any(c.state == "queued" and self.in_scope(c) for c in self.chunks):
+            return False
+        if mode == "always":
+            return True
+        m = self.manager
+        if m is None:
+            return False
+        if m.ram_cap is not None or m.vram_cap is not None:
+            return True
+        if psutil and self.settings.get("ram_guard", True) and m.ram_percent() >= float(self.settings.get("ram_limit", 90)) - 5:
+            return True
+        if m.vram and m.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
+            return float(m.vram[1]) / float(m.vram[2]) * 100 >= float(self.settings.get("vram_limit", 95)) - 5
+        return False
 
     def _quit(self, w, why):
         w.retire = True
@@ -2065,6 +2095,11 @@ class RenderEngine:
             elif w.retire or w.handover:
                 self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
                            else "not needed")
+            elif self._fresh_due():
+                w.closed_why = "fresh Nuke"
+                self.refresh_ids.append(w.id)
+                self._quit(w, "fresh Nuke after its chunk, %.1f GB RAM%s" % (
+                    w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
         elif kind == "FAIL":
             c = w.chunk
             frame = int(rest[1]) if len(rest) > 1 else None
@@ -2523,7 +2558,7 @@ class RenderEngine:
             "report": 2, "jkrender": APP_VERSION, "nuke": job.get("nuke_version", ""),
             "machine": machine_info(),
             "settings": {k: self.settings.get(k) for k in ("use_gpu", "ram_guard", "ram_limit", "vram_guard", "vram_limit",
-                                                         "chunk_auto", "auto_chunk", "max_renders")},
+                                                         "chunk_auto", "auto_chunk", "max_renders", "fresh_after_chunk")},
             "script": {"id": script_id(job.get("script")), "width": job.get("width"), "height": job.get("height"),
                        "movie": bool(self.movie), "nodes": node_classes(job.get("snapshot") or job.get("script"))},
             "result": {
@@ -3523,6 +3558,20 @@ class ScriptTest(QtWidgets.QDialog):
         counts = [fewest - 1 + n for n in cls.spread(most - fewest + 1, cls.TESTS)] if most >= fewest else [fewest]
         return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE))) for n in counts]
 
+    def _setup(self, x):
+        """A saved setup as (processes, threads, cache, fresh); one saved before Fresh Nuke gets the setting as it is now."""
+        x = list(x)
+        fresh = x[3] if len(x) > 3 and x[3] in FRESH_SHORT else self.fresh
+        return (int(x[0]), int(x[1]), int(x[2]), fresh)
+
+    def _planned(self, cpu):
+        return [k + (self.fresh,) for k in self.plan(cpu, self._free_gb())]
+
+    @staticmethod
+    def _label(k):
+        extra = FRESH_SHORT.get(k[3], "")
+        return "%d x %d, cache %d GB%s" % (k[0], k[1], k[2], ", " + extra if extra else "")
+
     def _free_gb(self):
         """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
         usually hold. Not what is free this moment: a render or a Nuke open now would leave every setup a little cache
@@ -3557,10 +3606,11 @@ class ScriptTest(QtWidgets.QDialog):
         self.resize(1400, 580)
         cpu = os.cpu_count() or 8
         m = window.manager
-        cur = (m.total, m.threads, m.ram)
+        self.fresh = window.settings.get("fresh_after_chunk", "short")
+        cur = (m.total, m.threads, m.ram, self.fresh)
         self.current = cur
-        self.added = {tuple(x[:3]) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
-        self.setups = sorted(set(self.plan(cpu, self._free_gb())) | self.added)
+        self.added = {self._setup(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
+        self.setups = sorted(set(self._planned(cpu)) | self.added)
         self.all_frames = engine.frame_list()
         lay = QtWidgets.QVBoxLayout(self)
         top = QtWidgets.QHBoxLayout()
@@ -3571,7 +3621,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_create.clicked.connect(self._create_setups)
         top.addWidget(self.b_create)
         self.b_add = QtWidgets.QPushButton("Add test")
-        self.b_add.setToolTip("A setup of your own: Processes, Threads and Cache. It is kept for the next time.")
+        self.b_add.setToolTip("A setup of your own: Processes, Threads, Cache and Fresh Nuke after every chunk. It is kept for the next time.")
         self.b_add.clicked.connect(self._add_setup)
         self.b_remove = QtWidgets.QPushButton("Remove test")
         self.b_remove.setToolTip("Removes the selected setups. A recommended one comes back the next time this window opens.")
@@ -3638,7 +3688,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
         self.l_frames = label("")
         self.s_frames.valueChanged.connect(self._frames_note)
-        self.add_defaults = (m.total, m.threads, m.ram, cpu, ram)  # what Add test starts from, and its limits
+        self.add_defaults = (m.total, m.threads, m.ram, self.fresh, cpu, ram)  # what Add test starts from, and its limits
         for widget in (label("Frames per setup"), self.s_frames, self.l_frames):  # top right, after Add test and Remove test
             top.addWidget(widget)
         buttons = QtWidgets.QHBoxLayout()
@@ -3667,9 +3717,10 @@ class ScriptTest(QtWidgets.QDialog):
         self.table.setSortingEnabled(False)
         self.table.clearContents()
         self.table.setRowCount(len(self.setups))
-        for i, (n, t, c) in enumerate(self.setups):
-            item = SortItem("%d x %d, cache %d GB" % (n, t, c))
-            item.setData(SortItem.KEY, n * 10000 + t * 100 + c)
+        for i, k in enumerate(self.setups):
+            n, t, c = k[:3]
+            item = SortItem(self._label(k))
+            item.setData(SortItem.KEY, n * 10000 + t * 100 + c + [m for m, _ in FRESH_MODES].index(k[3]) / 10.0)
             item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
             self.table.setItem(i, self.C_SETUP, item)
             self._cell(i, self.C_STATE, "waiting")
@@ -3699,9 +3750,9 @@ class ScriptTest(QtWidgets.QDialog):
             self.resize(min(wanted, room), self.height())
 
     def _setup_window(self, title, button, values):
-        """A small window with Processes, Threads and Cache; the setup, or None when cancelled."""
-        n, t, c = values
-        cpu, ram = self.add_defaults[3:]
+        """A small window with Processes, Threads, Cache and Fresh Nuke; the setup, or None when cancelled."""
+        n, t, c, fresh = values
+        cpu, ram = self.add_defaults[4:]
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(title)
         form = QtWidgets.QFormLayout(dialog)
@@ -3713,13 +3764,19 @@ class ScriptTest(QtWidgets.QDialog):
             spin.setSuffix(suffix)
             form.addRow(name, spin)
             spins.append(spin)
+        combo = QtWidgets.QComboBox()
+        for key, text in FRESH_MODES:
+            combo.addItem(text, key)
+        combo.setCurrentIndex(max(0, combo.findData(fresh)))
+        combo.setToolTip("Fresh Nuke after every chunk, as in Settings > Processes and Chunks")
+        form.addRow("Fresh Nuke after every chunk", combo)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(button)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         accepted = dialog.exec() == QtWidgets.QDialog.Accepted
-        setup = tuple(spin.value() for spin in spins)
+        setup = tuple(spin.value() for spin in spins) + (combo.currentData(),)
         dialog.deleteLater()
         return setup if accepted else None
 
@@ -3730,15 +3787,15 @@ class ScriptTest(QtWidgets.QDialog):
         self.l_hw.setText(self.hardware())
         self.added = set()
         self.main._save_setting("test_setups", [])
-        self.setups = sorted(self.plan(os.cpu_count() or 8, self._free_gb()))
+        self.setups = sorted(self._planned(os.cpu_count() or 8))
         self._fill_table()
 
     def _add_setup(self):
         """Add test: a setup of your own, kept for next time."""
-        setup = self._setup_window("Add test", "Add", self.add_defaults[:3])
+        setup = self._setup_window("Add test", "Add", self.add_defaults[:4])
         if setup is None:
             return
-        self.add_defaults = setup + self.add_defaults[3:]
+        self.add_defaults = setup + self.add_defaults[4:]
         self.added.add(setup)
         self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
@@ -3760,7 +3817,7 @@ class ScriptTest(QtWidgets.QDialog):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _edit_setup(self, index):
-        """Edit test: Processes, Threads and Cache of a setup; it is kept as one of your own."""
+        """Edit test: Processes, Threads, Cache and Fresh Nuke of a setup; it is kept as one of your own."""
         old = self.setups[index]
         setup = self._setup_window("Edit test", "Save", old)
         if setup is None or setup == old:
@@ -3893,11 +3950,11 @@ class ScriptTest(QtWidgets.QDialog):
             self._finish()
             return
         self.index = self.queue.pop(0)
-        n, t, c = self.setups[self.index]
+        n, t, c, fresh = self.setups[self.index]
         settings = dict(self.main.settings)
-        settings.update(processes=n, threads=t, ram=c, max_renders=1, _test=True)
+        settings.update(processes=n, threads=t, ram=c, fresh_after_chunk=fresh, max_renders=1, _test=True)
         settings.pop("script_ram", None)  # what the script took with another cache would keep processes out
-        root = TEST_DIR / ("%s_%dx%d_%d" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c))
+        root = TEST_DIR / ("%s_%dx%d_%d_%s" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c, fresh))
         out = root / "out"
         out.mkdir(parents=True, exist_ok=True)
         job = copy.deepcopy(self.src.job)
@@ -4125,12 +4182,12 @@ class ScriptTest(QtWidgets.QDialog):
         rate = self.results[best]["rate"]
         mine = self.results.get(self.current)
         if best == self.current:
-            text = "Your settings (Processes %d, Threads %d, Cache %d GB) are the fastest of these for this script: " \
-                   "%.1f frames / min." % (best[0], best[1], best[2], rate)
+            text = "Your settings (Processes %d, Threads %d, Cache %d GB, Fresh Nuke %s) are the fastest of these for this script: " \
+                   "%.1f frames / min." % (best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate)
         else:
             gain = " — %.0f %% faster than yours (%.1f)" % ((rate / mine["rate"] - 1) * 100, mine["rate"]) if mine and mine["rate"] else ""
-            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, %.1f frames / min%s." % (
-                best[0], best[1], best[2], rate, gain)
+            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, Fresh Nuke %s, %.1f frames / min%s." % (
+                best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate, gain)
             self.b_use.setEnabled(True)
         if partial:
             text = "(Stopped before all setups were tested.) " + text
@@ -4155,10 +4212,11 @@ class ScriptTest(QtWidgets.QDialog):
             pass
 
     def use(self):
-        n, t, c = self.best
+        n, t, c, fresh = self.best
         self.main.s_workers.setValue(n)
         self.main.s_threads.setValue(t)
         self.main.s_ram.setValue(c)
+        self.main.c_fresh.setCurrentIndex(max(0, self.main.c_fresh.findData(fresh)))
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):
@@ -5646,6 +5704,18 @@ class MainWindow(QtWidgets.QMainWindow):
             "so every Nuke process finishes at about the same time.\n"
             "Off: every chunk keeps the size set under Chunk.")
         note(procs, "Every process finishes at about the same time.")
+        self.c_fresh = QtWidgets.QComboBox()
+        for key, text in FRESH_MODES:
+            self.c_fresh.addItem(text, key)
+        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(self.settings.get("fresh_after_chunk", "short"))))
+        self.c_fresh.currentIndexChanged.connect(lambda i: self._save_setting("fresh_after_chunk", self.c_fresh.itemData(i)))
+        row(procs, "Fresh Nuke after every chunk", [self.c_fresh],
+            "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
+            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: fresh ones leave room for more processes.\n"
+            "Each costs one script load.\n\n"
+            "Off: a process renders chunk after chunk (it is still renewed when its RAM or VRAM keeps growing).\n"
+            "When memory is short: only while a process waits for RAM or VRAM to come back, or the PC is within 5 % of a limit.\n"
+            "Always: after every chunk. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
         scroll.reflow(10000)
@@ -5721,6 +5791,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
+        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(DEFAULT_SETTINGS["fresh_after_chunk"])))
         self._apply_chunks()
         self._reset_headers()
         self.settings.pop("system_hidden", None)
