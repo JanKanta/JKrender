@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.7 alpha — 2026-11-09
+
+- A gap in a sequence shows as soon as the render opens: a frame of the range not on disk while other frames are (a render stopped, a file deleted) is listed in Output (All and Problems) as "missing", counted in the summary and in the Check frames tile ("29 checked · 1 missing"), and the Log says which: "1 frame(s) of the range are not on disk: 1024". Before, it was left out of the list until Check frames, which then called it "broken on disk". Missing is not counted as broken. With nothing of the render on disk, frames still to render are not listed.
+
 ## 0.93.6 alpha — 2026-11-09
 
 - Check frames no longer calls a frame that is simply not on disk yet "broken on disk" (red, counted as bad). The check when a render opens had it right, "not on disk"; the button now says the same. A frame rendered or found on disk that is gone since is still reported.
