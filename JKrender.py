@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.8 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.9 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.8 alpha"
+APP_VERSION = "0.93.9 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1400,7 +1400,6 @@ class RenderEngine:
         todo = [f for f, fr in self.frames.items() if fr.state == "queued"]
         checks = dict(zip(todo, self.checker.map(lambda f: [check_file(p) for p in self.output_files(f)], todo)))
         found = broken = 0
-        missing = []
         for f in todo:
             results = checks[f]
             if all(r[0] == "ok" for r in results):
@@ -1419,13 +1418,6 @@ class RenderEngine:
             elif any(r[0] != "missing" for r in results):
                 self.frames[f].checks = {i: r for i, r in enumerate(results) if r[0] != "missing"}  # shows why
                 broken += 1
-            else:
-                missing.append(f)
-        # frames of the render on disk and some of the range not: those are gaps (a render stopped, files deleted), listed as
-        # missing in Output. With nothing on disk they are just frames to render, and stay out of the list.
-        self.list_missing = any(fr.state in ("done", "skipped", "bad") for fr in self.frames.values())
-        for f in missing:
-            self.frames[f].checks = dict(enumerate(checks[f])) if self.list_missing else {}
         for c in self.chunks:
             if c.state == "queued":
                 c.frames = [f for f in c.frames if self.frames[f].state == "queued"]
@@ -1436,9 +1428,6 @@ class RenderEngine:
             self.note("%d of %d frames are already on disk and pass the check; they are skipped" % (found, len(self.frames)), "ok")
         if broken:
             self.note("!! %d frame(s) on disk are broken (empty or cut off) and will be rendered again" % broken, "err")
-        if missing and self.list_missing:
-            self.note("! %d frame(s) of the range are not on disk: %s. Render renders them"
-                      % (len(missing), frames_to_spec(missing)), "warn")
         self._find_outside()
         self.before = {}
         return found
@@ -2251,9 +2240,9 @@ class RenderEngine:
         fr = self.frames.get(frame)
         if fr is None:
             return
-        if result[0] == "missing" and fr.state not in ("done", "skipped") and not getattr(self, "list_missing", False):
-            # not rendered yet and nothing of the render on disk: just a frame to render, as the check when a render opens.
-            # Among frames on disk it is a gap and is listed as missing. A frame rendered or found that is gone is reported below.
+        if result[0] == "missing" and fr.state not in ("done", "skipped"):
+            # not rendered yet and not on disk: "not on disk", as the check when a render opens says. A frame rendered or
+            # found on disk that is gone now is reported below.
             fr.checks.pop(idx, None)
         else:
             fr.checks[idx] = result
@@ -2363,7 +2352,6 @@ class RenderEngine:
         if self.movie:
             self.probe()
             return
-        self.list_missing = any(fr.state in ("done", "skipped", "bad") for fr in self.frames.values())
         for f in self.frames:
             self._submit_check(f)
 
@@ -3285,11 +3273,6 @@ QLabel#tileValue { font-size: 14pt; font-weight: 600; }
 def frame_broken(fr):
     """Broken on disk: a rendered one that failed its check, or one found so on disk and waiting to render again."""
     return fr.state == "bad" or (fr.state == "queued" and any(c[0] not in ("ok", "missing") for c in fr.checks.values()))
-
-
-def frame_missing(fr):
-    """Not on disk while other frames of the render are: a gap, waiting to render."""
-    return fr.state == "queued" and bool(fr.checks) and all(c[0] == "missing" for c in fr.checks.values())
 
 
 def pixels_broken(fr):
@@ -4985,7 +4968,7 @@ class FramesModel(QtCore.QAbstractTableModel):
                     return "not in Framerange"
                 if fr.state == "queued":
                     if fr.checks:
-                        return "missing" if frame_missing(fr) else "broken on disk"
+                        return "broken on disk"
                     return "on disk, queued again" if fr.old is not None else "not on disk"
                 return fr.state
             if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
@@ -6725,8 +6708,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_movie()
         else:
             looking = e.pending_checks > 0 and e.state not in ("rendering", "paused", "finishing")
-            gaps = sum(1 for fr in e.frames.values() if frame_missing(fr))
-            sub = "%d checked%s%s" % (len(checked) - gaps, " · %d missing" % gaps if gaps else "", " · %d small" % small if small else "")
+            sub = "%d checked%s" % (len(checked), " · %d small" % small if small else "")
             if not checked and not self.settings.get("check_frames", True):
                 sub = "off in Settings"
             if bad:
@@ -6767,7 +6749,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pixels_bar.setRange(0, max(1, e.pixels_total))
         self.pixels_bar.setValue(e.pixels_total - e.pixels_pending)
         self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small%s · %s on disk"
-                                 % (len(e.frames), len(checked) - missing, missing, broken, small, pixels, fmt_size(total_size)))
+                                 % (len(e.frames), len(checked), missing, broken, small, pixels, fmt_size(total_size)))
         self.gantt.update()
         if self._details_shown():
             self._update_details()

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.9 alpha — 2026-11-09
+
+- A frame not on disk says "not on disk" again, also when other frames of the render are on disk: with one frame on disk, 0.93.7 called all the others "missing" and warned about them. Output All lists them anyway (0.93.8), and Check frames no longer calls them broken (0.93.6).
+
 ## 0.93.8 alpha — 2026-11-09
 
 - Output, All lists every frame: of the range (rendered, found on disk, missing, broken, still to render) and those on disk outside it. Rendered, Problems and Framerange are parts of it. Before, All left out frames not on disk yet.
