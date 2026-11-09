@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.94 alpha.** It works in tests; expect rough edges.
+**Version 0.94.1 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -80,6 +80,32 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
 | `INSTALL.txt` | | the install steps in short |
 | `lib/<platform>-cp<version>/` | the window | numpy and OpenEXR, fetched on the first Nuke start (not in git) |
 | `log/` | | one folder per render: script snapshot, job file and the log of every Nuke process (not in git) |
+| `tests/` | Nuke's Python | the tests, see below |
+
+## Tests
+
+```
+python tests/run_tests.py            # all, in about 2 minutes
+python tests/run_tests.py disk fresh # only tests whose name has one of these words
+python tests/run_tests.py --real     # also a small render and Test this script with the real Nuke
+```
+
+Each test runs JKrender offscreen and silent, in a home folder of its own under `tests/_runs/`, so it never touches your settings,
+renders or open Nukes. Renders run on **FakeNuke** (`tests/fakenuke/FakeNuke.cs`, built on the first run with the C# compiler that
+comes with Windows): it speaks the worker's protocol and writes PNG frames in a fraction of a second, without a licence, and can
+crash mid-chunk on purpose. Nuke's Python is found under `C:/Program Files/Nuke*` (or set `NUKE_DIR`). `--real` needs a Nuke licence
+and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tests against another copy, an older version for one.
+
+| Test | What it checks |
+|---|---|
+| `test_disk_checks` | a render opening with frames whole, missing, cut off, empty; Check frames says the same; frames checked when a render ends, then the pixels; Stop |
+| `test_render_again` | Render again on one and on several renders, finished or stopped: Only missing, All frames again, Cancel |
+| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, Fresh Nuke after 30 s, the State text |
+| `test_fresh_nuke` | Fresh Nuke after every chunk: Off, When memory is short, Always; same places, State, timeline |
+| `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
+| `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process |
+| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths |
+| `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 
 ## Setup
 

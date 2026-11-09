@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.94.1 alpha — 2026-11-09
+
+- Tests: `python tests/run_tests.py` runs JKrender offscreen through 7 tests (about 120 checks, 2 minutes) on FakeNuke, a stand-in for Nuke that writes PNG frames and can crash on purpose: the disk checks, Render again, the RAM and VRAM limits, Fresh Nuke, Test this script, Settings, and crashes / coming back / handing over / Czech paths. `--real` adds a small render with the real Nuke. Against 0.93.2 and 0.93.5 they find the bugs fixed since. JKrender itself is unchanged.
+
 ## 0.94 alpha — 2026-11-09
 
 - Frames are checked once the render ends, not each right after it renders: render, then Check frames (is each file there, not empty, whole, readable, not far smaller than the rest), then Check pixels. Stop checks what was rendered before it. Nothing reads the output folder while Nuke writes into it. The setting is now Check frames when a render ends. Test this script still checks each frame as it comes, it counts its frames by that.

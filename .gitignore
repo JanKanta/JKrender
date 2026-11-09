@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 log/
 lib/
+tests/_runs/
+tests/fakenuke/build/
