@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.4 alpha — 2026-11-09
+
+- State of a process waiting for VRAM shows the whole target: with the room kept for the processes still starting (just started or a fresh Nuke, each counted at the size one process takes), e.g. "wait: VRAM 75 → 14 % (3 starting)". Before, it showed "75 → 68 %" while the decision also counted those, so it looked as if the process should be back already.
+
 ## 0.93.3 alpha — 2026-11-09
 
 - Fresh Nuke after every chunk, When memory is short: only once the RAM or VRAM has stayed within 5 % of its limit for 30 s, also while a process closed for memory waits to come back. Before, a waiting process alone was enough, so the processes got a fresh Nuke after every chunk with the card at 60 %.

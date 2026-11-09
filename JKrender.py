@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.3 alpha"
+APP_VERSION = "0.93.4 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -3035,6 +3035,22 @@ class RenderManager:
         wait = max(60.0, 4 * statistics.median(secs)) if secs else 180.0
         idle = now - max(ends)
         return idle if idle > wait else 0.0
+
+    def vram_starting(self):
+        """VRAM % kept for the processes that have not finished their first chunk (just started, or a fresh Nuke): each counts
+        at the size one process of its render takes, less what it holds now, as no_room and _more_fit_vram count them.
+        (growing %, how many)."""
+        growing, starting = 0.0, 0
+        if not self.vram or not self.vram[2]:
+            return growing, starting
+        total = float(self.vram[2])
+        for e in self.engines:
+            size = self.vram_one(e)
+            for w in e.workers.values():
+                if size and w.gpu and w.state != "gone" and w.vram_base is None:
+                    growing += max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
+                    starting += 1
+        return growing, starting
 
     def _more_fit_vram(self, pct, limit, one):
         """How many more Nuke processes fit on the graphics card: the % left under the limit, less a margin and what the
@@ -6844,8 +6860,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if not why:
             return "coming back"
         m = re.match(r"(V?RAM) must drop under (\d+) % \(now (\d+) %", why)
-        if m:  # now -> where one more fits
-            return "wait: %s %s → %s %%" % (m.group(1), m.group(3), m.group(2))
+        if m:  # now -> where one more fits, with room kept for the processes still starting
+            starting = re.search(r"and (\d+) starting", why)
+            return "wait: %s %s → %s %%%s" % (m.group(1), m.group(3), m.group(2),
+                                             " (%s starting)" % starting.group(1) if starting else "")
         m = re.match(r"(V?RAM) (\d+) %: one more fits, checking", why)
         if m:
             return "wait: %s ok, checking" % m.group(1)
@@ -6877,7 +6895,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95))
                 if m._vram_ok_since is not None:
                     return "VRAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
-                return m._vram_target(pct, limit, m.vram_one() or 10.0)
+                growing, starting = m.vram_starting()
+                return m._vram_target(pct, limit, m.vram_one() or 10.0, growing, starting)
             if m.ram_cap is not None:
                 pct, limit = m.ram_percent(), float(m.settings.get("ram_limit", 95))
                 if m._ram_ok_since is not None:
