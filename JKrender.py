@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.92.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.92.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.92.3 alpha"
+APP_VERSION = "0.92.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -86,6 +86,7 @@ SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked 
 SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
 SYSTEM_ORDER = ["Process", "Render", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
+FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay within 5 % of its limit before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 # A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
@@ -323,6 +324,11 @@ def clear_open_nukes():
                 pass
 
     threading.Thread(target=send, daemon=True).start()
+
+
+def pct_limit(settings, name):
+    """The RAM or VRAM limit in %, as set."""
+    return float(settings.get("ram_limit", 95) if name == "RAM" else settings.get("vram_limit", 95))
 
 
 def hidden():
@@ -1875,7 +1881,7 @@ class RenderEngine:
 
     def _fresh_due(self):
         """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when a process waits to come back
-        for RAM or VRAM, or the PC is within 5 % of a limit. Never with no chunk left to hand out: the new one would have nothing to do.
+        for RAM or VRAM, or the PC has been within 5 % of a limit for FRESH_HOLD s. Never with no chunk left to hand out: the new one would have nothing to do.
         What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
         mode = self.settings.get("fresh_after_chunk", "short")
         if mode not in ("short", "always") or self.movie:
@@ -1887,15 +1893,7 @@ class RenderEngine:
         m = self.manager
         if m is None:
             return ""
-        why = []  # what is short: RAM, VRAM or both
-        ram = m.ram_percent() if psutil and self.settings.get("ram_guard", True) else 0.0
-        if m.ram_cap is not None or ram >= float(self.settings.get("ram_limit", 95)) - 5:
-            why.append("RAM %.0f %%" % ram if ram else "RAM")
-        if self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
-            vram = float(m.vram[1]) / float(m.vram[2]) * 100 if m.vram and m.vram[2] else 0.0
-            if m.vram_cap is not None or (vram and vram >= float(self.settings.get("vram_limit", 95)) - 5):
-                why.append("VRAM %.0f %%" % vram if vram else "VRAM")
-        return ", ".join(why)
+        return m.memory_short()
 
     def _quit(self, w, why):
         w.retire = True
@@ -2600,6 +2598,7 @@ class RenderManager:
         self.pauses = []  # times when every render was paused: the timeline leaves them out
         self.paused_at = None
         self.ram_cap = None  # RAM guard's lower process count while memory is short
+        self._short_since = {}  # "RAM" / "VRAM": since when it has been within 5 % of its limit (Fresh Nuke after every chunk)
         self._ram_checked = 0.0
         self._ram_ok_since = None
         self._last_kill = 0.0
@@ -3031,6 +3030,32 @@ class RenderManager:
                     room -= max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
         return max(0, int(room // one))
 
+    def _short_update(self):
+        """Since when the RAM and the VRAM have been within 5 % of their limits, without a break."""
+        now = time.time()
+        for name, pct in self._mem_now().items():
+            if pct is None or pct < pct_limit(self.settings, name) - 5:
+                self._short_since.pop(name, None)
+            else:
+                self._short_since.setdefault(name, now)
+
+    def _mem_now(self):
+        ram = self.ram_percent() if psutil and self.settings.get("ram_guard", True) else None
+        vram = None
+        if self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True) and self.vram and self.vram[2]:
+            vram = float(self.vram[1]) / float(self.vram[2]) * 100
+        return {"RAM": ram, "VRAM": vram}
+
+    def memory_short(self):
+        """What is short for Fresh Nuke after every chunk: "RAM 91 %", "VRAM 93 %", both, or "". Within 5 % of the limit for
+        FRESH_HOLD s without a break, not one reading over it; or a process closed for it waits to come back."""
+        now, pct, why = time.time(), self._mem_now(), []
+        for name, cap in (("RAM", self.ram_cap), ("VRAM", self.vram_cap)):
+            since = self._short_since.get(name)
+            if cap is not None or (since is not None and now - since >= FRESH_HOLD):
+                why.append("%s %.0f %%" % (name, pct[name]) if pct[name] is not None else name)
+        return ", ".join(why)
+
     def take_wid(self, engine=None):
         """The lowest process number no running process has. When a render is done, the process a render
         still running starts next takes over the free name (W01 goes on in render C), so the names stay
@@ -3080,6 +3105,7 @@ class RenderManager:
         self._vram_idle_update()
         self._ram_guard()
         self._vram_guard()
+        self._short_update()
         changed = self._start_next() or changed
         self._admit()
         self._allocate()
@@ -5684,7 +5710,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: fresh ones leave room for more processes.\n"
             "Each costs one script load.\n\n"
             "Off: a process renders chunk after chunk, never a fresh one.\n"
-            "When memory is short: only while a process waits for RAM or VRAM to come back, or the PC is within 5 % of a limit.\n"
+            "When memory is short: only while a process waits for RAM or VRAM to come back, or the RAM or VRAM has stayed\n"
+            "within 5 %% of its limit for %d s (one reading over it is not enough).\n" % FRESH_HOLD +
             "Always: after every chunk. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)

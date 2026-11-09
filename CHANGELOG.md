@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.92.4 alpha — 2026-11-09
+
+- Fresh Nuke after every chunk, When memory is short: the RAM or VRAM has to stay within 5 % of its limit for 30 s without a break before the processes get a fresh Nuke; one reading over it is not enough. A process closed for RAM or VRAM still counts at once.
+
 ## 0.92.3 alpha — 2026-11-09
 
 - State says what the fresh Nuke is for: "busy → fresh Nuke (RAM 91 %)", "(VRAM 93 %)" or both, not "(memory short)". The Log says it too.
