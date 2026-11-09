@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.1 alpha — 2026-11-09
+
+- Settings and state in their own folder, `~/.nuke/JKrender/settings`, not loose beside the program. JKrender moves them there the first time it opens: from `~/.nuke/JKrender` (0.93) first, then from `~/.jkrender`; open cards (`queue.json`) too.
+
 ## 0.93 alpha — 2026-11-09
 
 - Settings and state live in `~/.nuke/JKrender` with the program, not in `~/.jkrender`: `settings.json`, `queue.json`, `sounds/`, `test_results/` and Test this script's `test/`. The first time it opens, JKrender moves the settings, test tables and sounds there; what is already in the new place stays. Old render folders in `~/.jkrender/renders` are left alone, and the folder goes once it is empty.
