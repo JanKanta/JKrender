@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.94.2 alpha — 2026-11-09
+
+- Fresh Nuke when memory is short goes one process at a time: the next only once the last fresh one has rendered its first frame, and only if the RAM or VRAM is still short then. The others go on with their next chunk meanwhile, so the render never stops while several reload together, and a single reload is often enough. Always is unchanged. The Fresh Nuke test checks it with 4 processes (0.94.1 reloaded all 4 at once).
+
 ## 0.94.1 alpha — 2026-11-09
 
 - Tests: `python tests/run_tests.py` runs JKrender offscreen through 7 tests (about 120 checks, 2 minutes) on FakeNuke, a stand-in for Nuke that writes PNG frames and can crash on purpose: the disk checks, Render again, the RAM and VRAM limits, Fresh Nuke, Test this script, Settings, and crashes / coming back / handing over / Czech paths. `--real` adds a small render with the real Nuke. Against 0.93.2 and 0.93.5 they find the bugs fixed since. JKrender itself is unchanged.

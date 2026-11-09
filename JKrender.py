@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.94.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.94.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.94.1 alpha"
+APP_VERSION = "0.94.2 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1750,6 +1750,7 @@ class RenderEngine:
             w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
             w.frame_ends = list(old.frame_ends)  # one lane: Test this script counts its frames across the restart
         w.pinned = by_hand
+        w.fresh = bool(old and old.closed_why == "fresh Nuke")  # in place of one closed for a fresh Nuke
         self.workers[wid] = w
         self.last_spawn = time.time()
         threading.Thread(target=self._reader, args=(w,), daemon=True).start()
@@ -1911,7 +1912,8 @@ class RenderEngine:
 
     def _fresh_due(self):
         """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when the RAM or VRAM has been
-        within 5 % of its limit for FRESH_HOLD s. Never with no chunk left to hand out: the new one would have nothing to do.
+        within 5 % of its limit for FRESH_HOLD s, one process at a time: the next only once the last fresh one rendered its
+        first frame, and only if memory is still short then. Never with no chunk left to hand out: the new one would have nothing to do.
         What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
         mode = self.settings.get("fresh_after_chunk", "short")
         if mode not in ("short", "always") or self.movie:
@@ -1921,8 +1923,8 @@ class RenderEngine:
         if mode == "always":
             return "always"
         m = self.manager
-        if m is None:
-            return ""
+        if m is None or m.refreshing():
+            return ""  # one at a time: the others go on with their next chunk meanwhile
         return m.memory_short()
 
     def _quit(self, w, why):
@@ -3097,6 +3099,19 @@ class RenderManager:
         if self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True) and self.vram and self.vram[2]:
             vram = float(self.vram[1]) / float(self.vram[2]) * 100
         return {"RAM": ram, "VRAM": vram}
+
+    def refreshing(self):
+        """A process getting a fresh Nuke for memory now: closing for it, waiting to start, or the new one before its first
+        frame. Its name, or "". When memory is short the processes get theirs one at a time."""
+        for e in self.engines:
+            for w in e.workers.values():
+                if w.state == "quitting" and w.closed_why == "fresh Nuke":
+                    return w.name
+                if getattr(w, "fresh", False) and w.state in ("loading", "idle", "busy") and not w.frames_here:
+                    return w.name
+                if w.state == "gone" and w.id in getattr(e, "refresh_ids", []):
+                    return w.name
+        return ""
 
     def memory_short(self):
         """What is short for Fresh Nuke after every chunk: "RAM 91 %", "VRAM 93 %", both, or "". Within 5 % of the limit for
@@ -5766,7 +5781,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Each costs one script load.\n\n"
             "Off: a process renders chunk after chunk, never a fresh one.\n"
             "When memory is short: only once the RAM or VRAM has stayed\n"
-            "within 5 %% of its limit for %d s (one reading over it is not enough).\n" % FRESH_HOLD +
+            "within 5 %% of its limit for %d s (one reading over it is not enough), one process at a time.\n" % FRESH_HOLD +
             "Always: after every chunk. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
