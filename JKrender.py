@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.90.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.90.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.90.1 alpha"
+APP_VERSION = "0.90.2 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1330,6 +1330,9 @@ class RenderEngine:
             if fr.state == "queued":  # a check from an earlier run says nothing about the frame about to be rendered
                 fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
         if not everything:
+            for fr in self.frames.values():
+                if fr.state == "done" and fr.worker == "on disk":
+                    fr.state = "skipped"  # found on disk when it opened, not rendered by this run: dark green like the rest
             self.scan_disk(skip=True)  # frames already on disk and passing the check are never rendered twice
         self.before = {}
         if all(w.state == "gone" for w in self.workers.values()):
@@ -6240,12 +6243,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if ask == QtWidgets.QMessageBox.Yes:
             clear_open_nukes()
 
+    @staticmethod
+    def _on_disk(e):
+        """Frames of a render on disk and fine at the last check."""
+        return sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped"))
+
     def _ask_render_again(self, e):
         """Render again on a render with frames on disk: True renders every frame anew, False only those missing or
         broken on disk (the rest are skipped, dark green), None cancels. A movie is one file: always all of it."""
-        on_disk = sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped"))
-        if e.movie or not on_disk:
-            return True
+        on_disk = self._on_disk(e)
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "JKrender",
                                     "%d of %d frames were on disk at the last check.\n\nRender every frame again, or only the frames "
                                     "missing or broken on disk?" % (on_disk, len(e.frames)), parent=self)
@@ -6263,10 +6269,15 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             starts = any(e.state in ("ready", "stopped", "failed") and not e.nothing_to_render() for e in targets)
         everything = False
-        if len(targets) == 1 and starts and (targets[0].state == "done" or targets[0].nothing_to_render()):
-            everything = self._ask_render_again(targets[0])
-            if everything is None:
-                return
+        if len(targets) == 1 and starts:
+            e = targets[0]
+            if self._on_disk(e) and not e.movie:
+                # frames of it on disk, from this run or found there: every frame again, or only what is missing or broken
+                everything = self._ask_render_again(e)
+                if everything is None:
+                    return
+            elif e.state == "done" or e.nothing_to_render():
+                everything = True  # a finished movie, or nothing on disk: all of it
         if starts:
             self._ask_clear_cache()
         for e in targets:
@@ -6365,7 +6376,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_start.setEnabled(s not in ("rendering", "finishing", "waiting"))
         again = s == "done" or (s in ("ready", "stopped", "failed") and self.engine.nothing_to_render())
         self.b_start.setText("Resume" if s == "paused" else ("Render again" if again else "Render"))
-        self.b_start.setToolTip("Asks: every frame again, or only those missing or broken on disk" if again else "")
+        asks = s in ("ready", "stopped", "failed", "done") and not self.engine.movie and self._on_disk(self.engine) > 0
+        self.b_start.setToolTip("Frames of it are on disk: it asks, every frame again or only those missing or broken" if asks else "")
         self.b_pause.setEnabled(s == "rendering")
         self.b_stop.setEnabled(running)
         # Render settings are fixed while a render runs (paused too); Stop makes them editable again.

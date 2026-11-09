@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.90.2 alpha — 2026-11-09
+
+- Render asks Only missing / All frames again whenever the render has frames on disk, not only once it is finished: also a render that opens with some frames already there, and one you stopped. Before, those rendered the rest without asking. Frames found on disk when the render opened show dark green (skipped) after Only missing, like the rest.
+
 ## 0.90.1 alpha — 2026-11-09
 
 - A process closed for RAM comes back when the RAM is free again. What the processes still starting are going to take counted the ones already going too: their RAM goes up and down under their highest, and that gap was added as RAM still to come ("and the ones starting 8.8 GB more" with none starting), so on a heavy comp a third process never came back at 63 % of 95. Now only processes opening the script or before their second frame count.
