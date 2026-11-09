@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.90.1 alpha — 2026-11-09
+
+- A process closed for RAM comes back when the RAM is free again. What the processes still starting are going to take counted the ones already going too: their RAM goes up and down under their highest, and that gap was added as RAM still to come ("and the ones starting 8.8 GB more" with none starting), so on a heavy comp a third process never came back at 63 % of 95. Now only processes opening the script or before their second frame count.
+
 ## 0.90 alpha — 2026-11-09
 
 - Settings > General: Hide done chunks when rendering again is gone (the timeline always shows the new run), and so is Export render data (each render still writes its report.json in its log folder). Sound when a render ends sits under Start next render when one ends; thin lines set apart the checks and the rest. Delete old render logs keeps them 15 days by default instead of 7.

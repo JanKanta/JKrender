@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.90 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.90.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.90 alpha"
+APP_VERSION = "0.90.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2633,13 +2633,16 @@ class RenderManager:
         if not psutil:
             return 0
         total = psutil.virtual_memory().total / 1024 ** 3
-        room = total * (limit - 2 - pct) / 100.0
-        for e in self.engines:
-            for w in e.workers.values():
-                if w.state in ("loading", "idle", "busy"):
-                    room -= max(0.0, e.size_gb() - w.rss)
+        room = total * (limit - 2 - pct) / 100.0 - self._ram_pending()
         one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
         return max(0, int(room // max(0.5, one)))
+
+    def _ram_pending(self):
+        """GB the processes still starting are going to take: those opening the script or before their second frame, up to
+        the size of one. Not the ones already going: their RAM goes up and down under their highest, and counting that
+        kept a process from coming back with RAM free ("and the ones starting 8.8 GB more" with none starting)."""
+        return sum(max(0.0, e.size_gb() - w.rss) for e in self.engines for w in e.workers.values()
+                   if w.state == "loading" or (w.state in ("idle", "busy") and w.frames_here < 2))
 
     def fresh_start(self):
         """Nothing runs and a render starts: limits a render before ran into say nothing about this one."""
@@ -2771,8 +2774,7 @@ class RenderManager:
     def _ram_target(self, pct, limit):
         """What a process waiting for RAM waits for: the RAM to drop under the % where one more fits (as _more_fit)."""
         total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 1.0
-        pending = sum(max(0.0, e.size_gb() - w.rss) for e in self.engines for w in e.workers.values()
-                      if w.state in ("loading", "idle", "busy"))
+        pending = self._ram_pending()
         one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
         target = max(0.0, limit - 2 - (max(0.5, one) + pending) / total * 100)
         return "RAM must drop under %.0f %% (now %.0f %%; limit %.0f %%, one more process takes about %.1f GB%s)" % (
