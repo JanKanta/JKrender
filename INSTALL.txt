@@ -1,6 +1,7 @@
 JKrender - install
 
 1. Copy the whole JKrender folder into %USERPROFILE%\.nuke\
+   Downloaded from GitHub as a zip, the folder is called JKrender-main: rename it to JKrender.
 2. Add this line to %USERPROFILE%\.nuke\init.py (create the file if it is not there):
 
        nuke.pluginAddPath("./JKrender")
@@ -17,5 +18,7 @@ Made for Nuke 16 on Windows.
 
 Optional: for MOV details and the MOV player, install ffmpeg:  winget install ffmpeg
 
-Each render's logs, script copy and job file are in the JKrender\log folder (deleted after 7 days).
+Each render's logs, script copy and job file are in the JKrender\log folder (deleted after 15 days; Settings can change it).
+Your settings are in JKrender\settings.
+Update: copy the new files over the old ones; lib, log and settings stay.
 Uninstall: delete the line from init.py and the JKrender folder.

@@ -52,7 +52,7 @@ def main():
     real = "--real" in sys.argv
     tests = sorted(glob.glob(HERE + "/test_*.py"))
     if not real:
-        tests = [t for t in tests if "real_nuke" not in t]
+        tests = [t for t in tests if "test_real_" not in t]  # the real Nuke: only with --real
     if args:
         tests = [t for t in tests if any(a in os.path.basename(t) for a in args)]
     build_fake()

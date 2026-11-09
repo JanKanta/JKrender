@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.94.2 alpha.** It works in tests; expect rough edges.
+**Version 0.94.3 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -106,10 +106,12 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process |
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
+| `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |
 
 ## Setup
 
 1. Copy the whole `JKrender` folder into `~/.nuke/` (Windows: `%USERPROFILE%\.nuke\`).
+   Downloaded from GitHub as a zip, the folder is called `JKrender-main`: rename it to `JKrender`.
 2. Add one line to `~/.nuke/init.py`, creating the file if it is not there:
 
    ```python

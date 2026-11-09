@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.94.3 alpha — 2026-11-09
+
+- Install checked end to end with the real Nuke (new test `test_real_install`, with `--real`): the JKrender folder copied into `~/.nuke`, one line in `init.py`, then what JKrender > Render Selected Write(s) does (finds JKrender.py, the log folder, makes the job and snapshot, picks Nuke's own Python with PySide6) and a render. It works. INSTALL.txt and README: a zip from GitHub unpacks as `JKrender-main`, rename it to `JKrender`; logs go after 15 days, not 7; where the settings are; how to update.
+
 ## 0.94.2 alpha — 2026-11-09
 
 - Fresh Nuke when memory is short goes one process at a time: the next only once the last fresh one has rendered its first frame, and only if the RAM or VRAM is still short then. The others go on with their next chunk meanwhile, so the render never stops while several reload together, and a single reload is often enough. Always is unchanged. The Fresh Nuke test checks it with 4 processes (0.94.1 reloaded all 4 at once).
