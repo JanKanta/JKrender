@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.90.3 alpha — 2026-11-09
+
+- Rendering again after Stop with Only missing: the frames rendered before Stop show as on disk, skipped (dark green), like every other frame the new run does not render; Rendered lists only the new run's.
+
 ## 0.90.2 alpha — 2026-11-09
 
 - Render asks Only missing / All frames again whenever the render has frames on disk, not only once it is finished: also a render that opens with some frames already there, and one you stopped. Before, those rendered the rest without asking. Frames found on disk when the render opened show dark green (skipped) after Only missing, like the rest.

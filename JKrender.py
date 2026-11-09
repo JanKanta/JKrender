@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.90.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.90.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.90.2 alpha"
+APP_VERSION = "0.90.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1331,8 +1331,8 @@ class RenderEngine:
                 fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
         if not everything:
             for fr in self.frames.values():
-                if fr.state == "done" and fr.worker == "on disk":
-                    fr.state = "skipped"  # found on disk when it opened, not rendered by this run: dark green like the rest
+                if fr.state == "done":
+                    fr.state = "skipped"  # on disk already (an earlier run, before Stop, or found there): not this run's, dark green
             self.scan_disk(skip=True)  # frames already on disk and passing the check are never rendered twice
         self.before = {}
         if all(w.state == "gone" for w in self.workers.values()):
