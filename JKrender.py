@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.92.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.92.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.92.2 alpha"
+APP_VERSION = "0.92.3 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1475,8 +1475,9 @@ class RenderEngine:
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → %d %s" % (state, w.leave_to.number, w.leave_to.name)
-        if state == "busy" and not (w.retire or w.handover or w.leave) and self._fresh_due():
-            return "busy → fresh Nuke" if self.settings.get("fresh_after_chunk", "short") == "always" else "busy → fresh Nuke (memory short)"
+        fresh = self._fresh_due() if state == "busy" and not (w.retire or w.handover or w.leave) else ""
+        if fresh:
+            return "busy → fresh Nuke" if fresh == "always" else "busy → fresh Nuke (%s)" % fresh
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
             return "%s → closes (%s)" % (state, w.why_leaving)
         if w.handover or (w.retire and state == "busy"):
@@ -1874,24 +1875,27 @@ class RenderEngine:
 
     def _fresh_due(self):
         """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when a process waits to come back
-        for RAM or VRAM, or the PC is within 5 % of a limit. Never with no chunk left to hand out: the new one would have nothing to do."""
+        for RAM or VRAM, or the PC is within 5 % of a limit. Never with no chunk left to hand out: the new one would have nothing to do.
+        What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
         mode = self.settings.get("fresh_after_chunk", "short")
         if mode not in ("short", "always") or self.movie:
-            return False
+            return ""
         if not any(c.state == "queued" and self.in_scope(c) for c in self.chunks):
-            return False
+            return ""
         if mode == "always":
-            return True
+            return "always"
         m = self.manager
         if m is None:
-            return False
-        if m.ram_cap is not None or m.vram_cap is not None:
-            return True
-        if psutil and self.settings.get("ram_guard", True) and m.ram_percent() >= float(self.settings.get("ram_limit", 95)) - 5:
-            return True
-        if m.vram and m.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
-            return float(m.vram[1]) / float(m.vram[2]) * 100 >= float(self.settings.get("vram_limit", 95)) - 5
-        return False
+            return ""
+        why = []  # what is short: RAM, VRAM or both
+        ram = m.ram_percent() if psutil and self.settings.get("ram_guard", True) else 0.0
+        if m.ram_cap is not None or ram >= float(self.settings.get("ram_limit", 95)) - 5:
+            why.append("RAM %.0f %%" % ram if ram else "RAM")
+        if self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
+            vram = float(m.vram[1]) / float(m.vram[2]) * 100 if m.vram and m.vram[2] else 0.0
+            if m.vram_cap is not None or (vram and vram >= float(self.settings.get("vram_limit", 95)) - 5):
+                why.append("VRAM %.0f %%" % vram if vram else "VRAM")
+        return ", ".join(why)
 
     def _quit(self, w, why):
         w.retire = True
@@ -2087,10 +2091,11 @@ class RenderEngine:
                 self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
                            else "not needed")
             elif self._fresh_due():
+                fresh = self._fresh_due()
                 w.closed_why = "fresh Nuke"
                 self.refresh_ids.append(w.id)
-                self._quit(w, "fresh Nuke after its chunk, %.1f GB RAM%s" % (
-                    w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
+                self._quit(w, "fresh Nuke after its chunk%s, it took %.1f GB RAM%s" % (
+                    "" if fresh == "always" else " (%s)" % fresh, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
         elif kind == "FAIL":
             c = w.chunk
             frame = int(rest[1]) if len(rest) > 1 else None

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.92.3 alpha — 2026-11-09
+
+- State says what the fresh Nuke is for: "busy → fresh Nuke (RAM 91 %)", "(VRAM 93 %)" or both, not "(memory short)". The Log says it too.
+
 ## 0.92.2 alpha — 2026-11-09
 
 - RAM limit 95 % by default, like the VRAM limit (was 90 %). Settings saved before keep their own value; Reset to defaults sets 95.
