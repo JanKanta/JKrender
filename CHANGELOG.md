@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.90.4 alpha — 2026-11-09
+
+- Frames already on disk when a render opens show as on disk, skipped (dark green) straight away, not green as if this render had made them; Rendered lists nothing until the render runs. Frames this render made earlier stay green when the Framerange changes or frames are deleted.
+
 ## 0.90.3 alpha — 2026-11-09
 
 - Rendering again after Stop with Only missing: the frames rendered before Stop show as on disk, skipped (dark green), like every other frame the new run does not render; Rendered lists only the new run's.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.90.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.90.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.90.3 alpha"
+APP_VERSION = "0.90.4 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -1372,10 +1372,13 @@ class RenderEngine:
             results = checks[f]
             if all(r[0] == "ok" for r in results):
                 fr = self.frames[f]
-                fr.state, fr.worker, fr.secs = ("skipped" if skip else "done"), "on disk", None
+                known = self.before.get(f)
+                # on disk and not rendered by this render: on disk, skipped (dark green); one this render had rendered
+                # before (Framerange changed, frames deleted) stays done, unless a new run starts
+                rendered_here = not skip and known is not None and known.state == "done"
+                fr.state, fr.worker, fr.secs = ("done" if rendered_here else "skipped"), "on disk", None
                 fr.checks = dict(enumerate(results))
                 fr.old = None
-                known = self.before.get(f)
                 if known is not None and known.state in ("done", "skipped"):
                     fr.worker, fr.secs, fr.small, fr.pixels, fr.same_as, fr.ran_in = (
                         known.worker, known.secs, known.small, known.pixels, known.same_as, known.ran_in)
@@ -1390,8 +1393,7 @@ class RenderEngine:
                     c.state = "done"
         self._small_dirty = True
         if found:
-            self.note("%d of %d frames are already on disk and pass the check; %s" % (
-                found, len(self.frames), "they are skipped" if skip else "they count as done"), "ok")
+            self.note("%d of %d frames are already on disk and pass the check; they are skipped" % (found, len(self.frames)), "ok")
         if broken:
             self.note("!! %d frame(s) on disk are broken (empty or cut off) and will be rendered again" % broken, "err")
         self._find_outside()
