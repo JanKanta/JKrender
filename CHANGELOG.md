@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.2 alpha — 2026-11-09
+
+- Render again on several renders picked at once (Shift+click on the cards): finished ones render again too, not only the one shown. One question for all of them, Only missing / All frames again / Cancel, with the frames on disk of all of them; a movie renders whole without being asked.
+
 ## 0.93.1 alpha — 2026-11-09
 
 - Settings and state in their own folder, `~/.nuke/JKrender/settings`, not loose beside the program. JKrender moves them there the first time it opens: from `~/.nuke/JKrender` (0.93) first, then from `~/.jkrender`; open cards (`queue.json`) too.

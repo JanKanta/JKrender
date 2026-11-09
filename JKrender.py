@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.2 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.1 alpha"
+APP_VERSION = "0.93.2 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6338,13 +6338,16 @@ class MainWindow(QtWidgets.QMainWindow):
         """Frames of a render on disk and fine at the last check."""
         return sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped"))
 
-    def _ask_render_again(self, e):
-        """Render again on a render with frames on disk: True renders every frame anew, False only those missing or
-        broken on disk (the rest are skipped, dark green), None cancels. A movie is one file: always all of it."""
-        on_disk = self._on_disk(e)
+    def _ask_render_again(self, engines):
+        """Render again on renders with frames on disk: True renders every frame anew, False only those missing or
+        broken on disk (the rest are skipped, dark green), None cancels. One question for all of them. A movie is one file:
+        always all of it, so it is not asked about."""
+        engines = [e for e in engines if not e.movie]
+        on_disk, total = sum(self._on_disk(e) for e in engines), sum(len(e.frames) for e in engines)
+        of = " of %d renders" % len(engines) if len(engines) > 1 else ""
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "JKrender",
-                                    "%d of %d frames were on disk at the last check.\n\nRender every frame again, or only the frames "
-                                    "missing or broken on disk?" % (on_disk, len(e.frames)), parent=self)
+                                    "%d of %d frames%s were on disk at the last check.\n\nRender every frame again, or only the frames "
+                                    "missing or broken on disk?" % (on_disk, total, of), parent=self)
         missing = box.addButton("Only missing", QtWidgets.QMessageBox.AcceptRole)
         every = box.addButton("All frames again", QtWidgets.QMessageBox.AcceptRole)
         box.addButton(QtWidgets.QMessageBox.Cancel)
@@ -6353,30 +6356,24 @@ class MainWindow(QtWidgets.QMainWindow):
         return {missing: False, every: True}.get(box.clickedButton())
 
     def _start(self):
-        targets = self._targets()
-        if len(targets) == 1:
-            starts = targets[0].state != "paused"
-        else:
-            starts = any(e.state in ("ready", "stopped", "failed") and not e.nothing_to_render() for e in targets)
-        everything = False
-        if len(targets) == 1 and starts:
-            e = targets[0]
-            if self._on_disk(e) and not e.movie:
-                # frames of it on disk, from this run or found there: every frame again, or only what is missing or broken
-                everything = self._ask_render_again(e)
-                if everything is None:
-                    return
-            elif e.state == "done" or e.nothing_to_render():
-                everything = True  # a finished movie, or nothing on disk: all of it
-        if starts:
+        # every picked render that is not running, finished ones too: Render again on several at once
+        starting = [e for e in self._targets() if e.state in ("ready", "stopped", "failed", "done")]
+        asking = [e for e in starting if self._on_disk(e) and not e.movie]
+        choice = False
+        if asking:
+            # frames of them on disk, from this run or found there: every frame again, or only what is missing or broken
+            choice = self._ask_render_again(asking)
+            if choice is None:
+                return
+        if starting:
             self._ask_clear_cache()
-        for e in targets:
+        for e in self._targets():
             if e.state == "paused":
                 e.resume()
-            elif len(targets) == 1:
+            elif e in starting:
+                # a finished movie, or nothing on disk: all of it
+                everything = choice if e in asking else (e.state == "done" or e.nothing_to_render())
                 self.manager.request_start(e, everything=everything)
-            elif e.state in ("ready", "stopped", "failed") and not e.nothing_to_render():
-                self.manager.request_start(e)  # several picked: a finished render is left as it is
         self.frames_model.refilter()
         self._sync_controls()
         self._refresh_cards()
