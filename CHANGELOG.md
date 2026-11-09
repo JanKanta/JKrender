@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.3 alpha — 2026-11-09
+
+- Fresh Nuke after every chunk, When memory is short: only once the RAM or VRAM has stayed within 5 % of its limit for 30 s, also while a process closed for memory waits to come back. Before, a waiting process alone was enough, so the processes got a fresh Nuke after every chunk with the card at 60 %.
+
 ## 0.93.2 alpha — 2026-11-09
 
 - Render again on several renders picked at once (Shift+click on the cards): finished ones render again too, not only the one shown. One question for all of them, Only missing / All frames again / Cancel, with the frames on disk of all of them; a movie renders whole without being asked.

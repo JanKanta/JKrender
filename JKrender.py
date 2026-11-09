@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.2 alpha"
+APP_VERSION = "0.93.3 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1900,8 +1900,8 @@ class RenderEngine:
                 w.why_leaving = w.closed_why = None
 
     def _fresh_due(self):
-        """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when a process waits to come back
-        for RAM or VRAM, or the PC has been within 5 % of a limit for FRESH_HOLD s. Never with no chunk left to hand out: the new one would have nothing to do.
+        """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when the RAM or VRAM has been
+        within 5 % of its limit for FRESH_HOLD s. Never with no chunk left to hand out: the new one would have nothing to do.
         What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
         mode = self.settings.get("fresh_after_chunk", "short")
         if mode not in ("short", "always") or self.movie:
@@ -3068,11 +3068,12 @@ class RenderManager:
 
     def memory_short(self):
         """What is short for Fresh Nuke after every chunk: "RAM 91 %", "VRAM 93 %", both, or "". Within 5 % of the limit for
-        FRESH_HOLD s without a break, not one reading over it; or a process closed for it waits to come back."""
+        FRESH_HOLD s without a break, not one reading over it. A process closed for memory that waits to come back is no
+        reason by itself: it comes back once there is room, and fresh Nukes at 60 % only cost script loads."""
         now, pct, why = time.time(), self._mem_now(), []
-        for name, cap in (("RAM", self.ram_cap), ("VRAM", self.vram_cap)):
+        for name in ("RAM", "VRAM"):
             since = self._short_since.get(name)
-            if cap is not None or (since is not None and now - since >= FRESH_HOLD):
+            if since is not None and now - since >= FRESH_HOLD:
                 why.append("%s %.0f %%" % (name, pct[name]) if pct[name] is not None else name)
         return ", ".join(why)
 
@@ -5730,7 +5731,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: fresh ones leave room for more processes.\n"
             "Each costs one script load.\n\n"
             "Off: a process renders chunk after chunk, never a fresh one.\n"
-            "When memory is short: only while a process waits for RAM or VRAM to come back, or the RAM or VRAM has stayed\n"
+            "When memory is short: only once the RAM or VRAM has stayed\n"
             "within 5 %% of its limit for %d s (one reading over it is not enough).\n" % FRESH_HOLD +
             "Always: after every chunk. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
