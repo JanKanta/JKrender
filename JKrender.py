@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.92 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.92.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.92 alpha"
+APP_VERSION = "0.92.1 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2895,8 +2895,8 @@ class RenderManager:
 
     def _vram_guard(self):
         """Fewer Nuke processes while the graphics card's memory is over the limit, like the RAM limit: every
-        process uses the GPU. Close to the limit the process that grew the most gets a fresh Nuke after its chunk;
-        with room on the card nothing restarts. At the limit one process fewer: the last one started closes (after its chunk,
+        process uses the GPU. Within 5 % of the limit the processes get a fresh Nuke after their chunk (Fresh Nuke after
+        every chunk). At the limit one process fewer: the last one started closes (after its chunk,
         or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
@@ -3160,7 +3160,7 @@ class RenderManager:
 C = {
     "bg": "#282828", "panel": "#323232", "panel2": "#3b3b3b", "line": "#1c1c1c",
     "text": "#cdcdcd", "dim": "#8c8c8c", "accent": "#f7931e", "ram": "#d2d2d2",
-    "vram": "#5aa9e6", "refresh": "#4e7a37", "queued": "#4a4a4a", "rendering": "#f7931e", "done": "#7fae58", "failed": "#d4503f",
+    "vram": "#5aa9e6", "queued": "#4a4a4a", "rendering": "#f7931e", "done": "#7fae58", "failed": "#d4503f",
     "bad": "#d4503f", "skipped": "#556b45", "small": "#e3c63d", "loading": "#626262", "stopped": "#7b6f60",
 }
 STATE_LABELS = {
@@ -3401,8 +3401,7 @@ class Gantt(QtWidgets.QWidget):
                     bw = max(1.5, (b - a) / span * width)
                     rect = QtCore.QRectF(x, y + 1.5, bw - 1, row_h - 3)
                     if kind == "load":
-                        # a fresh Nuke for the VRAM is part of rendering: darker green; other script loads grey
-                        color = QtGui.QColor(C["refresh"] if "VRAM" in label else C["loading"])
+                        color = QtGui.QColor(C["loading"])  # every script load grey, a fresh Nuke after a chunk too
                     elif state in ("rendering", "done", "failed"):
                         color = QtGui.QColor(C[state])
                     else:  # stopped, closed, retired: the chunk went back to the queue

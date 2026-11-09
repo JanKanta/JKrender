@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.92.1 alpha — 2026-11-09
+
+- Workers timeline: every script load is grey, a fresh Nuke after a chunk too (the darker green for a fresh Nuke for the VRAM is gone with it).
+
 ## 0.92 alpha — 2026-11-09
 
 - State says it ahead: a process that gets a fresh Nuke after its chunk shows "busy → fresh Nuke (memory short)", or "busy → fresh Nuke" with Always.
