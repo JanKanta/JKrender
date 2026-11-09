@@ -10,11 +10,11 @@ shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT)
 HOME = D + "/home"
 shutil.rmtree(HOME, ignore_errors=True)
-os.makedirs(HOME + "/.jkrender")
+os.makedirs(HOME + "/.nuke/JKrender/settings")
 for sub in ("sh010", "sh020"):
     shutil.rmtree(J + "/Demo/" + sub, ignore_errors=True)
 json.dump({"slate": True, "slate_frame": 1000, "processes": 8, "threads": 4, "ram": 8, "max_renders": 3,
-           "auto_start": False, "use_gpu": True}, open(HOME + "/.jkrender/settings.json", "w"))
+           "auto_start": False, "use_gpu": True}, open(HOME + "/.nuke/JKrender/settings/settings.json", "w"))
 os.environ["USERPROFILE"] = HOME
 os.environ.pop("NUKE_PATH", None)
 os.environ["QT_SCALE_FACTOR"] = "1.5"
@@ -213,7 +213,7 @@ try:
     # Render again on a finished render: the question
     w.select(e1)
     pump(0.5)
-    popup("d3_render_again", lambda: w._ask_render_again(e1))
+    popup("d3_render_again", lambda: w._ask_render_again([e1]))
     # Test this script: 4 of the setups Create tests makes, run with the stand-in Nuke, then the Add test window
     t = jk.ScriptTest(w, e1)
     t.setups = [x for x in t.setups if x[0] in (1, 2, 4, 8)]

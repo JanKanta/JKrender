@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.94.4 alpha — 2026-11-09
+
+- The manual is up to date for 0.94 and in six languages, 19 pages each: Czech (`docs/JKrender_navod.pdf`), English, German, Spanish, Polish and Russian (`docs/JKrender_manual_<lang>.pdf`). New in it: Fresh Nuke after every chunk, the frame check when a render ends, Render again on several renders, Output All, the new Settings, where the settings live, the State texts, the RAM limit at 95 %, no VRAM cap per process, installing from a GitHub zip and updating. Screenshots taken again. JKrender itself is unchanged.
+
 ## 0.94.3 alpha — 2026-11-09
 
 - Install checked end to end with the real Nuke (new test `test_real_install`, with `--real`): the JKrender folder copied into `~/.nuke`, one line in `init.py`, then what JKrender > Render Selected Write(s) does (finds JKrender.py, the log folder, makes the job and snapshot, picks Nuke's own Python with PySide6) and a render. It works. INSTALL.txt and README: a zip from GitHub unpacks as `JKrender-main`, rename it to `JKrender`; logs go after 15 days, not 7; where the settings are; how to update.

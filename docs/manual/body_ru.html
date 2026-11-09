@@ -1,0 +1,524 @@
+<!-- ============ ОБЛОЖКА ============ -->
+<section class="cover">
+  <div class="hero">
+    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">РУКОВОДСТВО · ВЕРСИЯ 0.94.3 ALPHA</div>
+    <h1>JK<span>render</span></h1>
+    <p style="font-size:14pt; color:#ddd; max-width:150mm">Быстрый локальный рендер для Nuke. Рендер делится на части (чанки), которые одновременно считают несколько процессов Nuke. После рендера JKrender проверяет каждый кадр на диске.</p>
+    <div style="margin-top:8mm"><img src="shots/03_rendering_workers.png" style="width:100%; border-radius:6px; border:1px solid #000"></div>
+  </div>
+  <div>
+    <h3 style="margin-top:0">Содержание</h3>
+    <div class="toc">
+      <div><b>1</b>Как работает JKrender</div>
+      <div><b>2</b>Установка и запуск из Nuke</div>
+      <div><b>3</b>Карта окна</div>
+      <div><b>4</b>Карточки рендеров и строка управления</div>
+      <div><b>5</b>Плитки и карта кадров</div>
+      <div><b>6</b>Панель Output: просмотр и кадры</div>
+      <div><b>7</b>Панели Chunks и Details</div>
+      <div><b>8</b>Панели Workers и Log</div>
+      <div><b>9</b>Панель System</div>
+      <div><b>10</b>Settings: все настройки</div>
+      <div><b>11</b>Как настроить рендер</div>
+      <div><b>12</b>Test this script</div>
+      <div><b>13</b>Контроль RAM и VRAM</div>
+      <div><b>14</b>Проверки, звуки, сбои, данные</div>
+      <div><b>15</b>Мышь и клавиши: шпаргалка</div>
+      <div><b>16</b>Если что-то не работает</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 1 ============ -->
+<section class="page">
+<h2>1  Как работает JKrender</h2>
+<p>Обычный рендер в Nuke идёт в одном процессе, который кадр за кадром считает весь скрипт. Но один Nuke редко загружает все 32 потока процессора. Поэтому JKrender запускает <b>несколько процессов Nuke рядом</b>. Каждый <b>открывает скрипт только один раз</b>, а затем получает куски работы, так называемые <b>чанки</b>: например, 10 кадров подряд.</p>
+
+<svg viewBox="0 0 760 300" width="100%">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#888"/></marker></defs>
+  <rect x="10" y="110" width="120" height="80" rx="8" fill="#282828"/>
+  <text x="70" y="143" fill="#fff" font-size="15" font-weight="700" text-anchor="middle">Nuke</text>
+  <text x="70" y="163" fill="#bbb" font-size="11" text-anchor="middle">выбранные Write</text>
+  <text x="70" y="178" fill="#f7931e" font-size="11" text-anchor="middle">Ctrl+Alt+R</text>
+  <line x1="130" y1="150" x2="178" y2="150" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="180" y="80" width="150" height="140" rx="8" fill="#f7931e"/>
+  <text x="255" y="118" fill="#111" font-size="16" font-weight="700" text-anchor="middle">JKrender</text>
+  <text x="255" y="140" fill="#111" font-size="11" text-anchor="middle">снимок скрипта</text>
+  <text x="255" y="156" fill="#111" font-size="11" text-anchor="middle">делит кадры</text>
+  <text x="255" y="172" fill="#111" font-size="11" text-anchor="middle">на чанки</text>
+  <text x="255" y="196" fill="#111" font-size="11" text-anchor="middle">следит за RAM и VRAM</text>
+  <g font-size="11">
+    <g transform="translate(380,20)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W01</text></g>
+    <g transform="translate(380,62)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W02</text></g>
+    <g transform="translate(380,104)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W03</text></g>
+    <g transform="translate(380,146)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W04</text></g>
+    <text x="465" y="205" fill="#666" text-anchor="middle">… до W08 (Processes)</text>
+    <text x="465" y="225" fill="#666" text-anchor="middle">у каждого Threads и Cache</text>
+  </g>
+  <g stroke="#888" stroke-width="1.6" marker-end="url(#ar)"><line x1="330" y1="130" x2="378" y2="37"/><line x1="330" y1="140" x2="378" y2="79"/><line x1="330" y1="155" x2="378" y2="121"/><line x1="330" y1="165" x2="378" y2="163"/></g>
+  <line x1="552" y1="110" x2="598" y2="110" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="600" y="60" width="150" height="100" rx="8" fill="#fff" stroke="#7fae58" stroke-width="2"/>
+  <text x="675" y="88" font-size="14" font-weight="700" text-anchor="middle">Диск</text>
+  <text x="675" y="108" font-size="11" text-anchor="middle" fill="#444">кадры записываются,</text>
+  <text x="675" y="124" font-size="11" text-anchor="middle" fill="#444">их пока никто не читает</text>
+  <text x="675" y="146" font-size="11" text-anchor="middle" fill="#7fae58" font-weight="700">✔ готово</text>
+  <rect x="600" y="180" width="150" height="70" rx="8" fill="#fff" stroke="#5aa9e6" stroke-width="2"/>
+  <text x="675" y="205" font-size="12" font-weight="700" text-anchor="middle">После рендера</text>
+  <text x="675" y="224" font-size="11" text-anchor="middle" fill="#444">1. Check frames: файлы</text>
+  <text x="675" y="239" font-size="11" text-anchor="middle" fill="#444">2. Check pixels: NaN…</text>
+  <line x1="675" y1="160" x2="675" y2="178" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="10" y="282" font-size="12" fill="#333">К концу чанки становятся меньше, поэтому все процессы заканчивают примерно одновременно.</text>
+</svg>
+
+<h3>Три числа, от которых зависит скорость</h3>
+<div class="cols3">
+  <div class="card"><h4>Processes</h4>Сколько процессов Nuke работает одновременно (для всех рендеров вместе). Больше процессов делают больше за раз, но и занимают больше RAM и VRAM.</div>
+  <div class="card"><h4>Threads</h4>Сколько потоков процессора получает каждый процесс (Nuke <code>-m</code>). <b>Processes × Threads</b> должно давать примерно число потоков ПК (здесь 32).</div>
+  <div class="card"><h4>Cache</h4>Лимит кэша одного процесса в ГБ (Nuke <code>-c</code>). На деле процесс занимает больше. Сколько, показывает System › RAM.</div>
+</div>
+<div class="box">По умолчанию <b>8 процессов × 4 потока</b>. Тяжёлые композитинг-скрипты, которые один Nuke уже загружает сам (Defocus, Denoise), часто быстрее на <b>4 × 8</b> и занимают вдвое меньше RAM. Скриптам, у которых растёт VRAM, нужно меньше процессов. Что лучше для твоего скрипта, измерит <b>Test this script</b> (глава 12).</div>
+
+<h3>Где что хранится</h3>
+<table>
+<tr><th>Что</th><th>Где</th></tr>
+<tr><td>Настройки</td><td><code>~/.nuke/JKrender/settings/settings.json</code> (у каждого пользователя свои). Старые версии хранили их в <code>~/.jkrender</code>; JKrender сам переносит их при первом запуске.</td></tr>
+<tr><td>Логи рендеров</td><td><code>~/.nuke/JKrender/log/</code>: одна папка на рендер (снимок скрипта, job, лог каждого процесса Nuke и <code>report.json</code>). Старше 15 дней удаляются.</td></tr>
+<tr><td>Результаты тестов</td><td><code>~/.nuke/JKrender/settings/test_results</code></td></tr>
+<tr><td>Отрендеренные кадры</td><td>Туда, куда их отправляет Write. JKrender никогда не удаляет их сам, только кнопкой Delete.</td></tr>
+</table>
+</section>
+
+<!-- ============ 2 ============ -->
+<section class="page">
+<h2>2  Установка и запуск из Nuke</h2>
+<div class="cols">
+<div>
+<h3>Установка (один раз)</h3>
+<p><span class="ni">1</span>Скопируй всю папку <code>JKrender</code> в <code>%USERPROFILE%\.nuke\</code>. Если скачать её с GitHub как zip, она называется <code>JKrender-main</code>: переименуй её в <code>JKrender</code>.</p>
+<p><span class="ni">2</span>Добавь в <code>~/.nuke/init.py</code> строку (при необходимости создай файл):</p>
+<p><code>nuke.pluginAddPath("./JKrender")</code></p>
+<p><span class="ni">3</span>Перезапусти Nuke. При первом запуске JKrender спросит, скачать ли numpy и OpenEXR для просмотра EXR (около 15 МБ). Если откажешься, рендер работает, только без просмотра EXR. Чтобы вопрос появился снова, удали файл <code>lib/DECLINED</code>.</p>
+<p class="small dim">Дополнительно: для подробностей и плеера MOV/MP4 добавь ffprobe/ffmpeg в PATH (<code>winget install ffmpeg</code>). Нужен Nuke 16 (PySide6).</p>
+<p class="small dim"><b>Новая версия:</b> скопируй новые файлы поверх старых. Папки <code>lib</code>, <code>log</code> и <code>settings</code> остаются.</p>
+</div>
+<div>
+<h3>Меню JKrender в Nuke</h3>
+<table>
+<tr><th>Пункт</th><th>Что делает</th></tr>
+<tr><td>Render Selected Write(s)<br><span class="kbd">Ctrl+Alt+R</span></td><td>Отправляет выбранные Write (или Group с Write внутри) в JKrender. Каждый Write получает свою карточку. Если окно ещё не открыто, оно откроется.</td></tr>
+<tr><td>Open Renders Folder</td><td>Открывает папку с логами рендеров.</td></tr>
+</table>
+<p class="small">Если скрипт не сохранён, появится вопрос <i>Save it and render?</i>: рендерится сохранённая версия.</p>
+</div>
+</div>
+
+<h3>Что происходит после отправки</h3>
+<svg viewBox="0 0 760 110" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="85" y="50" fill="#fff" text-anchor="middle" font-weight="700">Сохраняется снимок</text><text x="85" y="68" fill="#bbb" text-anchor="middle">копия скрипта на сейчас</text>
+    <rect x="195" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="280" y="50" fill="#fff" text-anchor="middle" font-weight="700">Карточка в JKrender</text><text x="280" y="68" fill="#bbb" text-anchor="middle">состояние Ready, ждёт</text>
+    <rect x="390" y="20" width="170" height="70" rx="8" fill="#f7931e"/><text x="475" y="50" fill="#111" text-anchor="middle" font-weight="700">Нажимаешь Render</text><text x="475" y="68" fill="#111" text-anchor="middle">вопрос о кэше Nuke</text>
+    <rect x="585" y="20" width="170" height="70" rx="8" fill="#7fae58"/><text x="670" y="50" fill="#111" text-anchor="middle" font-weight="700">Рендер идёт</text><text x="670" y="68" fill="#111" text-anchor="middle">в Nuke работаешь дальше</text>
+    <g fill="#999"><path d="M172,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M367,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M562,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/></g>
+  </g>
+</svg>
+<div class="box b"><b>Снимок (snapshot):</b> рендерится скрипт в том виде, каким он был при отправке. В Nuke можно сразу работать и сохранять дальше, идущий рендер это не затрагивает. Чтобы отрендерить изменённый скрипт, отправь его из Nuke ещё раз: новая отправка заменит старую карточку.</div>
+<div class="box"><b>Вопрос о кэше:</b> если открыт какой-то Nuke, Render спрашивает, очистить ли его буферы, кэш воспроизведения и кэш Blink, чтобы рендеру хватило памяти. Ответ по умолчанию <b>No</b>, рендер стартует в любом случае. Дисковый кэш не трогается. После обновления JKrender нужно один раз перезапустить Nuke, чтобы это работало.</div>
+</section>
+
+<!-- ============ 3 ============ -->
+<section class="page">
+<h2>3  Карта окна</h2>
+<p>Наверху карточки рендеров и строка управления, под ними числа и карта кадров. Остальное занимают три панели: слева <b>Output / Chunks / Details</b>, справа вверху <b>Workers / Log</b> и справа внизу <b>System / Settings</b>. Границы между панелями можно перетаскивать.</p>
+<div class="shot" id="map">
+  <img src="shots/03_rendering_workers.png">
+  <div class="n" style="left:12.4%;top:2.4%">1</div>
+  <div class="n" style="left:87.3%;top:1.6%">2</div>
+  <div class="n" style="left:8.6%;top:9.8%">3</div>
+  <div class="n" style="left:34.2%;top:9.8%">4</div>
+  <div class="n" style="left:11.6%;top:14.2%">5</div>
+  <div class="n" style="left:0.8%;top:19.1%">6</div>
+  <div class="n" style="left:3.0%;top:30.0%">7</div>
+  <div class="n" style="left:24.0%;top:56.3%">8</div>
+  <div class="n" style="left:45.0%;top:24.2%">9</div>
+  <div class="n" style="left:45.0%;top:59.8%">10</div>
+</div>
+<div class="legend">
+  <div><span class="ni">1</span>Карточки рендеров: один Write (рендер) на карточку. Щелчок выбирает его.</div>
+  <div><span class="ni">2</span>Когда будут готовы все рендеры.</div>
+  <div><span class="ni">3</span>Render, Pause, Stop для выбранного рендера.</div>
+  <div><span class="ni">4</span>Slate, Framerange, Processes, Threads, Cache и Chunk этого рендера (только чтение).</div>
+  <div><span class="ni">5</span>Плитки с числами: кадры, время, скорость, процессы, проверки.</div>
+  <div><span class="ni">6</span>Карта кадров по чанкам. Щелчок по кадру показывает его.</div>
+  <div><span class="ni">7</span>Output: просмотр кадра с воспроизведением.</div>
+  <div><span class="ni">8</span>Output: фильтр, проверки, папка, удаление и список кадров.</div>
+  <div><span class="ni">9</span>Workers: временная шкала каждого процесса Nuke.</div>
+  <div><span class="ni">10</span>System: нагрузка ПК и таблица процессов.</div>
+</div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section class="page tight">
+<h2>4  Карточки рендеров и строка управления</h2>
+<h3>Карточка рендера</h3>
+<p>Каждый отправленный Write — одна карточка: номер, имя скрипта, имя Write, полоса прогресса и состояние (Ready, Waiting, Rendering, Paused, Checking output, Done, Failed, Stopped). <b>Щелчок</b> выбирает карточку, и всё окно показывает этот рендер. <b>Shift+щелчок</b> выбирает несколько карточек; Render, Pause и Stop тогда действуют на все, а Render again и на готовые (спрашивает один раз за все). <b>×</b> закрывает рендер, кадры на диске остаются.</p>
+<p>Рендеры делят один бюджет процессов. Рядом идёт не больше, чем указано в Settings <i>Max renders at once</i> (по умолчанию 3); процессы делятся между ними (8 → 4 + 4 → 3 + 3 + 2).</p>
+<h3>Карточка справа: ALL RENDERS DONE IN</h3>
+<p>Когда должны закончиться все идущие и ждущие рендеры при скорости, с которой ПК рендерит сейчас. Ниже: во сколько закончатся, сколько уже идут и сколько кадров осталось. Когда все пройдут, карточка показывает <b>ALL RENDERS TOOK</b>: сколько всё заняло.</p>
+
+<h3>Строка управления</h3>
+<table>
+<tr><th style="width:34mm">Элемент</th><th>Что делает</th></tr>
+<tr><td><span class="btn p">Render</span></td><td>Запускает выбранный рендер (или несколько выбранных). Кадры, которые уже в порядке на диске, пропускает. После Stop рендер продолжает с того места, где остановился (Resume). Если у рендера есть кадры на диске (готовый, остановленный или с кадрами из прошлого), он спрашивает: <b>Only missing</b> рендерит только недостающие или повреждённые кадры (остальные на карте тёмно-зелёные), <b>All frames again</b> рендерит всё заново, <b>Cancel</b> — ничего.</td></tr>
+<tr><td><span class="btn">Pause</span></td><td>Замораживает все процессы Nuke рендера посреди кадра (процессор освобождается, память остаётся занятой). Повторный щелчок продолжает.</td></tr>
+<tr><td><span class="btn">Stop</span></td><td>Останавливает рендер, завершает его процессы и удаляет недописанные кадры и временные файлы Nuke. Готовые кадры остаются.</td></tr>
+<tr><td>Slate</td><td>Рендерится ли кадр-слейт и на каком кадре (Settings › Job).</td></tr>
+<tr><td>Framerange</td><td>Кадры этого рендера: диапазон из Nuke, если ты не изменил его в Settings › Job.</td></tr>
+<tr><td>Processes · Threads · Cache · Chunk</td><td>С чем идёт рендер. Меняется в Settings › Processes and Chunks; число процессов и во время работы, правой кнопкой в System.</td></tr>
+<tr><td>Цветная полоса</td><td>Результат рендера, см. ниже.</td></tr>
+</table>
+<h3>Цветная полоса с результатом</h3>
+<table>
+<tr><th style="width:34mm">Цвет</th><th>Что значит</th><th>Пример</th></tr>
+<tr><td><span class="sw" style="background:var(--gr)"></span>Зелёный</td><td>Готово, все кадры на диске и прошли проверку.</td><td class="small">Done in 2:06. All 97 frames are on disk and pass the check.</td></tr>
+<tr><td><span class="sw" style="background:var(--ye)"></span>Жёлтый</td><td>Готово, но что-то не проверено или выглядит подозрительно (кадры не проверены, подозрительно маленькие; слейт маленьким не считается).</td><td class="small">frames not checked · 2 suspiciously small</td></tr>
+<tr><td><span class="sw" style="background:var(--rd)"></span>Красный</td><td>Ошибка: рендер не удался, повреждённые кадры или Check pixels нашёл проблему (NaN, чёрный кадр…).</td><td class="small">2 broken frames · Output: Problems shows them</td></tr>
+<tr><td><span class="sw" style="background:#888"></span>Серый</td><td>Идёт: <i>Checking pixels…</i>, ожидание свободных процессов и т. п.</td><td class="small">Waiting: 1 render already uses the PC</td></tr>
+</table>
+</section>
+
+<!-- ============ 5 ============ -->
+<section class="page">
+<h2>5  Плитки и карта кадров</h2>
+<div class="shot"><img src="shots/c_tiles.png"></div>
+<table>
+<tr><th style="width:34mm">Плитка</th><th>Что показывает</th></tr>
+<tr><td>Frames</td><td>Готовые / все кадры рендера, проценты и сколько рендерится сейчас.</td></tr>
+<tr><td>Elapsed</td><td>Сколько идёт рендер (без пауз).</td></tr>
+<tr><td>Remaining</td><td>Оценка оставшегося времени при текущей скорости.</td></tr>
+<tr><td>Speed</td><td>Кадры в секунду и в минуту, все процессы вместе. Лучшее число для сравнения настроек.</td></tr>
+<tr><td>Frame time</td><td>Сколько длится один кадр в одном процессе и сколько кадров считается одновременно (× N at once).</td></tr>
+<tr><td>Nuke processes</td><td>Сколько процессов рендерит / работает, плюс те, что загружаются или ждут.</td></tr>
+<tr><td>Check frames</td><td>Проверка файлов: отсутствующие, пустые, обрезанные, нечитаемые и подозрительно маленькие кадры.</td></tr>
+<tr><td>Check pixels</td><td>Проверка пикселей (EXR, PNG, JPEG, TIFF, DPX): чёрные, пустые и одноцветные кадры, кадры, совпадающие с другим, и кадр, чей размер, каналы или битность отличаются от остальных. В EXR также NaN, inf и сжатие.</td></tr>
+</table>
+
+<h3>Карта кадров</h3>
+<div class="shot"><img src="shots/c_map.png"></div>
+<p>Каждый прямоугольник — один кадр, сгруппированы по чанкам (C01, C02…). <b>Щелчок по кадру</b> открывает его в просмотре. Цвета:</p>
+<p>
+<span class="sw" style="background:#4a4a4a"></span>ждёт (queued) &nbsp;
+<span class="sw" style="background:var(--or)"></span>рендерится &nbsp;
+<span class="sw" style="background:var(--gr)"></span>готово &nbsp;
+<span class="sw" style="background:#556b45"></span>уже был на диске, пропущен (Only missing) &nbsp;
+<span class="sw" style="background:var(--ye)"></span>подозрительно маленький &nbsp;
+<span class="sw" style="background:var(--rd)"></span>не удался / повреждён</p>
+<h3>Render again: всё или только недостающее</h3>
+<div class="cols"><div><div class="shot" style="max-width:80mm"><img src="shots/d3_render_again.png"></div></div>
+<div><p style="margin-top:0">Если у рендера есть кадры на диске и ты нажмёшь <b>Render again</b>, он спросит: <b>Only missing</b> (по умолчанию) рендерит только недостающие или повреждённые кадры; остальные пропускаются и на карте <b>тёмно-зелёные</b>. <b>All frames again</b> рендерит всё заново, <b>Cancel</b> — ничего. Фильм (MOV, MP4) не спрашивает: фильм — один файл и рендерится целиком.</p>
+<p>Если через <b>Shift</b> выбрано несколько карточек, он спрашивает один раз за все (например, <i>27 of 27 frames of 3 renders…</i>). Кадры, которые были на диске уже при открытии или остались от прогона до Stop, тёмно-зелёные. В Output фильтр <b>Rendered</b> показывает тогда только кадры этого прогона, <b>All</b> — все.</p></div></div>
+</section>
+
+<!-- ============ 6 ============ -->
+<section class="page tight" style="font-size:8.4pt">
+<h2>6  Панель Output: просмотр и кадры</h2>
+<div class="cols">
+<div><div class="shot"><img src="shots/c_output.png"></div></div>
+<div>
+<h3 style="margin-top:0">Просмотр</h3>
+<ul style="padding-left:5mm; margin:0 0 2mm">
+<li><b>Колесо мыши</b>: масштаб, <b>перетаскивание</b> сдвигает изображение.</li>
+<li><b>Двойной щелчок</b>: возврат ко всему кадру. Если он уже целиком, просмотр разворачивается на все три панели; назад клавишей <span class="kbd">Esc</span>.</li>
+<li><span class="kbd">Space</span> запускает и останавливает воспроизведение. Никогда не нажимает кнопку, поэтому не останавливает рендер.</li>
+</ul>
+<h3>Полоса под просмотром</h3>
+<p>Предыдущий кадр · <b>Play/Pause</b> (воспроизводит готовые кадры по кругу с fps скрипта) · следующий кадр · ползунок по всем кадрам · номер кадра · <b>развернуть</b> (просмотр на три панели, <span class="kbd">Esc</span> назад). Под полосой: путь, размер, разрешение, каналы и результаты проверок кадра.</p>
+</div>
+</div>
+<h3>Кнопки</h3>
+<table>
+<tr><th style="width:34mm">Элемент</th><th>Что делает</th></tr>
+<tr><td>Фильтр</td><td><b>All</b>: все кадры сразу: отрендеренные, пропущенные, повреждённые, <i>not on disk</i> и те, что ещё будут рендериться, а также кадры на диске вне Framerange. Остальные фильтры — его части: <b>Rendered</b>: только кадры этого прогона. <b>Problems</b>: ошибки, подозрительно маленькие кадры и находки проверки пикселей. <b>Framerange</b>: только кадры выбранного диапазона.</td></tr>
+<tr><td><span class="btn">Check frames</span></td><td>Заново проверяет файлы всех кадров: существует, не пустой, целый и читаемый, не намного меньше остальных. Кадр, которого ещё нет на диске, остаётся <i>not on disk</i> и не считается повреждённым.</td></tr>
+<tr><td><span class="btn">Check pixels</span></td><td>В фоне проверяет пиксели каждого кадра (EXR, PNG, JPEG, TIFF, DPX): чёрные, пустые и одноцветные кадры, кадры, совпадающие с другим в любом месте последовательности, другой размер, каналы или битность; в EXR также NaN, inf и сжатие. Около 0,1 с на кадр 4K. Только сообщает, ничего не перерендеривает.</td></tr>
+<tr><td><span class="btn">Open folder</span></td><td>Открывает папку с результатом.</td></tr>
+<tr><td><span class="btn">Delete</span></td><td>Удаляет отрендеренные кадры с диска: все (по умолчанию) или заданный диапазон. Сначала спрашивает.</td></tr>
+</table>
+<h3>Список кадров</h3>
+<p>Столбцы: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (какой процесс его считал), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. С фильтром All все кадры в списке с самого начала, а их состояние меняется по ходу рендера. После <b>Render again</b> кадры не исчезают: они остаются как <i>on disk, queued again</i> со старым размером и временем (их можно смотреть и воспроизводить), пока новый рендер их не перезапишет. Кадры на диске вне выбранного Framerange остаются в списке с пометкой <i>not in Framerange</i>.</p>
+<div class="cols">
+<div class="menu"><img src="shots/m4_frame_menu.png" style="width:28%"></div>
+<div><b>Правая кнопка на кадре</b> (или на нескольких выбранных):<br>
+<b>Render this frame / batch</b>: перерендеривает только эти кадры (если рендер идёт, они добавляются в него).<br>
+<b>Delete this frame / batch</b>: удаляет их с диска (только когда рендер не идёт).</div>
+</div>
+<div class="box b small" style="margin-top:1mm"><b>MOV / MP4 / MXF:</b> вместо списка кадров показывается один файл фильма с подробностями (кодек, профиль, fps, разрешение, таймкод, число кадров по сравнению с настройками Write) и плеер с лупой. Кнопки <span class="btn">Check video</span>, <span class="btn">Open folder</span>, <span class="btn">Delete video</span>. Фильм нельзя разделить: его рендерит один процесс со всеми потоками (так показывают и Settings).</div>
+</section>
+
+<!-- ============ 7 ============ -->
+<section class="page">
+<h2>7  Панели Chunks и Details</h2>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Chunks</h3>
+<div class="shot"><img src="shots/c_chunks.png"></div>
+<p>Одна строка на чанк: <b>Chunk</b> (C01…), <b>Frames</b> (диапазон), <b>Count</b>, <b>State</b>, <b>Process</b> (кто его считает), <b>Done</b>, <b>Time</b>, <b>s / frame</b> и <b>Note</b> (почему чанк повторялся и т. п.).</p>
+<div class="menu"><img src="shots/m3_chunk_menu.png" style="width:70%"></div>
+<p><b>Правая кнопка:</b> <b>Render again</b> (чанк заново), <b>Show process log</b> (лог процесса, который его считал), <b>Delete frames from chunk</b> (только когда рендер не идёт).</p>
+</div>
+<div>
+<h3 style="margin-top:0">Details</h3>
+<div class="shot"><img src="shots/c_details.png"></div>
+<p>Всё о рендере в одном месте: скрипт и его снимок, Write и выходные пути, формат, fps, диапазон, версия Nuke, с какими Processes × Threads × Cache он идёт, время и пути к логам. Пригодится, когда нужно точно знать, что рендерилось.</p>
+</div>
+</div>
+</section>
+
+<!-- ============ 8 ============ -->
+<section class="page">
+<h2>8  Панели Workers и Log</h2>
+<h3 style="margin-top:0">Workers: временная шкала процессов</h3>
+<div class="shot"><img src="shots/c_workers.png"></div>
+<p>Одна строка на процесс Nuke (W01–W08), время слева направо. <span class="sw" style="background:#626262"></span><b>серый</b>: Nuke стартует и открывает скрипт (в том числе при замене на свежий Nuke, с подписью <i>again: fresh Nuke</i>). <span class="sw" style="background:var(--gr)"></span><b>зелёный</b>: готовые чанки (с номером чанка). <span class="sw" style="background:var(--or)"></span><b>оранжевый</b>: чанк, который рендерится сейчас. Чанки других рендеров приглушены (Settings › <i>Dim other renders in Workers</i>). Сразу видно, стоит ли процесс, перезапускается ли или долго открывает скрипт.</p>
+<p><b>Правая кнопка на строке процесса</b> открывает то же меню, что и в панели System (глава 9).</p>
+
+<h3>Log</h3>
+<div class="shot"><img src="shots/c_log.png"></div>
+<p>Сообщения JKrender и вывод каждого процесса Nuke со временем. Фильтр: <b>All</b>, <b>JKrender only</b> (только сообщения JKrender), <b>Errors and warnings</b>. <span class="btn">Open log folder</span> открывает папку с логами этого рендера: снимок скрипта, <code>job.json</code> и <code>worker_NN.log</code> каждого процесса.</p>
+<div class="box">Каждый процесс сообщает в логе, через сколько он был готов, с разбивкой на <b>старт Nuke</b> и <b>открытие скрипта</b>. Если старт длится 15 с и больше, JKrender предупреждает. Медленный старт обычно связан с лицензией или стартовыми скриптами пайплайна, а не с самим скриптом.</div>
+</section>
+
+<!-- ============ 9 ============ -->
+<section class="page">
+<h2>9  Панель System</h2>
+<div class="shot"><img src="shots/c_system.png"></div>
+<h3>Плитки и графики</h3>
+<p><b>CPU</b> (загрузка и потоки), <b>RAM</b> (общая), <b>Nuke RAM</b> (сколько занимают процессы Nuke), <b>Disk write</b>, <b>Disk read</b>, <b>Network</b>, <b>GPU</b> (загрузка и VRAM). График <b>Load</b> показывает CPU, RAM, GPU и VRAM в %, график <b>Disk / network</b> — передачу в МБ/с. <b>CPU threads</b>: по столбику на поток процессора, видно, загружен ли весь ПК.</p>
+<h3>Таблица процессов</h3>
+<table>
+<tr><th style="width:30mm">Столбец</th><th>Значение</th></tr>
+<tr><td>Process</td><td>Номер процесса (W01…).</td></tr>
+<tr><td>Render</td><td>Над каким рендером работает.</td></tr>
+<tr><td>State</td><td>Что делает: loading, busy, idle, paused, closing… <i>busy → fresh Nuke (RAM 91 %)</i>: после своего чанка получит свежий Nuke, потому что RAM у лимита (глава 13). Чего ждёт, например <i>wait: VRAM 75 → 14 % (3 starting)</i>: сейчас 75 %, ещё один процесс поместится ниже 14 %, потому что 3 процесса ещё стартуют и JKrender держит для них место; подсказка расскажет больше.</td></tr>
+<tr><td>CPU used</td><td>Сколько потоков процессора процесс действительно использует.</td></tr>
+<tr><td>RAM · Cache</td><td>Реальная память процесса и его кэш Nuke относительно лимита.</td></tr>
+<tr><td>GPU</td><td>Загрузка видеокарты и VRAM этого процесса.</td></tr>
+<tr><td>Frames · Last frame · Avg frame</td><td>Сколько кадров сделал, сколько длился последний и в среднем.</td></tr>
+<tr><td>Script load</td><td>За сколько Nuke стартовал и открыл скрипт.</td></tr>
+<tr><td>Uptime · Chunk · Chunks</td><td>Сколько работает, на каком чанке и сколько чанков сделал.</td></tr>
+<tr><td>PID · Frame · Peak RAM</td><td>Скрытые столбцы: ID процесса в Windows, текущий кадр, наибольшая RAM.</td></tr>
+</table>
+<div class="cols">
+<div><p><b>Щелчок по заголовку таблицы</b> открывает список столбцов: галочкой столбец показывается или скрывается, стрелки меняют порядок. Столбцы можно перетаскивать и за заголовок. Ширина и порядок сохраняются при закрытии окна.</p>
+<p><b>Правая кнопка на процессе</b> (в таблице или на строке в Workers) открывает меню справа. При нескольких идущих рендерах у <i>Add process to</i> есть подменю с выбором рендера.</p></div>
+<div class="menu" style="display:flex; gap:4mm; align-items:flex-start"><img src="shots/m2_columns_menu.png" style="height:62mm; width:auto"><img src="shots/m1_process_menu.png" style="height:30mm; width:auto"></div>
+</div>
+<table>
+<tr><th style="width:42mm">Пункт меню</th><th>Что делает</th></tr>
+<tr><td>Pause / Resume</td><td>Останавливает или отпускает только этот процесс.</td></tr>
+<tr><td>Close after this chunk</td><td>Процесс доделает свой чанк и закроется. <b>Processes</b> уменьшится на 1 и так останется.</td></tr>
+<tr><td>Close</td><td>Закрывает процесс сразу. Его чанк возвращается в очередь. На его место может встать другой.</td></tr>
+<tr><td>Work on › рендер</td><td>Переводит процесс на другой идущий рендер.</td></tr>
+<tr><td>Add process</td><td>Запускает ещё один процесс (и щелчком по пустому месту таблицы). <b>Processes</b> увеличится на 1 и так останется. Лимиты RAM и VRAM по-прежнему действуют.</td></tr>
+<tr><td>Start again</td><td>Для закрытого процесса: запускает его снова.</td></tr>
+<tr><td>Show process log</td><td>Открывает лог этого процесса.</td></tr>
+</table>
+</section>
+
+<!-- ============ 10 ============ -->
+<section class="page tight">
+<h2>10  Settings: все настройки</h2>
+<div class="shot"><img src="shots/02b_settings_panel.png"></div>
+<p class="small dim">Настройки сохраняются сразу. У каждой есть подсказка. <span class="btn">Reset to defaults</span> возвращает всё к исходному виду, включая столбцы таблиц; то, что JKrender узнал о скриптах, остаётся.</p>
+<h3>General</h3>
+<table>
+<tr><th style="width:52mm">Настройка</th><th>Что делает</th><th style="width:16mm">По умолч.</th></tr>
+<tr><td>Start render on open</td><td>Рендер начинается сразу после открытия окна, без нажатия Render.</td><td class="def">выкл.</td></tr>
+<tr><td>Start next render when one ends</td><td>Когда рендер закончится или не удастся, сам запускается следующий ещё не запущенный рендер в порядке карточек. Рендер, который ты остановил, ничего не запускает.</td><td class="def">выкл.</td></tr>
+<tr><td>Sound when a render ends</td><td>Звук после рендера, когда пройдут включённые проверки. Другой звук при ошибке, повреждённых кадрах или проблеме в пикселях. Остановленный рендер молчит.</td><td class="def">вкл.</td></tr>
+<tr><td>Check frames when a render ends</td><td>После рендера (и после Stop) один раз каждый отрендеренный кадр: есть, не пустой, целый и читаемый, не намного меньше остальных. Пока идёт рендер, папку вывода никто не читает. Выключено: повреждённый кадр считается готовым, пока не нажмёшь Check frames.</td><td class="def">вкл.</td></tr>
+<tr><td>Check pixels when a render ends</td><td>Сразу после проверки кадров в фоне проверяет пиксели всех кадров (чёрные, одноцветные, одинаковые, другой формат; в EXR также NaN и inf). Только сообщает.</td><td class="def">вкл.</td></tr>
+<tr><td>Check pixels when a render opens</td><td>Та же проверка кадров, которые уже есть на диске, сразу после открытия рендера. Render её прерывает.</td><td class="def">вкл.</td></tr>
+<tr><td>Max renders at once</td><td><b>1</b>: рендеры идут по очереди, следующий начинает загружаться, когда предыдущий доделывает последние чанки (первый шот готов раньше). <b>2–3</b>: идут рядом и делят процессы (в сумме не быстрее, но от каждого шота кадры видны рано).</td><td class="def">3</td></tr>
+<tr><td>Show processes of all renders</td><td>Workers и System показывают процессы всех рендеров. Выключено: только выбранного.</td><td class="def">вкл.</td></tr>
+<tr><td>Dim other renders in Workers</td><td>На временной шкале ярко видны чанки выбранного рендера, остальные приглушены.</td><td class="def">вкл.</td></tr>
+<tr><td>Delete old render logs</td><td>При открытии JKrender удаляет папки логов старше заданного числа дней. Кадры никогда.</td><td class="def">вкл., 15 дней</td></tr>
+</table>
+<p class="small dim">Группы в General разделены тонкими линиями. При повторном рендере шкала Workers всегда показывает только новый прогон.</p>
+<h3>Job (для рендера, выбранного вверху)</h3>
+<table>
+<tr><th style="width:52mm">Настройка</th><th>Что делает</th><th style="width:16mm">По умолч.</th></tr>
+<tr><td>Slate frame</td><td>Проект начинается после слейта (например, 1001, слейт на 1000). Включено: каждый рендер дополнительно рендерит слейт на этом кадре.</td><td class="def">вкл., 1000</td></tr>
+<tr><td>Framerange</td><td>Кадры рендера, например <code>1001-1100</code> или <code>1001-1010,1050</code>. У каждого рендера свой. Пустое поле возвращает диапазон из Nuke. Подтверждается Enter или щелчком в другом месте. Во время рендера заблокировано. Кадры на диске остаются.</td><td class="def">из Nuke</td></tr>
+<tr><td>Test › Test this script…</td><td>Измеряет настройки для этого ПК на кадрах со всего шота и показывает самую быструю (глава 12).</td><td class="def">—</td></tr>
+</table>
+<h3>Performance and Optimization</h3>
+<table>
+<tr><th style="width:52mm">Настройка</th><th>Что делает</th><th style="width:16mm">По умолч.</th></tr>
+<tr><td>Use GPU</td><td>Запускает Nuke с <code>--gpu</code>, и GPU-ноды (Kronos, ZDefocus, Denoise…) считает видеокарта. Лёгкий 4K-скрипт с Kronos был в 3 раза быстрее. У каждого процесса своя VRAM.</td><td class="def">вкл.</td></tr>
+<tr><td>VRAM limit</td><td>Выше лимита работает меньше процессов. На 97 % сразу закрывается процесс, запущенный последним; так же, если карта заполнена и ни один кадр долго не заканчивается. В пределах 5 % от лимита помогает Fresh Nuke after every chunk. Глава 13.</td><td class="def">вкл., 95 %</td></tr>
+<tr><td>RAM limit</td><td>Выше лимита работает меньше процессов: первым закрывается запущенный последним. Когда память освободится, он вернётся. Так Windows не начнёт свопить.</td><td class="def">вкл., 95 %</td></tr>
+</table>
+<h3>Processes and Chunks</h3>
+<table>
+<tr><th style="width:52mm">Настройка</th><th>Что делает</th><th style="width:16mm">По умолч.</th></tr>
+<tr><td>Processes</td><td>Процессы Nuke для всех рендеров вместе.</td><td class="def">8</td></tr>
+<tr><td>Threads</td><td>Потоки на процесс (<code>-m</code>).</td><td class="def">4</td></tr>
+<tr><td>Cache</td><td>Лимит кэша Nuke на процесс в ГБ (<code>-c</code>). Сколько процесс берёт на самом деле, показывает System › RAM. Слишком маленький кэш замедляет рендер: Nuke тогда выбрасывает и пересчитывает.</td><td class="def">по RAM</td></tr>
+<tr><td>Chunk: Auto / Fixed</td><td><b>Auto</b>: примерно 4 чанка на процесс, не больше 10 кадров (46 кадров при 8 процессах → 2, 96 → 3, 320+ → 10). <b>Fixed</b>: размер задаёшь справа. Действует для чанков, которые ещё не начались.</td><td class="def">Auto</td></tr>
+<tr><td>Smaller chunks at the end</td><td>К концу рендера чанки уменьшаются вплоть до одиночных кадров, и все процессы заканчивают примерно одновременно.</td><td class="def">вкл.</td></tr>
+<tr><td>Fresh Nuke after every chunk</td><td>После своего чанка процесс закрывает Nuke и открывает скрипт в новом, с RAM и VRAM снова в начале. Это стоит одной загрузки скрипта. <b>When memory is short</b>: только когда RAM или VRAM 30 с подряд в пределах 5 % от лимита, и по одному процессу. <b>Always</b>: после каждого чанка. <b>Off</b>: никогда. Глава 13.</td><td class="def">When memory is short</td></tr>
+</table>
+<div class="box">Processes, Threads и Cache во время рендера заблокированы. Для фильма они показывают 1 процесс со всеми потоками. Число процессов во время рендера меняется правой кнопкой в System (<i>Add process</i>, <i>Close after this chunk</i>).</div>
+</section>
+
+<!-- ============ 11 ============ -->
+<section class="page">
+<h2>11  Как настроить рендер</h2>
+<p>Рекомендуемый порядок для нового или тяжёлого скрипта:</p>
+<svg viewBox="0 0 760 150" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="70" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">1</text><text x="70" y="64" fill="#fff" text-anchor="middle" font-weight="700">Отправь Write</text><text x="70" y="82" fill="#bbb" text-anchor="middle">Ctrl+Alt+R</text>
+    <rect x="155" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="225" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">2</text><text x="225" y="64" fill="#fff" text-anchor="middle" font-weight="700">Create tests</text><text x="225" y="82" fill="#bbb" text-anchor="middle">настройки по ПК</text>
+    <rect x="310" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="380" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">3</text><text x="380" y="64" fill="#fff" text-anchor="middle" font-weight="700">Запуск теста</text><text x="380" y="82" fill="#bbb" text-anchor="middle">Round 1 и Round 2</text>
+    <rect x="465" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="535" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">4</text><text x="535" y="64" fill="#fff" text-anchor="middle" font-weight="700">Use these settings</text><text x="535" y="82" fill="#bbb" text-anchor="middle">берёт зелёную строку</text>
+    <rect x="620" y="10" width="140" height="100" rx="10" fill="#f7931e"/><text x="690" y="40" fill="#111" font-size="22" font-weight="700" text-anchor="middle">5</text><text x="690" y="64" fill="#111" text-anchor="middle" font-weight="700">Render</text><text x="690" y="82" fill="#111" text-anchor="middle">и следи за System</text>
+  </g>
+  <text x="0" y="140" font-size="11" fill="#555">Шаги 2–4 — в окне Test this script. Лёгкие скрипты можно сразу на 8 × 4; тест окупается, если рендер займёт десятки минут.</text>
+</svg>
+
+<h3>Ориентиры (Ryzen 9950X, 32 потока, 94 ГБ RAM, RTX 3090 24 ГБ)</h3>
+<table>
+<tr><th>Тип скрипта</th><th>Processes × Threads</th><th>Почему</th><th>Измерено</th></tr>
+<tr><td>Лёгкий композ, кеинг, грейд</td><td><b>8 × 4</b></td><td>Один Nuke не загрузит все потоки, больше процессов — да.</td><td class="small">тестовый 4K-скрипт: 8 × 4 быстрее всех</td></tr>
+<tr><td>Тяжёлый композ (Defocus, Denoise, много слоёв)</td><td><b>4 × 8</b> или <b>2 × 16</b></td><td>Один процесс использует больше потоков. 8 процессов исчерпают RAM, процессы закрываются.</td><td class="small">тяжёлый композ: 4 × 8 с кэшем 12 ГБ 17 fr/min, 2 × 16 16 fr/min</td></tr>
+<tr><td>Скрипт, у которого растёт VRAM (GPU-ноды)</td><td><b>1–2 × 32/16</b></td><td>VRAM растёт с каждым кадром; больше процессов на карту не поместится.</td><td class="small">VRAM +1,7 ГБ на кадр → 1 × 32</td></tr>
+</table>
+
+<h3>Как понять, что настройка неудачная</h3>
+<div class="cols">
+<div class="card"><h4 style="color:var(--rd)">Мало памяти</h4>System › RAM у лимита, в State — <i>wait: RAM …</i>, процессы закрываются и стартуют снова (серые блоки в Workers). <b>Решение:</b> меньше процессов с бо́льшим числом потоков или меньше Cache.</div>
+<div class="card"><h4 style="color:var(--rd)">Полная видеокарта</h4>VRAM на 95 %, процессы закрываются из-за VRAM. JKrender сам предложит меньше процессов с бо́льшим числом потоков (но сам ничего не меняет). <b>Решение:</b> меньше процессов с бо́льшим числом потоков (Test this script покажет сколько) или выключить Use GPU.</div>
+<div class="card"><h4 style="color:var(--or)">Простаивающий CPU</h4>CPU threads в основном пустые, а у RAM есть запас. <b>Решение:</b> добавь процесс (правая кнопка › Add process) или увеличь Threads.</div>
+<div class="card"><h4 style="color:var(--or)">Долгое открытие скрипта</h4>Серые блоки в Workers длинные, Script load высокий. При старте Nuke спорят за лицензии и стартовые скрипты. <b>Решение:</b> с более длинными чанками это меньше заметно; с самим скриптом обычно не связано.</div>
+</div>
+<div class="box g"><b>Лучшая мера — плитка Speed</b> (кадры в минуту). Сравнивай её между настройками на одном скрипте или доверь это <i>Test this script</i>.</div>
+</section>
+
+<!-- ============ 12 ============ -->
+<section class="page" style="font-size:9.2pt">
+<h2>12  Test this script</h2>
+<div class="shot"><img src="shots/11_test.png"></div>
+<p class="cap">Готовый тест: зелёная строка самая быстрая, оранжевая вторая. Winner показывает, насколько дольше шёл бы весь шот с остальными.</p>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Кнопки наверху</h3>
+<p><span class="btn">Create tests</span> смотрит, какой это компьютер (строка под кнопками: CPU, ядра и потоки, у Intel производительные и энергоэффективные ядра, RAM, видеокарта), и создаёт <b>7 настроек</b> от 1 процесса со всеми потоками до стольких процессов, сколько выдержит ПК: каждому процессу не меньше 4 потоков и не меньше 4 ГБ кэша. На 32 потоках и 94 ГБ: 1×32, 2×16, 3×10, 4×8, 5×6, 6×5, 8×4. Свыше 64 потоков процесс получает не больше 64 (одна группа процессоров в Windows). Заменяет всё в таблице.</p>
+<p><span class="btn">Add test</span> добавляет свою настройку (Processes, Threads, Cache и Fresh Nuke after every chunk), <span class="btn">Remove test</span> удаляет выбранные. <b>Правая кнопка</b> на строке: <b>Edit test</b>. Свои тесты запоминаются. Таблица показывает Fresh Nuke в названии настройки: <i>4 x 8, cache 12 GB, fresh every chunk</i> или <i>never fresh</i>; без приписки — When memory is short.</p>
+<p><b>Cache</b> каждой настройки — вся RAM для Nuke (лимит RAM минус резерв для Windows), делённая на число процессов, минус 4 ГБ, которые процесс берёт вне кэша. Что работает в данный момент, не важно.</p>
+<p><b>Frames per setup</b> (справа вверху): сколько кадров рендерит каждая настройка в Round 2. Если в шоте меньше кадров, это будет показано, и рендерятся все.</p>
+</div>
+<div>
+<h3 style="margin-top:0">Как идёт тест</h3>
+<p>Кадры берутся из <b>6 мест по всему шоту</b> (от первого кадра до последнего), в каждом по несколько кадров подряд. <b>Все настройки в раунде рендерят одни и те же кадры.</b></p>
+<p><b>Round 1:</b> каждая настройка недолго, 3 кадра на процесс настройки с наибольшим числом процессов (на 32 потоках 24 кадра), не больше 3 минут. <b>Round 2:</b> две самые быстрые (и любая в пределах 5 % от лучшей) снова с Frames per setup, не меньше 4 кадров на процесс.</p>
+<p><b>Frames / min</b> считается, когда процессы уже идут: старт Nuke и первый кадр каждого процесса не учитываются; в длинном рендере они бывают только раз.</p>
+<p>Столбцы: <b>Avg processes</b> (сколько процессов в среднем рендерило), <b>Round 1</b>, <b>Round 2</b> (время раунда, кадры, старт), <b>Frame</b>, <b>CPU / RAM / GPU / VRAM avg</b>, <b>Fell</b> (упавшие процессы), <b>Winner</b>, <b>State</b>. Щелчок по заголовку сортирует, столбцы можно растягивать и перемещать.</p>
+<p><span class="btn">Use these settings</span> переносит зелёную строку в Settings, включая Fresh Nuke. Кадры идут в тестовую папку и удаляются; render hooks у Write в тесте не запускаются. Таблицы остаются в <code>~/.nuke/JKrender/settings/test_results</code>.</p>
+</div>
+</div>
+<div class="cols"><div><div class="shot" style="max-width:62mm"><img src="shots/d2_add_test.png"></div></div>
+<div><p class="small" style="margin-top:0">Окно <b>Add test</b> (и такое же <b>Edit test</b> по правой кнопке).</p>
+<div class="box">Во время теста ничего другого рендериться не должно: тест измерял бы два рендера, борющихся за ПК. Рядом с рендером тест не запустится.</div></div></div>
+</section>
+
+<!-- ============ 13 ============ -->
+<section class="page" style="font-size:9.4pt">
+<h2>13  Контроль RAM и VRAM</h2>
+<p>JKrender следит за памятью, чтобы Windows не начала свопить, а видеокарта не заполнилась.</p>
+<svg viewBox="0 0 760 230" width="100%">
+  <rect x="40" y="20" width="60" height="180" rx="4" fill="#eee" stroke="#ccc"/>
+  <rect x="40" y="38" width="60" height="162" rx="4" fill="#7fae58" opacity=".35"/>
+  <line x1="30" y1="38" x2="110" y2="38" stroke="#d4503f" stroke-width="2.5"/><text x="108" y="52" font-size="10" fill="#d4503f" font-weight="700">лимит RAM 95 %, VRAM 95 %</text>
+  <line x1="30" y1="25" x2="110" y2="25" stroke="#d4503f" stroke-width="1.5" stroke-dasharray="4 3"/><text x="108" y="20" font-size="9.5" fill="#d4503f">VRAM 97 %: закрывается сразу</text>
+  <text x="70" y="218" font-size="11" text-anchor="middle">память</text>
+  <g font-size="10.5">
+    <rect x="250" y="10" width="510" height="44" rx="6" fill="#f6f6f7"/><text x="262" y="28" font-weight="700">30 с подряд в пределах 5 % от лимита</text><text x="262" y="45">После своих чанков процессы по одному получают свежий Nuke (Fresh Nuke).</text>
+    <rect x="250" y="62" width="510" height="44" rx="6" fill="#fbeaea"/><text x="262" y="80" font-weight="700">Выше лимита</text><text x="262" y="97">Закрывается процесс, запущенный последним: сразу, если открывает скрипт, иначе после чанка.</text>
+    <rect x="250" y="114" width="510" height="44" rx="6" fill="#eef5e8"/><text x="262" y="132" font-weight="700">Возврат</text><text x="262" y="149">Сразу возвращается столько, сколько поместится; стартуют по очереди.</text>
+    <rect x="250" y="166" width="510" height="44" rx="6" fill="#f6f6f7"/><text x="262" y="184" font-weight="700">Повторная перегрузка</text><text x="262" y="201">Ждёт 5 с, затем 30, 60 и 150 с, если повторится в течение 10 минут.</text>
+  </g>
+</svg>
+<div class="box">Чтобы процесс вернулся, под лимитом должен поместиться один процесс такого размера, как у процессов этого рендера (до этого: его Cache + 4 ГБ), с запасом 2 % и с тем, что идущие процессы ещё возьмут. Чего ждёт процесс, показывает столбец <b>State</b> в System, например <i>wait: VRAM 75 → 69 %</i>: VRAM на 75 % и должна упасть ниже 69 %, чтобы поместился ещё один процесс. <i>wait: VRAM 75 → 14 % (3 starting)</i>: три процесса ещё стартуют, и JKrender держит для них место в полном размере. Другие состояния: <i>wait: 25 s</i> (процесс только что упал), <i>wait: W03 1st frame</i> (ждёт первый кадр W03, чтобы увидеть, сколько берёт процесс), <i>wait: VRAM ok, checking</i> (место есть, проверяет, что оно останется).</div>
+<div class="box r"><b>Карта полна и ничего не идёт:</b> если VRAM выше лимита и ни один процесс не заканчивает кадр дольше, чем 4× обычное время кадра (не меньше минуты), Nuke, скорее всего, перешёл на CPU и все процессы ждут. Тогда сразу закрывается процесс, запущенный последним, а его чанк возвращается в очередь.</div>
+<h3>Fresh Nuke after every chunk</h3>
+<p>Во время рендера Nuke держит память, которая ему уже не нужна: процесс тяжёлого скрипта за первые ~20 кадров может вырасти с 2 до 7 ГБ VRAM. Свежий Nuke снова начинает с малого, поэтому на карту помещается больше процессов. По умолчанию, в режиме <b>When memory is short</b>, это происходит, только когда RAM или VRAM <b>30 с подряд</b> в пределах 5 % от лимита (одного скачка мало), и <b>по одному процессу</b>: следующий — только когда новый Nuke отрендерит первый кадр, а память всё ещё у лимита. Остальные тем временем рендерят дальше. Процесс, который получает свежий Nuke, показывает в State <i>busy → fresh Nuke (VRAM 93 %)</i>; на последних чанках ничего не заменяется.</p>
+<div class="box b"><b>Лимита VRAM на процесс нет.</b> Cache (<code>-c</code>) ограничивает только RAM-кэш Nuke. Видеопамять одного процесса ограничить нельзя: Windows этого не умеет, а настройки кэша Blink в Nuke при рендере не действуют (измерено). Поэтому JKrender управляет VRAM числом процессов и свежими Nuke. Cache — это лимит кэша, а не вся память процесса; настоящее число — в System › RAM.</div>
+</section>
+
+<!-- ============ 14 ============ -->
+<section class="page">
+<h2>14  Проверки, звуки, сбои и данные</h2>
+<h3>Проверка результата</h3>
+<div class="shot"><img src="shots/c_problems.png"></div>
+<p class="cap">Рендер с обрезанным кадром (1030) и чёрным кадром (1031), оба найдены вручную через Check frames и Check pixels: красная полоса, красные кадры на карте, фильтр Problems показывает только их.</p>
+<table>
+<tr><th style="width:40mm">Проверка</th><th>Когда</th><th>Что ищет</th></tr>
+<tr><td>Check frames</td><td>После рендера и после Stop (можно выключить) и кнопкой. Всегда при открытии рендера и перед Render.</td><td>Отсутствующие, пустые, обрезанные и нечитаемые файлы (EXR, PNG, JPEG, DPX), подозрительно маленькие кадры.</td></tr>
+<tr><td>Check pixels</td><td>После рендера, при открытии (можно выключить) и кнопкой.</td><td>EXR, PNG, JPEG, TIFF и DPX: чёрные, пустые и одноцветные кадры, кадры, совпадающие с другим, другой размер, каналы и битность. В EXR также NaN, inf и сжатие. Другие форматы: только одинаковые файлы.</td></tr>
+<tr><td>Movie check</td><td>Для MOV, MP4 и MXF.</td><td>Кодек, профиль, fps, разрешение, таймкод и число кадров по сравнению с настройками Write.</td></tr>
+</table>
+<h3>Звук после рендера</h3>
+<p>После рендера проверки идут в порядке <b>Check frames → Check pixels</b>; звук раздаётся, когда пройдут включённые (если обе выключены — сразу после рендера).</p>
+<p><b>Весёлый звук</b>: всё в порядке. <b>Звук ошибки</b>: рендер не удался, есть повреждённые кадры или проверка пикселей нашла проблему. Вручную остановленный рендер молчит.</p>
+<h3>Если JKrender упадёт</h3>
+<p>Карточки вернутся при следующем открытии JKrender (например, со следующим рендером, отправленным из Nuke). То, что есть на диске, учитывается, а оставшиеся процессы Nuke завершаются. Рендер, который шёл, ждёт Render и затем дорендеривает недостающее. Если закрыть окно обычно, ничего не возвращается.</p>
+<h3>Данные рендера</h3>
+<p>Каждый рендер записывает в свою папку логов <code>report.json</code>: CPU, RAM и видеокарта этого ПК, настройки, скорость, пики памяти, закрытия из-за лимитов, старт Nuke, открытие скрипта и типы нод в скрипте. <b>В нём нет имён скриптов, путей и ошибок</b>; скрипт узнаётся только по ID, одинаковому во всех его версиях. Если наткнёшься на ошибку, отправь папку логов рендера.</p>
+</section>
+
+<!-- ============ 15 ============ -->
+<section class="page">
+<h2>15  Мышь и клавиши: шпаргалка</h2>
+<table>
+<tr><th style="width:62mm">Где и что</th><th>Результат</th></tr>
+<tr><td><span class="kbd">Ctrl+Alt+R</span> в Nuke</td><td>Отправляет выбранные Write в JKrender.</td></tr>
+<tr><td>Щелчок по карточке рендера</td><td>Выбирает рендер; всё окно показывает его данные.</td></tr>
+<tr><td><span class="kbd">Shift</span> + щелчок по карточкам</td><td>Выбирает несколько рендеров для Render, Render again, Pause, Stop.</td></tr>
+<tr><td>Щелчок по кадру на карте кадров</td><td>Открывает кадр в просмотре.</td></tr>
+<tr><td><span class="kbd">Space</span></td><td>Воспроизвести / остановить просмотр (никогда не останавливает рендер).</td></tr>
+<tr><td>Колесо / перетаскивание в просмотре</td><td>Масштаб / сдвиг изображения.</td></tr>
+<tr><td>Двойной щелчок в просмотре</td><td>Весь кадр; если он уже целиком, большой просмотр.</td></tr>
+<tr><td><span class="kbd">Esc</span></td><td>Выход из большого просмотра.</td></tr>
+<tr><td>Правая кнопка на кадре (Output)</td><td>Render this frame / batch, Delete this frame / batch.</td></tr>
+<tr><td>Правая кнопка на чанке (Chunks)</td><td>Render again, Show process log, Delete frames from chunk.</td></tr>
+<tr><td>Правая кнопка на процессе (System, Workers)</td><td>Pause, Close after this chunk, Close, Work on, Add process, Start again, Show process log.</td></tr>
+<tr><td>Правая кнопка по пустому месту в System</td><td>Add process.</td></tr>
+<tr><td>Щелчок по заголовку таблицы System</td><td>Выбор и порядок столбцов.</td></tr>
+<tr><td>Перетаскивание границы панелей</td><td>Меняет размер панелей (сохраняется).</td></tr>
+<tr><td>Framerange + <span class="kbd">Enter</span></td><td>Подтверждает новый диапазон (Settings › Job).</td></tr>
+</table>
+<div class="shot"><img src="shots/09_done.png"></div>
+<p class="cap">Готовый рендер: зелёная полоса, карточка справа вверху показывает, сколько длились рендеры.</p>
+</section>
+
+<!-- ============ 16 ============ -->
+<section class="page">
+<h2>16  Если что-то не работает</h2>
+<table>
+<tr><th style="width:58mm">Проблема</th><th>Что делать</th></tr>
+<tr><td>Процессы Nuke долго стартуют (30–50 с)</td><td>Обычно это старт Nuke (лицензия, стартовые скрипты пайплайна), пока ПК рендерит. Log показывает разбивку <i>Nuke started in … / script opened in …</i>.</td></tr>
+<tr><td>Процессы закрываются и стартуют снова</td><td>Кончилась RAM или VRAM (State в System, Log). Меньше процессов с бо́льшим числом потоков или меньше Cache; Test this script покажет, что быстрее.</td></tr>
+<tr><td>В State — <i>busy → fresh Nuke</i></td><td>RAM или VRAM уже 30 с у лимита; после чанка процесс получит свежий Nuke (Settings › Fresh Nuke after every chunk). Если это происходит постоянно, процессов больше, чем помещается.</td></tr>
+<tr><td>Весь рендер медленнее, чем в прошлый раз</td><td>Проверь Cache: слишком маленький (например, 4 ГБ для тяжёлого скрипта) значит, что Nuke выбрасывает и пересчитывает, и кадры идут в несколько раз дольше.</td></tr>
+<tr><td>Скрипт открывается в Nuke с ошибкой нода</td><td>Например, <i>LensDistortion2.serialiseKnob: Failed to load</i> (нод из другой версии, нет плагина). JKrender рендерит дальше, как Nuke в GUI; сообщение есть в логе процесса.</td></tr>
+<tr><td>Жёлтая полоса «not checked»</td><td>Проверка кадров выключена (Check frames when a render ends) или не прошла. Нажми Check frames.</td></tr>
+<tr><td>Красная полоса</td><td>Output › фильтр Problems покажет, какие кадры. Правой кнопкой <i>Render this frame / batch</i>. Полоса пересчитывается и после ручных Check frames и Check pixels.</td></tr>
+<tr><td>Нет просмотра EXR</td><td>Нет numpy/OpenEXR. Удали <code>lib/DECLINED</code> и перезапусти Nuke или установи их по README.</td></tr>
+<tr><td>Рендер не начался сразу</td><td>Состояние Waiting: другие рендеры уже загружают ПК (Max renders at once) или ждёт память.</td></tr>
+<tr><td>Очистка кэша Nuke не работает</td><td>После обновления JKrender один раз перезапусти Nuke.</td></tr>
+<tr><td>Непонятно, что рендерилось</td><td>Панель Details и Log › Open log folder (снимок скрипта и job.json).</td></tr>
+</table>
+<div class="box r"><b>JKrender — альфа-версия.</b> В тестах работает, но будь готов к мелочам. Если наткнёшься на ошибку, отправь автору папку логов рендера (Open Renders Folder) и описание того, что произошло.</div>
+<p class="dim small" style="margin-top:10mm">JKrender 0.94.3 alpha · github.com/JanKanta/JKrender · руководство обновлено 9 ноября 2026 г. Снимки сделаны на примерном рендере (шоты sh010 и sh020).</p>
+</section>

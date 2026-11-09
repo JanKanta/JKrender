@@ -1,0 +1,525 @@
+<!-- ============ TITEL ============ -->
+<section class="cover">
+  <div class="hero">
+    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">ANLEITUNG · VERSION 0.94.3 ALPHA</div>
+    <h1>JK<span>render</span></h1>
+    <p style="font-size:14pt; color:#ddd; max-width:150mm">Schnelles lokales Rendern für Nuke. Ein Render wird in Stücke (Chunks) geteilt, die mehrere Nuke-Prozesse gleichzeitig rechnen. Nach dem Render prüft JKrender jedes Frame auf der Platte.</p>
+    <div style="margin-top:8mm"><img src="shots/03_rendering_workers.png" style="width:100%; border-radius:6px; border:1px solid #000"></div>
+  </div>
+  <div>
+    <h3 style="margin-top:0">Inhalt</h3>
+    <div class="toc">
+      <div><b>1</b>Wie JKrender arbeitet</div>
+      <div><b>2</b>Installation und Start aus Nuke</div>
+      <div><b>3</b>Übersicht des Fensters</div>
+      <div><b>4</b>Render-Karten und Steuerzeile</div>
+      <div><b>5</b>Kacheln und Frame-Karte</div>
+      <div><b>6</b>Panel Output: Vorschau und Frames</div>
+      <div><b>7</b>Panels Chunks und Details</div>
+      <div><b>8</b>Panels Workers und Log</div>
+      <div><b>9</b>Panel System</div>
+      <div><b>10</b>Settings: jede Einstellung</div>
+      <div><b>11</b>Einen Render einstellen</div>
+      <div><b>12</b>Test this script</div>
+      <div><b>13</b>RAM und VRAM im Blick</div>
+      <div><b>14</b>Prüfungen, Töne, Absturz, Daten</div>
+      <div><b>15</b>Maus und Tasten: Spickzettel</div>
+      <div><b>16</b>Wenn etwas nicht geht</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 1 ============ -->
+<section class="page">
+<h2>1  Wie JKrender arbeitet</h2>
+<p>Ein normaler Nuke-Render läuft in einem Prozess, der das ganze Script Frame für Frame rechnet. Ein Nuke nutzt aber selten alle 32 Threads der CPU. JKrender startet deshalb <b>mehrere Nuke-Prozesse nebeneinander</b>. Jeder <b>öffnet das Script nur einmal</b> und bekommt dann Arbeitsstücke, sogenannte <b>Chunks</b>: zum Beispiel 10 Frames hintereinander.</p>
+
+<svg viewBox="0 0 760 300" width="100%">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#888"/></marker></defs>
+  <rect x="10" y="110" width="120" height="80" rx="8" fill="#282828"/>
+  <text x="70" y="143" fill="#fff" font-size="15" font-weight="700" text-anchor="middle">Nuke</text>
+  <text x="70" y="163" fill="#bbb" font-size="11" text-anchor="middle">gewählte Writes</text>
+  <text x="70" y="178" fill="#f7931e" font-size="11" text-anchor="middle">Ctrl+Alt+R</text>
+  <line x1="130" y1="150" x2="178" y2="150" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="180" y="80" width="150" height="140" rx="8" fill="#f7931e"/>
+  <text x="255" y="118" fill="#111" font-size="16" font-weight="700" text-anchor="middle">JKrender</text>
+  <text x="255" y="140" fill="#111" font-size="11" text-anchor="middle">Snapshot des Scripts</text>
+  <text x="255" y="156" fill="#111" font-size="11" text-anchor="middle">teilt die Frames</text>
+  <text x="255" y="172" fill="#111" font-size="11" text-anchor="middle">in Chunks</text>
+  <text x="255" y="196" fill="#111" font-size="11" text-anchor="middle">überwacht RAM und VRAM</text>
+  <g font-size="11">
+    <g transform="translate(380,20)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W01</text></g>
+    <g transform="translate(380,62)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W02</text></g>
+    <g transform="translate(380,104)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W03</text></g>
+    <g transform="translate(380,146)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W04</text></g>
+    <text x="465" y="205" fill="#666" text-anchor="middle">… bis W08 (Processes)</text>
+    <text x="465" y="225" fill="#666" text-anchor="middle">jeder mit Threads und Cache</text>
+  </g>
+  <g stroke="#888" stroke-width="1.6" marker-end="url(#ar)"><line x1="330" y1="130" x2="378" y2="37"/><line x1="330" y1="140" x2="378" y2="79"/><line x1="330" y1="155" x2="378" y2="121"/><line x1="330" y1="165" x2="378" y2="163"/></g>
+  <line x1="552" y1="110" x2="598" y2="110" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="600" y="60" width="150" height="100" rx="8" fill="#fff" stroke="#7fae58" stroke-width="2"/>
+  <text x="675" y="88" font-size="14" font-weight="700" text-anchor="middle">Platte</text>
+  <text x="675" y="108" font-size="11" text-anchor="middle" fill="#444">Frames werden geschrieben,</text>
+  <text x="675" y="124" font-size="11" text-anchor="middle" fill="#444">noch liest sie nichts</text>
+  <text x="675" y="146" font-size="11" text-anchor="middle" fill="#7fae58" font-weight="700">✔ fertig</text>
+  <rect x="600" y="180" width="150" height="70" rx="8" fill="#fff" stroke="#5aa9e6" stroke-width="2"/>
+  <text x="675" y="205" font-size="12" font-weight="700" text-anchor="middle">Nach dem Render</text>
+  <text x="675" y="224" font-size="11" text-anchor="middle" fill="#444">1. Check frames: Dateien</text>
+  <text x="675" y="239" font-size="11" text-anchor="middle" fill="#444">2. Check pixels: NaN…</text>
+  <line x1="675" y1="160" x2="675" y2="178" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="10" y="282" font-size="12" fill="#333">Zum Ende hin werden die Chunks kleiner, so werden alle Prozesse etwa gleichzeitig fertig.</text>
+</svg>
+
+<h3>Drei Zahlen, die über die Geschwindigkeit entscheiden</h3>
+<div class="cols3">
+  <div class="card"><h4>Processes</h4>Wie viele Nuke-Prozesse gleichzeitig laufen (für alle Renders zusammen). Mehr Prozesse schaffen mehr auf einmal, brauchen aber auch mehr RAM und VRAM.</div>
+  <div class="card"><h4>Threads</h4>Wie viele CPU-Threads jeder Prozess bekommt (Nuke <code>-m</code>). <b>Processes × Threads</b> sollte etwa die Thread-Zahl des PCs ergeben (hier 32).</div>
+  <div class="card"><h4>Cache</h4>Das Cache-Limit eines Prozesses in GB (Nuke <code>-c</code>). Ein Prozess nimmt in Wirklichkeit mehr. Wie viel, zeigt System › RAM.</div>
+</div>
+<div class="box">Standard sind <b>8 Prozesse × 4 Threads</b>. Schwere Comp-Scripts, die ein Nuke schon allein auslastet (Defocus, Denoise), sind auf <b>4 × 8</b> oft schneller und brauchen halb so viel RAM. Scripts, deren VRAM wächst, wollen weniger Prozesse. Was für dein Script am besten ist, misst <b>Test this script</b> (Kapitel 12).</div>
+
+<h3>Wo was liegt</h3>
+<table>
+<tr><th>Was</th><th>Wo</th></tr>
+<tr><td>Einstellungen</td><td><code>~/.nuke/JKrender/settings/settings.json</code> (jeder Benutzer hat seine eigenen). Ältere Versionen hatten sie in <code>~/.jkrender</code>; JKrender verschiebt sie beim ersten Start selbst.</td></tr>
+<tr><td>Render-Logs</td><td><code>~/.nuke/JKrender/log/</code>: ein Ordner pro Render (Snapshot des Scripts, Job, Log jedes Nuke-Prozesses und <code>report.json</code>). Ältere als 15 Tage werden gelöscht.</td></tr>
+<tr><td>Testergebnisse</td><td><code>~/.nuke/JKrender/settings/test_results</code></td></tr>
+<tr><td>Gerenderte Frames</td><td>Dort, wohin der Write sie schickt. JKrender löscht sie nie von selbst, nur mit der Taste Delete.</td></tr>
+</table>
+</section>
+
+<!-- ============ 2 ============ -->
+<section class="page">
+<h2>2  Installation und Start aus Nuke</h2>
+<div class="cols">
+<div>
+<h3>Installation (einmal)</h3>
+<p><span class="ni">1</span>Kopiere den ganzen Ordner <code>JKrender</code> nach <code>%USERPROFILE%\.nuke\</code>. Als Zip von GitHub heißt er <code>JKrender-main</code>: benenne ihn in <code>JKrender</code> um.</p>
+<p><span class="ni">2</span>Füge in <code>~/.nuke/init.py</code> diese Zeile hinzu (lege die Datei an, falls es sie nicht gibt):</p>
+<p><code>nuke.pluginAddPath("./JKrender")</code></p>
+<p><span class="ni">3</span>Starte Nuke neu. Beim ersten Start fragt JKrender, ob es numpy und OpenEXR für die EXR-Vorschau laden soll (etwa 15 MB). Sagst du nein, rendert es trotzdem, nur ohne EXR-Vorschau. Um wieder gefragt zu werden, lösche die Datei <code>lib/DECLINED</code>.</p>
+<p class="small dim">Optional: für Details und den Player von MOV/MP4 ffprobe/ffmpeg in den PATH legen (<code>winget install ffmpeg</code>). Nötig ist Nuke 16 (PySide6).</p>
+<p class="small dim"><b>Neue Version:</b> kopiere die neuen Dateien über die alten. Die Ordner <code>lib</code>, <code>log</code> und <code>settings</code> bleiben.</p>
+</div>
+<div>
+<h3>Das Menü JKrender in Nuke</h3>
+<table>
+<tr><th>Eintrag</th><th>Was er tut</th></tr>
+<tr><td>Render Selected Write(s)<br><span class="kbd">Ctrl+Alt+R</span></td><td>Schickt die gewählten Writes (oder Groups mit Writes) an JKrender. Jeder Write bekommt eine eigene Karte. Ist das Fenster noch nicht offen, öffnet es sich.</td></tr>
+<tr><td>Open Renders Folder</td><td>Öffnet den Ordner mit den Render-Logs.</td></tr>
+</table>
+<p class="small">Ist das Script nicht gespeichert, fragt es <i>Save it and render?</i>: gerendert wird die gespeicherte Fassung.</p>
+</div>
+</div>
+
+<h3>Was nach dem Senden passiert</h3>
+<svg viewBox="0 0 760 110" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="85" y="50" fill="#fff" text-anchor="middle" font-weight="700">Snapshot gespeichert</text><text x="85" y="68" fill="#bbb" text-anchor="middle">Kopie des Scripts jetzt</text>
+    <rect x="195" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="280" y="50" fill="#fff" text-anchor="middle" font-weight="700">Karte in JKrender</text><text x="280" y="68" fill="#bbb" text-anchor="middle">Status Ready, wartet</text>
+    <rect x="390" y="20" width="170" height="70" rx="8" fill="#f7931e"/><text x="475" y="50" fill="#111" text-anchor="middle" font-weight="700">Du klickst Render</text><text x="475" y="68" fill="#111" text-anchor="middle">Frage nach Nukes Cache</text>
+    <rect x="585" y="20" width="170" height="70" rx="8" fill="#7fae58"/><text x="670" y="50" fill="#111" text-anchor="middle" font-weight="700">Der Render läuft</text><text x="670" y="68" fill="#111" text-anchor="middle">in Nuke arbeitest du weiter</text>
+    <g fill="#999"><path d="M172,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M367,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M562,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/></g>
+  </g>
+</svg>
+<div class="box b"><b>Snapshot:</b> gerendert wird das Script so, wie es beim Senden war. In Nuke kannst du sofort weiterarbeiten und speichern, der laufende Render merkt davon nichts. Willst du ein geändertes Script rendern, schicke es erneut aus Nuke: das neuere Senden ersetzt die alte Karte.</div>
+<div class="box"><b>Frage nach dem Cache:</b> ist ein Nuke offen, fragt Render, ob dessen Buffer, Playback-Cache und Blink-Cache geleert werden sollen, damit der Render mehr Speicher hat. Die Standardantwort ist <b>No</b>, der Render startet in beiden Fällen. Der Disk-Cache bleibt. Nach einem Update von JKrender Nuke einmal neu starten, damit das geht.</div>
+</section>
+
+<!-- ============ 3 ============ -->
+<section class="page">
+<h2>3  Übersicht des Fensters</h2>
+<p>Oben sind die Render-Karten und die Steuerzeile, darunter die Zahlen und die Frame-Karte. Der Rest sind drei Panels: links <b>Output / Chunks / Details</b>, rechts oben <b>Workers / Log</b>, rechts unten <b>System / Settings</b>. Die Grenzen zwischen den Panels lassen sich ziehen.</p>
+<div class="shot" id="map">
+  <img src="shots/03_rendering_workers.png">
+  <div class="n" style="left:12.4%;top:2.4%">1</div>
+  <div class="n" style="left:87.3%;top:1.6%">2</div>
+  <div class="n" style="left:8.6%;top:9.8%">3</div>
+  <div class="n" style="left:34.2%;top:9.8%">4</div>
+  <div class="n" style="left:11.6%;top:14.2%">5</div>
+  <div class="n" style="left:0.8%;top:19.1%">6</div>
+  <div class="n" style="left:3.0%;top:30.0%">7</div>
+  <div class="n" style="left:24.0%;top:56.3%">8</div>
+  <div class="n" style="left:45.0%;top:24.2%">9</div>
+  <div class="n" style="left:45.0%;top:59.8%">10</div>
+</div>
+<div class="legend">
+  <div><span class="ni">1</span>Render-Karten: ein Write (Render) pro Karte. Ein Klick wählt ihn.</div>
+  <div><span class="ni">2</span>Wann alle Renders fertig sein sollten.</div>
+  <div><span class="ni">3</span>Render, Pause, Stop für den gewählten Render.</div>
+  <div><span class="ni">4</span>Slate, Framerange, Processes, Threads, Cache und Chunk dieses Renders (nur zum Lesen).</div>
+  <div><span class="ni">5</span>Kacheln mit Zahlen: Frames, Zeit, Tempo, Prozesse, Prüfungen.</div>
+  <div><span class="ni">6</span>Die Frame-Karte nach Chunks. Ein Klick auf ein Frame zeigt es.</div>
+  <div><span class="ni">7</span>Output: Vorschau eines Frames mit Abspielen.</div>
+  <div><span class="ni">8</span>Output: Filter, Prüfungen, Ordner, Löschen und die Frame-Liste.</div>
+  <div><span class="ni">9</span>Workers: Zeitleiste jedes Nuke-Prozesses.</div>
+  <div><span class="ni">10</span>System: Auslastung des PCs und Tabelle der Prozesse.</div>
+</div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section class="page tight">
+<h2>4  Render-Karten und Steuerzeile</h2>
+<h3>Eine Render-Karte</h3>
+<p>Jeder gesendete Write ist eine Karte: Nummer, Script-Name, Write-Name, Fortschrittsbalken und Status (Ready, Waiting, Rendering, Paused, Checking output, Done, Failed, Stopped). Ein <b>Klick</b> wählt die Karte, das ganze Fenster zeigt dann diesen Render. <b>Shift+Klick</b> wählt mehrere Karten; Render, Pause und Stop gelten dann für alle, Render again auch für fertige (es fragt einmal für alle). Das <b>×</b> schließt den Render, die Frames auf der Platte bleiben.</p>
+<p>Renders teilen sich ein Budget an Prozessen. Nebeneinander laufen höchstens so viele, wie Settings <i>Max renders at once</i> sagt (Standard 3); die Prozesse werden zwischen ihnen geteilt (8 → 4 + 4 → 3 + 3 + 2).</p>
+<h3>Die Karte rechts: ALL RENDERS DONE IN</h3>
+<p>Wann alle laufenden oder wartenden Renders fertig sein sollten, beim Tempo, mit dem der PC gerade rendert. Darunter: wann sie enden, wie lange sie schon laufen und wie viele Frames übrig sind. Sind alle durch, zeigt die Karte <b>ALL RENDERS TOOK</b>: wie lange alles gedauert hat.</p>
+
+<h3>Die Steuerzeile</h3>
+<table>
+<tr><th style="width:34mm">Element</th><th>Was es tut</th></tr>
+<tr><td><span class="btn p">Render</span></td><td>Startet den gewählten Render (oder mehrere gewählte). Frames, die schon in Ordnung auf der Platte sind, überspringt er. Nach Stop geht der Render dort weiter, wo er aufgehört hat (Resume). Hat der Render Frames auf der Platte (fertig, gestoppt oder mit Frames von früher), fragt er: <b>Only missing</b> rendert nur fehlende oder kaputte Frames (die anderen sind in der Karte dunkelgrün), <b>All frames again</b> rendert alles neu, <b>Cancel</b> nichts.</td></tr>
+<tr><td><span class="btn">Pause</span></td><td>Friert alle Nuke-Prozesse des Renders mitten im Frame ein (die CPU wird frei, der Speicher bleibt belegt). Ein weiterer Klick macht weiter.</td></tr>
+<tr><td><span class="btn">Stop</span></td><td>Stoppt den Render, beendet die Prozesse und löscht halb geschriebene Frames und Temp-Dateien von Nuke. Fertige Frames bleiben.</td></tr>
+<tr><td>Slate</td><td>Ob ein Slate-Frame gerendert wird und auf welchem Frame (Settings › Job).</td></tr>
+<tr><td>Framerange</td><td>Die Frames dieses Renders: der Bereich aus Nuke, sofern du ihn nicht in Settings › Job geändert hast.</td></tr>
+<tr><td>Processes · Threads · Cache · Chunk</td><td>Womit der Render läuft. Geändert in Settings › Processes and Chunks; die Zahl der Prozesse auch während er läuft, mit Rechtsklick in System.</td></tr>
+<tr><td>Farbiger Balken</td><td>Das Ergebnis des Renders, siehe unten.</td></tr>
+</table>
+<h3>Der farbige Balken mit dem Ergebnis</h3>
+<table>
+<tr><th style="width:34mm">Farbe</th><th>Bedeutung</th><th>Beispiel</th></tr>
+<tr><td><span class="sw" style="background:var(--gr)"></span>Grün</td><td>Fertig, alle Frames sind auf der Platte und haben die Prüfung bestanden.</td><td class="small">Done in 2:06. All 97 frames are on disk and pass the check.</td></tr>
+<tr><td><span class="sw" style="background:var(--ye)"></span>Gelb</td><td>Fertig, aber etwas ist nicht geprüft oder sieht verdächtig aus (Frames nicht geprüft, verdächtig klein; ein Slate gilt nicht als klein).</td><td class="small">frames not checked · 2 suspiciously small</td></tr>
+<tr><td><span class="sw" style="background:var(--rd)"></span>Rot</td><td>Ein Fehler: der Render ist fehlgeschlagen, kaputte Frames, oder Check pixels hat ein Problem gefunden (NaN, schwarzes Frame…).</td><td class="small">2 broken frames · Output: Problems shows them</td></tr>
+<tr><td><span class="sw" style="background:#888"></span>Grau</td><td>Läuft gerade: <i>Checking pixels…</i>, Warten auf freie Prozesse und Ähnliches.</td><td class="small">Waiting: 1 render already uses the PC</td></tr>
+</table>
+</section>
+
+<!-- ============ 5 ============ -->
+<section class="page">
+<h2>5  Kacheln und Frame-Karte</h2>
+<div class="shot"><img src="shots/c_tiles.png"></div>
+<table>
+<tr><th style="width:34mm">Kachel</th><th>Was sie zeigt</th></tr>
+<tr><td>Frames</td><td>Fertige / alle Frames des Renders, Prozent und wie viele gerade gerendert werden.</td></tr>
+<tr><td>Elapsed</td><td>Wie lange der Render läuft (ohne Pausen).</td></tr>
+<tr><td>Remaining</td><td>Geschätzte Restzeit beim aktuellen Tempo.</td></tr>
+<tr><td>Speed</td><td>Frames pro Sekunde und pro Minute, alle Prozesse zusammen. Die beste Zahl, um Einstellungen zu vergleichen.</td></tr>
+<tr><td>Frame time</td><td>Wie lange ein Frame in einem Prozess dauert und wie viele Frames gleichzeitig laufen (× N at once).</td></tr>
+<tr><td>Nuke processes</td><td>Wie viele Prozesse rendern / laufen, dazu die, die laden oder warten.</td></tr>
+<tr><td>Check frames</td><td>Die Dateiprüfung: fehlende, leere, abgeschnittene, unlesbare und verdächtig kleine Frames.</td></tr>
+<tr><td>Check pixels</td><td>Die Pixelprüfung (EXR, PNG, JPEG, TIFF, DPX): schwarze, leere und einfarbige Frames, Frames gleich einem anderen und ein Frame, dessen Größe, Kanäle oder Bittiefe von den übrigen abweichen. Bei EXR auch NaN, inf und Kompression.</td></tr>
+</table>
+
+<h3>Die Frame-Karte</h3>
+<div class="shot"><img src="shots/c_map.png"></div>
+<p>Jedes Kästchen ist ein Frame, gruppiert nach Chunks (C01, C02…). Ein <b>Klick auf ein Frame</b> öffnet es in der Vorschau. Farben:</p>
+<p>
+<span class="sw" style="background:#4a4a4a"></span>wartet (queued) &nbsp;
+<span class="sw" style="background:var(--or)"></span>wird gerendert &nbsp;
+<span class="sw" style="background:var(--gr)"></span>fertig &nbsp;
+<span class="sw" style="background:#556b45"></span>war schon auf der Platte, übersprungen (Only missing) &nbsp;
+<span class="sw" style="background:var(--ye)"></span>verdächtig klein &nbsp;
+<span class="sw" style="background:var(--rd)"></span>fehlgeschlagen / kaputt</p>
+<h3>Render again: alles oder nur das Fehlende</h3>
+<div class="cols"><div><div class="shot" style="max-width:80mm"><img src="shots/d3_render_again.png"></div></div>
+<div><p style="margin-top:0">Hat der Render Frames auf der Platte und du klickst <b>Render again</b>, fragt er: <b>Only missing</b> (Standard) rendert nur fehlende oder kaputte Frames; die anderen werden übersprungen und sind in der Karte <b>dunkelgrün</b>. <b>All frames again</b> rendert alles neu, <b>Cancel</b> nichts. Ein Film (MOV, MP4) fragt nicht: ein Film ist eine Datei und wird ganz gerendert.</p>
+<p>Mit mehreren per <b>Shift</b> gewählten Karten fragt er einmal für alle (z. B. <i>27 of 27 frames of 3 renders…</i>). Frames, die beim Öffnen schon auf der Platte waren oder aus dem Lauf vor dem Stop stammen, sind dunkelgrün. In Output zeigt der Filter <b>Rendered</b> dann nur die Frames dieses Laufs, <b>All</b> alle.</p></div></div>
+</section>
+
+<!-- ============ 6 ============ -->
+<section class="page tight" style="font-size:8.9pt">
+<h2>6  Panel Output: Vorschau und Frames</h2>
+<div class="cols">
+<div><div class="shot"><img src="shots/c_output.png"></div></div>
+<div>
+<h3 style="margin-top:0">Vorschau</h3>
+<ul style="padding-left:5mm; margin:0 0 2mm">
+<li><b>Mausrad</b>: Zoom, <b>Ziehen</b> verschiebt das Bild.</li>
+<li><b>Doppelklick</b>: zurück zum ganzen Frame. Ist es schon ganz, wird die Vorschau über alle drei Panels groß; zurück mit <span class="kbd">Esc</span>.</li>
+<li>Beim Zoomen lädt die volle Auflösung (auch EXR und 4K).</li>
+<li><span class="kbd">Space</span> startet und stoppt das Abspielen. Es drückt nie eine Taste, stoppt also nie den Render.</li>
+</ul>
+<h3>Die Leiste unter der Vorschau</h3>
+<p>Voriges Frame · <b>Play/Pause</b> (spielt die fertigen Frames in Schleife mit den fps des Scripts) · nächstes Frame · Schieberegler über alle Frames · Frame-Nummer · <b>vergrößern</b> (Vorschau über drei Panels, <span class="kbd">Esc</span> zurück). Unter der Leiste: Pfad, Größe, Auflösung, Kanäle und Prüfergebnisse des Frames.</p>
+</div>
+</div>
+<h3>Tasten</h3>
+<table>
+<tr><th style="width:34mm">Element</th><th>Was es tut</th></tr>
+<tr><td>Filter</td><td><b>All</b>: alle Frames auf einmal: gerendert, übersprungen, kaputt, <i>not on disk</i> und noch zu rendernde, dazu Frames auf der Platte außerhalb der Framerange. Die anderen Filter sind Teile davon: <b>Rendered</b>: nur in diesem Lauf gerenderte Frames. <b>Problems</b>: Fehler, verdächtig kleine Frames und Funde der Pixelprüfung. <b>Framerange</b>: nur die Frames des gewählten Bereichs.</td></tr>
+<tr><td><span class="btn">Check frames</span></td><td>Prüft die Dateien aller Frames erneut: vorhanden, nicht leer, ganz und lesbar, nicht viel kleiner als die übrigen. Ein Frame, das noch nicht auf der Platte ist, bleibt <i>not on disk</i> und gilt nicht als kaputt.</td></tr>
+<tr><td><span class="btn">Check pixels</span></td><td>Prüft im Hintergrund die Pixel jedes Frames (EXR, PNG, JPEG, TIFF, DPX): schwarze, leere und einfarbige Frames, Frames gleich einem anderen irgendwo in der Sequenz, abweichende Größe, Kanäle oder Bittiefe; bei EXR auch NaN, inf und Kompression. Etwa 0,1 s pro 4K-Frame. Meldet nur, rendert nichts neu.</td></tr>
+<tr><td><span class="btn">Open folder</span></td><td>Öffnet den Ausgabeordner.</td></tr>
+<tr><td><span class="btn">Delete</span></td><td>Löscht gerenderte Frames von der Platte: alle (Standard) oder einen angegebenen Bereich. Fragt vorher.</td></tr>
+</table>
+<h3>Die Frame-Liste</h3>
+<p>Spalten: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (welcher Prozess es gerechnet hat), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. Mit dem Filter All stehen alle Frames von Anfang an in der Liste, ihr Status ändert sich, während sie gerendert werden. Nach <b>Render again</b> verschwinden Frames nicht: sie bleiben als <i>on disk, queued again</i> mit alter Größe und Zeit (zum Ansehen und Abspielen), bis der neue Render sie überschreibt. Frames auf der Platte außerhalb der gewählten Framerange bleiben mit dem Vermerk <i>not in Framerange</i> in der Liste.</p>
+<div class="cols">
+<div class="menu"><img src="shots/m4_frame_menu.png" style="width:34%"></div>
+<div><b>Rechtsklick auf ein Frame</b> (oder mehrere gewählte):<br>
+<b>Render this frame / batch</b>: rendert nur diese Frames neu (läuft der Render, kommen sie hinzu).<br>
+<b>Delete this frame / batch</b>: löscht sie von der Platte (nur wenn der Render nicht läuft).</div>
+</div>
+<div class="box b small" style="margin-top:1mm"><b>MOV / MP4 / MXF:</b> statt der Frame-Liste erscheint eine Filmdatei mit Details (Codec, Profil, fps, Auflösung, Timecode, Frame-Anzahl gegen die Einstellungen des Writes) und ein Player mit Lupe. Tasten <span class="btn">Check video</span>, <span class="btn">Open folder</span>, <span class="btn">Delete video</span>. Ein Film lässt sich nicht teilen, ihn rendert ein Prozess mit allen Threads; so zeigen es auch die Settings (Processes 1, gesperrt). Die Einstellungen der anderen Renders ändern sich dadurch nicht.</div>
+</section>
+
+<!-- ============ 7 ============ -->
+<section class="page">
+<h2>7  Panels Chunks und Details</h2>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Chunks</h3>
+<div class="shot"><img src="shots/c_chunks.png"></div>
+<p>Eine Zeile pro Chunk: <b>Chunk</b> (C01…), <b>Frames</b> (Bereich), <b>Count</b>, <b>State</b>, <b>Process</b> (wer ihn rechnet), <b>Done</b>, <b>Time</b>, <b>s / frame</b> und <b>Note</b> (warum ein Chunk wiederholt wurde und Ähnliches).</p>
+<div class="menu"><img src="shots/m3_chunk_menu.png" style="width:70%"></div>
+<p><b>Rechtsklick:</b> <b>Render again</b> (den Chunk neu), <b>Show process log</b> (Log des Prozesses, der ihn gerechnet hat), <b>Delete frames from chunk</b> (nur wenn der Render nicht läuft).</p>
+</div>
+<div>
+<h3 style="margin-top:0">Details</h3>
+<div class="shot"><img src="shots/c_details.png"></div>
+<p>Alles über den Render an einem Ort: das Script und sein Snapshot, die Writes und Ausgabepfade, Format, fps, Bereich, Nuke-Version, mit welchen Processes × Threads × Cache er läuft, Zeiten und die Pfade zu den Logs. Praktisch, wenn du genau wissen willst, was gerendert wurde.</p>
+</div>
+</div>
+</section>
+
+<!-- ============ 8 ============ -->
+<section class="page">
+<h2>8  Panels Workers und Log</h2>
+<h3 style="margin-top:0">Workers: Zeitleiste der Prozesse</h3>
+<div class="shot"><img src="shots/c_workers.png"></div>
+<p>Eine Zeile pro Nuke-Prozess (W01–W08), die Zeit läuft von links nach rechts. <span class="sw" style="background:#626262"></span><b>grau</b>: Nuke startet und öffnet das Script (auch beim Tausch gegen ein frisches Nuke, beschriftet <i>again: fresh Nuke</i>). <span class="sw" style="background:var(--gr)"></span><b>grün</b>: fertige Chunks (mit Chunk-Nummer). <span class="sw" style="background:var(--or)"></span><b>orange</b>: der Chunk, der gerade gerendert wird. Chunks anderer Renders sind gedimmt (Settings › <i>Dim other renders in Workers</i>). Man sieht sofort, ob ein Prozess steht, neu startet oder lange das Script öffnet.</p>
+<p><b>Ein Rechtsklick auf die Zeile eines Prozesses</b> öffnet dasselbe Menü wie im Panel System (Kapitel 9).</p>
+
+<h3>Log</h3>
+<div class="shot"><img src="shots/c_log.png"></div>
+<p>Meldungen von JKrender und die Ausgabe jedes Nuke-Prozesses mit Uhrzeit. Filter: <b>All</b>, <b>JKrender only</b> (nur Meldungen von JKrender), <b>Errors and warnings</b>. <span class="btn">Open log folder</span> öffnet den Ordner mit den Logs dieses Renders: Snapshot des Scripts, <code>job.json</code> und das <code>worker_NN.log</code> jedes Prozesses.</p>
+<div class="box">Jeder Prozess meldet im Log, wie lange er bis zur Bereitschaft brauchte, aufgeteilt in <b>Start von Nuke</b> und <b>Öffnen des Scripts</b>. Dauert der Start 15 s oder mehr, warnt JKrender. Ein langsamer Start liegt meist an der Lizenz oder den Start-Scripts der Pipeline, nicht am Script selbst.</div>
+</section>
+
+<!-- ============ 9 ============ -->
+<section class="page">
+<h2>9  Panel System</h2>
+<div class="shot"><img src="shots/c_system.png"></div>
+<h3>Kacheln und Graphen</h3>
+<p><b>CPU</b> (Auslastung und Threads), <b>RAM</b> (gesamt), <b>Nuke RAM</b> (was die Nuke-Prozesse belegen), <b>Disk write</b>, <b>Disk read</b>, <b>Network</b>, <b>GPU</b> (Auslastung und VRAM). Der Graph <b>Load</b> zeigt CPU, RAM, GPU und VRAM in %, der Graph <b>Disk / network</b> Übertragungen in MB/s. <b>CPU threads</b>: ein Balken pro CPU-Thread, so sieht man, ob der ganze PC ausgelastet ist.</p>
+<h3>Die Tabelle der Prozesse</h3>
+<table>
+<tr><th style="width:30mm">Spalte</th><th>Bedeutung</th></tr>
+<tr><td>Process</td><td>Nummer des Prozesses (W01…).</td></tr>
+<tr><td>Render</td><td>An welchem Render er arbeitet.</td></tr>
+<tr><td>State</td><td>Was er tut: loading, busy, idle, paused, closing… <i>busy → fresh Nuke (RAM 91 %)</i>: nach seinem Chunk bekommt er ein frisches Nuke, weil das RAM am Limit ist (Kapitel 13). Worauf er wartet, z. B. <i>wait: VRAM 75 → 14 % (3 starting)</i>: jetzt 75 %, ein weiterer Prozess passt unter 14 %, weil 3 Prozesse noch starten und JKrender ihnen Platz freihält; der Tooltip sagt mehr.</td></tr>
+<tr><td>CPU used</td><td>Wie viele CPU-Threads der Prozess wirklich nutzt.</td></tr>
+<tr><td>RAM · Cache</td><td>Der tatsächliche Speicher des Prozesses und sein Nuke-Cache gegen das Limit.</td></tr>
+<tr><td>GPU</td><td>Auslastung der Grafikkarte und VRAM dieses Prozesses.</td></tr>
+<tr><td>Frames · Last frame · Avg frame</td><td>Wie viele Frames er gerechnet hat, wie lange das letzte dauerte und im Schnitt.</td></tr>
+<tr><td>Script load</td><td>Wie lange Nuke zum Starten und Öffnen des Scripts brauchte.</td></tr>
+<tr><td>Uptime · Chunk · Chunks</td><td>Wie lange er läuft, an welchem Chunk er ist und wie viele er gemacht hat.</td></tr>
+<tr><td>PID · Frame · Peak RAM</td><td>Versteckte Spalten: Prozess-ID in Windows, aktuelles Frame, höchstes RAM.</td></tr>
+</table>
+<div class="cols">
+<div><p><b>Ein Klick auf den Tabellenkopf</b> öffnet die Liste der Spalten: Haken zeigt oder versteckt eine Spalte, die Pfeile ändern die Reihenfolge. Spalten lassen sich auch am Kopf ziehen. Breiten und Reihenfolge werden beim Schließen des Fensters gespeichert.</p>
+<p><b>Ein Rechtsklick auf einen Prozess</b> (in der Tabelle oder auf einer Zeile in Workers) öffnet das Menü rechts. Laufen mehrere Renders, hat <i>Add process to</i> ein Untermenü zur Wahl des Renders.</p></div>
+<div class="menu" style="display:flex; gap:4mm; align-items:flex-start"><img src="shots/m2_columns_menu.png" style="height:62mm; width:auto"><img src="shots/m1_process_menu.png" style="height:30mm; width:auto"></div>
+</div>
+<table>
+<tr><th style="width:42mm">Menüeintrag</th><th>Was er tut</th></tr>
+<tr><td>Pause / Resume</td><td>Hält nur diesen Prozess an oder lässt ihn weiterlaufen.</td></tr>
+<tr><td>Close after this chunk</td><td>Der Prozess beendet seinen Chunk und schließt sich. <b>Processes</b> sinkt um 1 und bleibt so.</td></tr>
+<tr><td>Close</td><td>Schließt den Prozess sofort. Sein Chunk geht zurück in die Warteschlange. An seine Stelle kann ein anderer treten.</td></tr>
+<tr><td>Work on › Render</td><td>Verschiebt den Prozess auf einen anderen laufenden Render.</td></tr>
+<tr><td>Add process</td><td>Startet einen weiteren Prozess (auch per Klick auf eine leere Stelle der Tabelle). <b>Processes</b> steigt um 1 und bleibt so. Die Limits für RAM und VRAM gelten weiter.</td></tr>
+<tr><td>Start again</td><td>Bei einem geschlossenen Prozess: startet ihn neu.</td></tr>
+<tr><td>Show process log</td><td>Öffnet das Log dieses Prozesses.</td></tr>
+</table>
+</section>
+
+<!-- ============ 10 ============ -->
+<section class="page tight">
+<h2>10  Settings: jede Einstellung</h2>
+<div class="shot"><img src="shots/02b_settings_panel.png"></div>
+<p class="small dim">Einstellungen werden sofort gespeichert. Jede hat einen Tooltip. <span class="btn">Reset to defaults</span> setzt alles auf den Auslieferungszustand zurück, auch die Tabellenspalten; was JKrender über Scripts gelernt hat, bleibt.</p>
+<h3>General</h3>
+<table>
+<tr><th style="width:52mm">Einstellung</th><th>Was sie tut</th><th style="width:16mm">Standard</th></tr>
+<tr><td>Start render on open</td><td>Der Render startet, sobald das Fenster aufgeht, ohne Klick auf Render.</td><td class="def">aus</td></tr>
+<tr><td>Start next render when one ends</td><td>Endet oder scheitert ein Render, startet von selbst der nächste noch nicht gestartete in der Reihenfolge der Karten. Ein Render, den du gestoppt hast, startet nichts.</td><td class="def">aus</td></tr>
+<tr><td>Sound when a render ends</td><td>Ein Ton am Ende des Renders, sobald die eingeschalteten Prüfungen durch sind. Ein anderer Ton bei Fehler, kaputten Frames oder einem Problem in den Pixeln. Ein gestoppter Render bleibt still.</td><td class="def">an</td></tr>
+<tr><td>Check frames when a render ends</td><td>Am Ende des Renders (auch nach Stop) jedes gerenderte Frame einmal: vorhanden, nicht leer, ganz und lesbar, nicht viel kleiner als die übrigen. Während er rendert, liest nichts den Ausgabeordner. Aus: ein kaputtes Frame gilt als fertig, bis du Check frames drückst.</td><td class="def">an</td></tr>
+<tr><td>Check pixels when a render ends</td><td>Gleich nach der Frame-Prüfung im Hintergrund die Pixel aller Frames (schwarz, einfarbig, gleich, anderes Format; bei EXR auch NaN und inf). Meldet nur.</td><td class="def">an</td></tr>
+<tr><td>Check pixels when a render opens</td><td>Dieselbe Prüfung der Frames, die schon auf der Platte sind, sobald ein Render aufgeht. Render stoppt sie.</td><td class="def">an</td></tr>
+<tr><td>Max renders at once</td><td><b>1</b>: Renders laufen nacheinander; der nächste lädt schon, während der vorige seine letzten Chunks macht (der erste Shot ist zuerst fertig). <b>2–3</b>: sie laufen nebeneinander und teilen sich die Prozesse (insgesamt nicht schneller, aber von jedem Shot siehst du früh Frames).</td><td class="def">3</td></tr>
+<tr><td>Show processes of all renders</td><td>Workers und System zeigen die Prozesse aller Renders. Aus: nur des gewählten.</td><td class="def">an</td></tr>
+<tr><td>Dim other renders in Workers</td><td>Auf der Zeitleiste leuchten die Chunks des gewählten Renders, die anderen sind gedimmt.</td><td class="def">an</td></tr>
+<tr><td>Delete old render logs</td><td>Beim Öffnen von JKrender löscht es Log-Ordner, die älter als die eingestellten Tage sind. Nie Frames.</td><td class="def">an, 15 Tage</td></tr>
+</table>
+<p class="small dim">Dünne Linien trennen die Gruppen in General. Beim erneuten Rendern zeigt die Zeitleiste in Workers immer nur den neuen Lauf.</p>
+<h3>Job (gilt für den oben gewählten Render)</h3>
+<table>
+<tr><th style="width:52mm">Einstellung</th><th>Was sie tut</th><th style="width:16mm">Standard</th></tr>
+<tr><td>Slate frame</td><td>Das Projekt beginnt nach einem Slate (z. B. 1001, Slate auf 1000). An: jeder Render rendert zusätzlich den Slate auf diesem Frame.</td><td class="def">an, 1000</td></tr>
+<tr><td>Framerange</td><td>Die Frames des Renders, z. B. <code>1001-1100</code> oder <code>1001-1010,1050</code>. Jeder Render hat seinen eigenen. Ein leeres Feld holt den Bereich aus Nuke zurück. Bestätigen mit Enter oder Klick woandershin. Während des Renders gesperrt. Frames auf der Platte bleiben.</td><td class="def">aus Nuke</td></tr>
+<tr><td>Test › Test this script…</td><td>Misst Einstellungen für diesen PC auf Frames aus dem ganzen Shot und zeigt die schnellste (Kapitel 12).</td><td class="def">—</td></tr>
+</table>
+<h3>Performance and Optimization</h3>
+<table>
+<tr><th style="width:52mm">Einstellung</th><th>Was sie tut</th><th style="width:16mm">Standard</th></tr>
+<tr><td>Use GPU</td><td>Startet Nuke mit <code>--gpu</code>, so rechnet die Grafikkarte GPU-Nodes (Kronos, ZDefocus, Denoise…). Ein leichtes 4K-Script mit Kronos war 3× schneller. Jeder Prozess hat sein eigenes VRAM.</td><td class="def">an</td></tr>
+<tr><td>VRAM limit</td><td>Über dem Limit laufen weniger Prozesse. Bei 97 % schließt sofort der zuletzt gestartete Prozess; ebenso, wenn die Karte voll ist und lange kein Frame fertig wird. Innerhalb von 5 % unter dem Limit hilft Fresh Nuke after every chunk. Kapitel 13.</td><td class="def">an, 95 %</td></tr>
+<tr><td>RAM limit</td><td>Über dem Limit laufen weniger Prozesse: zuerst schließt der zuletzt gestartete. Wird Speicher frei, kommt er zurück. So fängt Windows nie an zu swappen.</td><td class="def">an, 95 %</td></tr>
+</table>
+<h3>Processes and Chunks</h3>
+<table>
+<tr><th style="width:52mm">Einstellung</th><th>Was sie tut</th><th style="width:16mm">Standard</th></tr>
+<tr><td>Processes</td><td>Nuke-Prozesse für alle Renders zusammen.</td><td class="def">8</td></tr>
+<tr><td>Threads</td><td>Threads pro Prozess (<code>-m</code>).</td><td class="def">4</td></tr>
+<tr><td>Cache</td><td>Cache-Limit von Nuke pro Prozess in GB (<code>-c</code>). Was ein Prozess wirklich nimmt, zeigt System › RAM. Ein zu kleiner Cache bremst den Render: Nuke wirft dann weg und rechnet neu.</td><td class="def">nach RAM</td></tr>
+<tr><td>Chunk: Auto / Fixed</td><td><b>Auto</b>: etwa 4 Chunks pro Prozess, höchstens 10 Frames (46 Frames mit 8 Prozessen → 2, 96 → 3, 320+ → 10). <b>Fixed</b>: die Größe stellst du rechts ein. Gilt für Chunks, die noch nicht begonnen haben.</td><td class="def">Auto</td></tr>
+<tr><td>Smaller chunks at the end</td><td>Zum Ende des Renders werden die Chunks kleiner bis zu einzelnen Frames, so werden alle Prozesse etwa gleichzeitig fertig.</td><td class="def">an</td></tr>
+<tr><td>Fresh Nuke after every chunk</td><td>Nach seinem Chunk schließt ein Prozess Nuke und öffnet das Script in einem neuen, mit RAM und VRAM wieder am Anfang. Das kostet ein Laden des Scripts. <b>When memory is short</b>: nur wenn RAM oder VRAM 30 s am Stück innerhalb von 5 % unter dem Limit sind, und zwar ein Prozess nach dem anderen. <b>Always</b>: nach jedem Chunk. <b>Off</b>: nie. Kapitel 13.</td><td class="def">When memory is short</td></tr>
+</table>
+<div class="box">Processes, Threads und Cache sind während eines Renders gesperrt. Bei einem Film zeigen sie 1 Prozess mit allen Threads. Die Zahl der Prozesse änderst du während des Renders mit Rechtsklick in System (<i>Add process</i>, <i>Close after this chunk</i>).</div>
+</section>
+
+<!-- ============ 11 ============ -->
+<section class="page">
+<h2>11  Einen Render einstellen</h2>
+<p>Empfohlener Weg bei einem neuen oder schweren Script:</p>
+<svg viewBox="0 0 760 150" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="70" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">1</text><text x="70" y="64" fill="#fff" text-anchor="middle" font-weight="700">Write senden</text><text x="70" y="82" fill="#bbb" text-anchor="middle">Ctrl+Alt+R</text>
+    <rect x="155" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="225" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">2</text><text x="225" y="64" fill="#fff" text-anchor="middle" font-weight="700">Create tests</text><text x="225" y="82" fill="#bbb" text-anchor="middle">Einstellungen nach PC</text>
+    <rect x="310" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="380" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">3</text><text x="380" y="64" fill="#fff" text-anchor="middle" font-weight="700">Test starten</text><text x="380" y="82" fill="#bbb" text-anchor="middle">Round 1 und Round 2</text>
+    <rect x="465" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="535" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">4</text><text x="535" y="64" fill="#fff" text-anchor="middle" font-weight="700">Use these settings</text><text x="535" y="82" fill="#bbb" text-anchor="middle">übernimmt die grüne Zeile</text>
+    <rect x="620" y="10" width="140" height="100" rx="10" fill="#f7931e"/><text x="690" y="40" fill="#111" font-size="22" font-weight="700" text-anchor="middle">5</text><text x="690" y="64" fill="#111" text-anchor="middle" font-weight="700">Render</text><text x="690" y="82" fill="#111" text-anchor="middle">und System beobachten</text>
+  </g>
+  <text x="0" y="140" font-size="11" fill="#555">Schritte 2–4 sind im Fenster Test this script. Leichte Scripts ruhig gleich mit 8 × 4; ein Test lohnt sich, wenn ein Render Dutzende Minuten dauert.</text>
+</svg>
+
+<h3>Richtwerte (Ryzen 9950X, 32 Threads, 94 GB RAM, RTX 3090 24 GB)</h3>
+<table>
+<tr><th>Art des Scripts</th><th>Processes × Threads</th><th>Warum</th><th>Gemessen</th></tr>
+<tr><td>Leichter Comp, Keying, Grade</td><td><b>8 × 4</b></td><td>Ein Nuke nutzt nicht alle Threads, mehr Prozesse schon.</td><td class="small">4K-Testscript: 8 × 4 am schnellsten</td></tr>
+<tr><td>Schwerer Comp (Defocus, Denoise, viele Ebenen)</td><td><b>4 × 8</b> oder <b>2 × 16</b></td><td>Ein Prozess nutzt mehr Threads. 8 Prozesse erschöpfen das RAM, Prozesse schließen.</td><td class="small">schwerer Comp: 4 × 8 mit 12 GB Cache 17 fr/min, 2 × 16 16 fr/min</td></tr>
+<tr><td>Script, dessen VRAM wächst (GPU-Nodes)</td><td><b>1–2 × 32/16</b></td><td>Das VRAM wächst mit jedem Frame; mehr Prozesse passen nicht auf die Karte.</td><td class="small">VRAM +1,7 GB pro Frame → 1 × 32</td></tr>
+</table>
+
+<h3>Woran man eine schlechte Einstellung erkennt</h3>
+<div class="cols">
+<div class="card"><h4 style="color:var(--rd)">Zu wenig Speicher</h4>System › RAM ist am Limit, in State steht <i>wait: RAM …</i>, Prozesse schließen und starten neu (graue Blöcke in Workers). <b>Lösung:</b> weniger Prozesse mit mehr Threads oder ein kleinerer Cache.</div>
+<div class="card"><h4 style="color:var(--rd)">Volle Grafikkarte</h4>VRAM bei 95 %, Prozesse schließen wegen VRAM. JKrender schlägt selbst weniger Prozesse mit mehr Threads vor (ändert aber nichts von sich aus). <b>Lösung:</b> weniger Prozesse mit mehr Threads (Test this script zeigt wie viele), oder Use GPU ausschalten.</div>
+<div class="card"><h4 style="color:var(--or)">Ungenutzte CPU</h4>CPU threads sind großteils leer und das RAM hat Reserve. <b>Lösung:</b> einen Prozess hinzufügen (Rechtsklick › Add process) oder Threads erhöhen.</div>
+<div class="card"><h4 style="color:var(--or)">Langes Öffnen des Scripts</h4>Graue Blöcke in Workers sind lang, Script load ist hoch. Beim Start streiten die Nukes um Lizenzen und Start-Scripts. <b>Lösung:</b> längere Chunks fallen weniger ins Gewicht; mit dem Script selbst hat es meist nichts zu tun.</div>
+</div>
+<div class="box g"><b>Das beste Maß ist die Kachel Speed</b> (Frames pro Minute). Vergleiche sie zwischen Einstellungen am selben Script oder überlasse das <i>Test this script</i>.</div>
+</section>
+
+<!-- ============ 12 ============ -->
+<section class="page" style="font-size:9.3pt">
+<h2>12  Test this script</h2>
+<div class="shot"><img src="shots/11_test.png"></div>
+<p class="cap">Ein fertiger Test: die grüne Zeile ist die schnellste, die orange die zweite. Winner zeigt, wie viel länger der ganze Shot mit den anderen dauern würde.</p>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Tasten oben</h3>
+<p><span class="btn">Create tests</span> schaut sich den Computer an (Zeile unter den Tasten: CPU, Kerne und Threads, bei Intel Performance- und Effizienzkerne, RAM, Grafik) und erstellt <b>7 Einstellungen</b> von 1 Prozess mit allen Threads bis zu so vielen Prozessen, wie der PC verträgt: jeder Prozess mindestens 4 Threads und mindestens 4 GB Cache. Auf 32 Threads und 94 GB: 1×32, 2×16, 3×10, 4×8, 5×6, 6×5, 8×4. Über 64 Threads bekommt ein Prozess höchstens 64 (eine Prozessorgruppe in Windows). Ersetzt alles in der Tabelle.</p>
+<p><span class="btn">Add test</span> fügt eine eigene Einstellung hinzu (Processes, Threads, Cache und Fresh Nuke after every chunk), <span class="btn">Remove test</span> entfernt die gewählten. <b>Rechtsklick</b> auf eine Zeile: <b>Edit test</b>. Eigene Tests werden gemerkt. Die Tabelle zeigt Fresh Nuke im Namen der Einstellung: <i>4 x 8, cache 12 GB, fresh every chunk</i> oder <i>never fresh</i>; ohne Zusatz ist es When memory is short.</p>
+<p>Der <b>Cache</b> jeder Einstellung ist das ganze RAM für Nuke (RAM-Limit, abzüglich einer Reserve für Windows) geteilt durch die Zahl der Prozesse, minus 4 GB, die ein Prozess außerhalb des Caches nimmt. Was gerade läuft, spielt keine Rolle.</p>
+<p><b>Frames per setup</b> (oben rechts): wie viele Frames jede Einstellung in Round 2 rendert. Hat der Shot weniger Frames, zeigt es das und rendert alle.</p>
+</div>
+<div>
+<h3 style="margin-top:0">Wie der Test abläuft</h3>
+<p>Die Frames kommen aus <b>6 Stellen, verteilt über den ganzen Shot</b> (vom ersten bis zum letzten Frame), an jeder ein paar Frames hintereinander. <b>Alle Einstellungen einer Runde rendern dieselben Frames.</b></p>
+<p><b>Round 1:</b> jede Einstellung kurz, 3 Frames pro Prozess der Einstellung mit den meisten Prozessen (auf 32 Threads 24 Frames), höchstens 3 Minuten. <b>Round 2:</b> die zwei schnellsten (und jede innerhalb von 5 % der besten) erneut mit Frames per setup, mindestens 4 Frames pro Prozess.</p>
+<p><b>Frames / min</b> wird gezählt, sobald die Prozesse laufen: der Start von Nuke und das erste Frame jedes Prozesses zählen nicht; in einem langen Render kommen sie nur einmal vor.</p>
+<p>Spalten: <b>Avg processes</b> (wie viele Prozesse im Schnitt gerendert haben), <b>Round 1</b>, <b>Round 2</b> (Zeit der Runde, Frames, Start), <b>Frame</b>, <b>CPU / RAM / GPU / VRAM avg</b>, <b>Fell</b> (abgestürzte Prozesse), <b>Winner</b>, <b>State</b>. Klick auf den Kopf sortiert, Spalten lassen sich verbreitern und verschieben.</p>
+<p><span class="btn">Use these settings</span> übernimmt die grüne Zeile in die Settings, auch Fresh Nuke. Die Frames gehen in einen Testordner und werden gelöscht; Render-Hooks des Writes laufen im Test nicht. Tabellen bleiben in <code>~/.nuke/JKrender/settings/test_results</code>.</p>
+</div>
+</div>
+<div class="cols"><div><div class="shot" style="max-width:62mm"><img src="shots/d2_add_test.png"></div></div>
+<div><p class="small" style="margin-top:0">Das Fenster <b>Add test</b> (und dasselbe <b>Edit test</b> per Rechtsklick).</p>
+<div class="box">Während eines Tests sollte nichts anderes rendern: der Test würde zwei Renders messen, die sich um den PC streiten. Neben einem Render startet der Test nicht.</div></div></div>
+</section>
+
+<!-- ============ 13 ============ -->
+<section class="page" style="font-size:9.6pt">
+<h2>13  RAM und VRAM im Blick</h2>
+<p>JKrender überwacht den Speicher, damit Windows nicht anfängt zu swappen und die Grafikkarte nicht vollläuft.</p>
+<svg viewBox="0 0 760 230" width="100%">
+  <rect x="40" y="20" width="60" height="180" rx="4" fill="#eee" stroke="#ccc"/>
+  <rect x="40" y="38" width="60" height="162" rx="4" fill="#7fae58" opacity=".35"/>
+  <line x1="30" y1="38" x2="110" y2="38" stroke="#d4503f" stroke-width="2.5"/><text x="108" y="52" font-size="10" fill="#d4503f" font-weight="700">Limit RAM 95 %, VRAM 95 %</text>
+  <line x1="30" y1="25" x2="110" y2="25" stroke="#d4503f" stroke-width="1.5" stroke-dasharray="4 3"/><text x="108" y="20" font-size="9.5" fill="#d4503f">VRAM 97 %: schließt sofort</text>
+  <text x="70" y="218" font-size="11" text-anchor="middle">Speicher</text>
+  <g font-size="10.5">
+    <rect x="250" y="10" width="510" height="44" rx="6" fill="#f6f6f7"/><text x="262" y="28" font-weight="700">30 s am Stück innerhalb von 5 % unter dem Limit</text><text x="262" y="45">Nach ihren Chunks bekommen die Prozesse nacheinander ein frisches Nuke (Fresh Nuke).</text>
+    <rect x="250" y="62" width="510" height="44" rx="6" fill="#fbeaea"/><text x="262" y="80" font-weight="700">Über dem Limit</text><text x="262" y="97">Der zuletzt gestartete Prozess schließt: sofort, wenn er noch das Script öffnet, sonst nach seinem Chunk.</text>
+    <rect x="250" y="114" width="510" height="44" rx="6" fill="#eef5e8"/><text x="262" y="132" font-weight="700">Rückkehr</text><text x="262" y="149">Es kommen auf einmal so viele zurück, wie passen; sie starten nacheinander.</text>
+    <rect x="250" y="166" width="510" height="44" rx="6" fill="#f6f6f7"/><text x="262" y="184" font-weight="700">Wieder überlastet</text><text x="262" y="201">Gewartet wird 5 s, dann 30, 60 und 150 s, wenn es sich binnen 10 Minuten wiederholt.</text>
+  </g>
+</svg>
+<div class="box">Damit ein Prozess zurückkommt, muss ein Prozess der Größe, die die Prozesse dieses Renders hatten (bis dahin: sein Cache + 4 GB), unter das Limit passen, mit 2 % Reserve und dem, was die laufenden Prozesse noch nehmen werden. Worauf gewartet wird, zeigt die Spalte <b>State</b> in System, z. B. <i>wait: VRAM 75 → 69 %</i>: das VRAM ist bei 75 % und muss unter 69 % fallen, damit ein weiterer Prozess passt. <i>wait: VRAM 75 → 14 % (3 starting)</i>: drei Prozesse starten noch, und JKrender hält ihnen Platz in voller Größe frei. Weitere Zustände: <i>wait: 25 s</i> (ein Prozess ist gerade abgestürzt), <i>wait: W03 1st frame</i> (wartet auf das erste Frame von W03, um zu sehen, wie viel ein Prozess nimmt), <i>wait: VRAM ok, checking</i> (Platz ist da, es prüft, ob er bleibt).</div>
+<div class="box r"><b>Volle Karte und nichts geht:</b> ist das VRAM über dem Limit und kein Prozess beendet ein Frame länger als 4× die übliche Frame-Zeit (mindestens eine Minute), ist Nuke wohl auf die CPU ausgewichen und alle Prozesse warten. Dann schließt sofort der zuletzt gestartete Prozess und sein Chunk geht zurück in die Warteschlange.</div>
+<h3>Fresh Nuke after every chunk</h3>
+<p>Beim Rendern behält Nuke Speicher, den es nicht mehr braucht: ein Prozess eines schweren Scripts kann in seinen ersten ~20 Frames von 2 auf 7 GB VRAM wachsen. Ein frisches Nuke beginnt wieder klein, so passen mehr Prozesse auf die Karte. Im Standard <b>When memory is short</b> passiert das nur, wenn RAM oder VRAM <b>30 s am Stück</b> innerhalb von 5 % unter dem Limit sind (ein einzelner Ausreißer reicht nicht), und <b>ein Prozess nach dem anderen</b>: der nächste erst, wenn das neue Nuke sein erstes Frame gerendert hat und der Speicher immer noch am Limit ist. Die anderen rendern derweil weiter. Ein Prozess, der ein frisches Nuke bekommt, zeigt in State <i>busy → fresh Nuke (VRAM 93 %)</i>; bei den letzten Chunks wird nichts getauscht.</p>
+<div class="box b"><b>Eine VRAM-Grenze pro Prozess gibt es nicht.</b> Cache (<code>-c</code>) begrenzt nur Nukes RAM-Cache. Den Grafikspeicher eines Prozesses kann man nicht begrenzen: Windows kann es nicht, und die Blink-Cache-Einstellungen von Nuke wirken im Render nicht (gemessen). Deshalb steuert JKrender das VRAM über die Zahl der Prozesse und frische Nukes. Cache ist ein Cache-Limit, nicht der ganze Speicher eines Prozesses; die echte Zahl steht in System › RAM.</div>
+</section>
+
+<!-- ============ 14 ============ -->
+<section class="page">
+<h2>14  Prüfungen, Töne, Absturz und Daten</h2>
+<h3>Prüfung der Ausgabe</h3>
+<div class="shot"><img src="shots/c_problems.png"></div>
+<p class="cap">Ein Render mit einem abgeschnittenen Frame (1030) und einem schwarzen Frame (1031), beide von Hand mit Check frames und Check pixels gefunden: roter Balken, rote Frames in der Karte, der Filter Problems zeigt nur sie.</p>
+<table>
+<tr><th style="width:40mm">Prüfung</th><th>Wann</th><th>Was sie sucht</th></tr>
+<tr><td>Check frames</td><td>Am Ende des Renders und nach Stop (abschaltbar) und per Taste. Immer beim Öffnen eines Renders und vor Render.</td><td>Fehlende, leere, abgeschnittene und unlesbare Dateien (EXR, PNG, JPEG, DPX), verdächtig kleine Frames.</td></tr>
+<tr><td>Check pixels</td><td>Am Ende des Renders, beim Öffnen (abschaltbar) und per Taste.</td><td>EXR, PNG, JPEG, TIFF und DPX: schwarze, leere und einfarbige Frames, Frames gleich einem anderen, abweichende Größe, Kanäle und Bittiefe. Bei EXR auch NaN, inf und Kompression. Andere Formate: nur gleiche Dateien.</td></tr>
+<tr><td>Movie check</td><td>Bei MOV, MP4 und MXF.</td><td>Codec, Profil, fps, Auflösung, Timecode und Frame-Anzahl gegen die Einstellungen des Writes.</td></tr>
+</table>
+<h3>Ton nach dem Render</h3>
+<p>Nach dem Render laufen die Prüfungen in der Reihenfolge <b>Check frames → Check pixels</b>; der Ton kommt, sobald die eingeschalteten durch sind (sind beide aus, gleich nach dem Render).</p>
+<p><b>Fröhlicher Ton</b>: alles in Ordnung. <b>Fehlerton</b>: der Render ist fehlgeschlagen, hat kaputte Frames oder die Pixelprüfung hat ein Problem gefunden. Ein von Hand gestoppter Render bleibt still.</p>
+<h3>Wenn JKrender abstürzt</h3>
+<p>Die Karten kommen beim nächsten Öffnen von JKrender zurück (etwa mit dem nächsten aus Nuke gesendeten Render). Was auf der Platte ist, zählt, übrige Nuke-Prozesse werden beendet. Ein Render, der lief, wartet auf Render und rendert dann, was fehlt. Schließt du das Fenster normal, kommt nichts zurück.</p>
+<h3>Render-Daten</h3>
+<p>Jeder Render schreibt in seinen Log-Ordner <code>report.json</code>: CPU, RAM und Grafikkarte dieses PCs, Einstellungen, Tempo, Speicherspitzen, Schließen wegen Limits, Start von Nuke, Öffnen des Scripts und die Arten von Nodes im Script. <b>Darin stehen keine Script-Namen, Pfade oder Fehler</b>; ein Script ist nur an einer ID erkennbar, die über seine Versionen gleich bleibt. Triffst du auf einen Fehler, schicke den Log-Ordner des Renders.</p>
+</section>
+
+<!-- ============ 15 ============ -->
+<section class="page">
+<h2>15  Maus und Tasten: Spickzettel</h2>
+<table>
+<tr><th style="width:62mm">Wo und was</th><th>Ergebnis</th></tr>
+<tr><td><span class="kbd">Ctrl+Alt+R</span> in Nuke</td><td>Schickt die gewählten Writes an JKrender.</td></tr>
+<tr><td>Klick auf eine Render-Karte</td><td>Wählt den Render; das ganze Fenster zeigt seine Daten.</td></tr>
+<tr><td><span class="kbd">Shift</span> + Klick auf Karten</td><td>Wählt mehrere Renders für Render, Render again, Pause, Stop.</td></tr>
+<tr><td>Klick auf ein Frame in der Frame-Karte</td><td>Öffnet das Frame in der Vorschau.</td></tr>
+<tr><td><span class="kbd">Space</span></td><td>Vorschau abspielen / anhalten (stoppt nie den Render).</td></tr>
+<tr><td>Rad / Ziehen in der Vorschau</td><td>Zoom / Bild verschieben.</td></tr>
+<tr><td>Doppelklick in der Vorschau</td><td>Ganzes Frame; ist es schon ganz, große Vorschau.</td></tr>
+<tr><td><span class="kbd">Esc</span></td><td>Zurück aus der großen Vorschau.</td></tr>
+<tr><td>Rechtsklick auf ein Frame (Output)</td><td>Render this frame / batch, Delete this frame / batch.</td></tr>
+<tr><td>Rechtsklick auf einen Chunk (Chunks)</td><td>Render again, Show process log, Delete frames from chunk.</td></tr>
+<tr><td>Rechtsklick auf einen Prozess (System, Workers)</td><td>Pause, Close after this chunk, Close, Work on, Add process, Start again, Show process log.</td></tr>
+<tr><td>Rechtsklick auf eine leere Stelle in System</td><td>Add process.</td></tr>
+<tr><td>Klick auf den Kopf der Tabelle System</td><td>Auswahl und Reihenfolge der Spalten.</td></tr>
+<tr><td>Ziehen einer Panel-Grenze</td><td>Ändert die Größe der Panels (wird gespeichert).</td></tr>
+<tr><td>Framerange + <span class="kbd">Enter</span></td><td>Bestätigt einen neuen Bereich (Settings › Job).</td></tr>
+</table>
+<div class="shot"><img src="shots/09_done.png"></div>
+<p class="cap">Ein fertiger Render: grüner Balken, die Karte oben rechts zeigt, wie lange die Renders gedauert haben.</p>
+</section>
+
+<!-- ============ 16 ============ -->
+<section class="page">
+<h2>16  Wenn etwas nicht geht</h2>
+<table>
+<tr><th style="width:58mm">Problem</th><th>Was tun</th></tr>
+<tr><td>Nuke-Prozesse starten lange (30–50 s)</td><td>Meist der Start von Nuke (Lizenz, Start-Scripts der Pipeline), während der PC rendert. Das Log teilt es auf: <i>Nuke started in … / script opened in …</i>.</td></tr>
+<tr><td>Prozesse schließen und starten neu</td><td>RAM oder VRAM ist ausgegangen (State in System, Log). Weniger Prozesse mit mehr Threads oder ein kleinerer Cache; Test this script zeigt, was am schnellsten ist.</td></tr>
+<tr><td>In State steht <i>busy → fresh Nuke</i></td><td>RAM oder VRAM ist seit 30 s am Limit; nach seinem Chunk bekommt der Prozess ein frisches Nuke (Settings › Fresh Nuke after every chunk). Passiert das ständig, laufen mehr Prozesse, als passen.</td></tr>
+<tr><td>Der ganze Render ist langsamer als letztes Mal</td><td>Prüfe den Cache: zu klein (z. B. 4 GB bei einem schweren Script) heißt, Nuke wirft weg und rechnet neu, und Frames dauern ein Mehrfaches.</td></tr>
+<tr><td>Das Script öffnet in Nuke mit einem Knob-Fehler</td><td>Z. B. <i>LensDistortion2.serialiseKnob: Failed to load</i> (ein Node aus einer anderen Version, ein fehlendes Plug-in). JKrender rendert weiter, wie Nuke im GUI; die Meldung steht im Log des Prozesses.</td></tr>
+<tr><td>Gelber Balken „not checked“</td><td>Die Frame-Prüfung ist aus (Check frames when a render ends) oder lief nicht. Drücke Check frames.</td></tr>
+<tr><td>Roter Balken</td><td>Output › der Filter Problems zeigt, welche Frames. Rechtsklick <i>Render this frame / batch</i>. Der Balken wird auch nach Check frames und Check pixels von Hand neu berechnet.</td></tr>
+<tr><td>Keine EXR-Vorschau</td><td>numpy/OpenEXR fehlen. Lösche <code>lib/DECLINED</code> und starte Nuke neu, oder installiere sie laut README.</td></tr>
+<tr><td>Der Render startete nicht sofort</td><td>Status Waiting: andere Renders nutzen schon den PC (Max renders at once), oder er wartet auf Speicher.</td></tr>
+<tr><td>Leeren von Nukes Cache geht nicht</td><td>Nach einem Update von JKrender Nuke einmal neu starten.</td></tr>
+<tr><td>Unklar, was gerendert wurde</td><td>Das Panel Details und Log › Open log folder (Snapshot des Scripts und job.json).</td></tr>
+</table>
+<div class="box r"><b>JKrender ist eine Alpha-Version.</b> In Tests funktioniert es, aber rechne mit Kleinigkeiten. Triffst du auf einen Fehler, schicke dem Autor den Log-Ordner des Renders (Open Renders Folder) und eine Beschreibung, was passiert ist.</div>
+<p class="dim small" style="margin-top:10mm">JKrender 0.94.3 alpha · github.com/JanKanta/JKrender · Anleitung aktualisiert am 9. 11. 2026. Die Bilder stammen aus einem Beispiel-Render (Shots sh010 und sh020).</p>
+</section>

@@ -4,3 +4,5 @@ log/
 lib/
 tests/_runs/
 tests/fakenuke/build/
+docs/manual/navod_*.html
+docs/manual/shots/*.jpg
