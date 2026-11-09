@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.93.7 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93.8 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.93.7 alpha"
+APP_VERSION = "0.93.8 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -4923,7 +4923,8 @@ class FramesModel(QtCore.QAbstractTableModel):
         self.endResetModel()
 
     def _wanted(self):
-        """The frames to list. Output starts empty: a frame comes in when it renders or is found on disk, also a broken one."""
+        """The frames to list. All: every frame, of the range (rendered, on disk, missing, still to render) and those on
+        disk outside it; the others are parts of it."""
         e = self.engine
         frames = {f: e.frame_info(f) for f in e.all_frames()}
         if self.mode == "Problems":
@@ -4932,7 +4933,7 @@ class FramesModel(QtCore.QAbstractTableModel):
             return [f for f in sorted(frames) if frames[f].state in ("done", "bad")]
         if self.mode == "Framerange":  # every frame of the range, also those not on disk yet
             return e.frame_list()
-        return [f for f in sorted(frames) if frames[f].state != "queued" or frames[f].checks or frames[f].old is not None]
+        return sorted(frames)
 
     @staticmethod
     def _problem(fr):

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.93.8 alpha — 2026-11-09
+
+- Output, All lists every frame: of the range (rendered, found on disk, missing, broken, still to render) and those on disk outside it. Rendered, Problems and Framerange are parts of it. Before, All left out frames not on disk yet.
+
 ## 0.93.7 alpha — 2026-11-09
 
 - A gap in a sequence shows as soon as the render opens: a frame of the range not on disk while other frames are (a render stopped, a file deleted) is listed in Output (All and Problems) as "missing", counted in the summary and in the Check frames tile ("29 checked · 1 missing"), and the Log says which: "1 frame(s) of the range are not on disk: 1024". Before, it was left out of the list until Check frames, which then called it "broken on disk". Missing is not counted as broken. With nothing of the render on disk, frames still to render are not listed.
