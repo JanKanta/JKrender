@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89.6 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89.7 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89.6 alpha"
+APP_VERSION = "0.89.7 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -2742,7 +2742,7 @@ class RenderManager:
             limit = float(self.settings.get("ram_limit", 90))
             pct = self.ram_percent()
             if self._more_fit(pct, limit) < 1:
-                return "RAM %.0f %%, limit %.0f %%" % (pct, limit)
+                return self._ram_target(pct, limit)
         gpu_guard = self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)
         one = self.vram_one(engine)
         if one and gpu_guard:
@@ -2763,11 +2763,28 @@ class RenderManager:
             # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
             # never into the last few % where Windows starts moving VRAM into the RAM
             if pct + one >= 97.0 or (pct + one >= limit and (others is None or others + one < limit)):
-                return "VRAM %.0f %%%s, limit %.0f %%%s" % (
-                    real, " and %d still starting" % sum(1 for e in self.engines for w in e.workers.values()
-                                                       if w.gpu and w.state != "gone" and w.vram_base is None)
-                    if growing else "", limit, self.vram_holder())
+                starting = sum(1 for e in self.engines for w in e.workers.values()
+                               if w.gpu and w.state != "gone" and w.vram_base is None)
+                return self._vram_target(real, limit, one, growing, starting)
         return ""
+
+    def _ram_target(self, pct, limit):
+        """What a process waiting for RAM waits for: the RAM to drop under the % where one more fits (as _more_fit)."""
+        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 1.0
+        pending = sum(max(0.0, e.size_gb() - w.rss) for e in self.engines for w in e.workers.values()
+                      if w.state in ("loading", "idle", "busy"))
+        one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
+        target = max(0.0, limit - 2 - (max(0.5, one) + pending) / total * 100)
+        return "RAM must drop under %.0f %% (now %.0f %%; limit %.0f %%, one more process takes about %.1f GB%s)" % (
+            target, pct, limit, one, ", and the ones starting %.1f GB more" % pending if pending >= 0.5 else "")
+
+    def _vram_target(self, real, limit, one, growing=0.0, starting=0):
+        """What a process waiting for VRAM waits for: the card to drop under the % where one more fits."""
+        total = float(self.vram[2]) / 1024 if self.vram and self.vram[2] else 0.0
+        target = max(0.0, min(limit - 2, 97.0) - one - growing)
+        return "VRAM must drop under %.0f %% (now %.0f %%; limit %.0f %%, one more process takes about %.1f GB%s)%s" % (
+            target, real, limit, one / 100 * total,
+            ", and %d starting will take %.1f GB more" % (starting, growing / 100 * total) if growing else "", self.vram_holder())
 
     def _note_running(self, text, level="ev"):
         for e in self.engines:
@@ -6746,7 +6763,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.setText(v)
                 waiting_here = waits and col == 3
                 item.setForeground(QtGui.QColor(C["small"] if waiting_here else C["dim"] if gone or x is not self.engine else C["text"]))
-                item.setToolTip("%s, trying to come back: %s" % (x.worker_state(w), memory_why or "now") if waiting_here else "")
+                item.setToolTip("%s. Comes back by itself when memory lets it: %s" % (x.worker_state(w).capitalize(), memory_why or "now")
+                                if waiting_here else "")
         if coming_back:  # why it waits is the point of it: the column grows to show it, never shrinks
             needed = t.fontMetrics().horizontalAdvance(self._short_why(memory_why)) + 24
             if t.columnWidth(3) < needed:
@@ -6754,14 +6772,22 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _short_why(why):
-        """_memory_why for the State column; the tooltip has it whole."""
+        """_memory_why for the State column, what it waits for in a few words; the tooltip has it whole."""
         if not why:
             return "coming back"
-        if why.startswith("next try"):
-            return why.replace(" in ", " ")
-        why = re.sub(r" and \d+ still starting", "", why.split(";")[0])
-        return "wait: " + why.replace(", limit ", " / ").replace(", checking it stays free", ", checking").replace(
-            " has not rendered its first frame yet", " first frame")
+        m = re.match(r"(V?RAM) must drop under (\d+) % \(now (\d+) %", why)
+        if m:
+            return "waits for %s under %s %% (now %s %%)" % m.groups()
+        m = re.match(r"(V?RAM) (\d+) %: one more fits, checking", why)
+        if m:
+            return "%s %s %% fits: checking" % m.groups()
+        m = re.match(r"(?:next try|one closed for memory, the next can try) in (\d+) s", why)
+        if m:
+            return "waits %s s (one just closed)" % m.group(1)
+        m = re.match(r"(W\d+) has not rendered its first frame yet", why)
+        if m:
+            return "waits for %s's first frame" % m.group(1)
+        return "wait: " + why.split(";")[0]
 
     def _coming_back(self, rows):
         """The closed processes that start again as soon as memory lets them, in the order they would: only as many as
@@ -6777,17 +6803,19 @@ class MainWindow(QtWidgets.QMainWindow):
         m = self.manager
         wait = m.fall_wait() if m.settings.get("ram_guard", True) or m.settings.get("vram_guard", True) else 0
         if wait:
-            return "next try in %d s" % math.ceil(wait)
+            return "next try in %d s: a process closed for memory a moment ago, and the wait grows when it happens again" % math.ceil(wait)
         if m.live_count() >= m.budget():
             if m.vram_bound() and m.vram and m.vram[2]:
-                pct, limit, name, free = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95)), "VRAM", m._vram_ok_since
-            elif m.ram_cap is not None:
-                pct, limit, name, free = m.ram_percent(), float(m.settings.get("ram_limit", 90)), "RAM", m._ram_ok_since
-            else:
-                return ""
-            if free is not None:
-                return "%s %.0f %%, checking it stays free" % (name, pct)
-            return "%s %.0f %%, limit %.0f %%" % (name, pct, limit)
+                pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95))
+                if m._vram_ok_since is not None:
+                    return "VRAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
+                return m._vram_target(pct, limit, m.vram_one() or 10.0)
+            if m.ram_cap is not None:
+                pct, limit = m.ram_percent(), float(m.settings.get("ram_limit", 90))
+                if m._ram_ok_since is not None:
+                    return "RAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
+                return m._ram_target(pct, limit)
+            return ""
         return m.no_room()
 
     def _update_averages(self, now, cpu, ram, gpu, vram):

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.7 alpha — 2026-11-09
+
+- System › State of a closed process says what it waits for: "waits for VRAM under 69 % (now 75 %)" instead of "wait: VRAM 75 % / 95 %", which read as if it waited for no reason (under the limit, one more process has to fit too). Also "waits 25 s (one just closed)", "waits for W03's first frame" and "VRAM 60 % fits: checking". The tooltip says it whole: the limit, how much one more process takes and what the ones starting will take; the same text goes into the log.
+
 ## 0.89.6 alpha — 2026-11-08
 
 - Test this script: Winner, written last, also gets the width it needs.

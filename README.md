@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.89.6 alpha.** It works in tests; expect rough edges.
+**Version 0.89.7 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -58,7 +58,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   at once if it is still opening the script, otherwise after its chunk. Only when the card is nearly full (97 %) does the process taking the most VRAM close at once. A process that fell or closed comes back by itself
   when it fits: the RAM left under the limit, less a 2 % margin and what the running processes are still going to take, must hold
   one process of the size seen this run (before that, its cache + 4 GB), and there must be room in the VRAM. They come back one at a time,
-  each after the one before has rendered a frame. After an overload the next waits 5 s and its memory has to stay free for 5 s, then 30, 60 and 150 s if it happens again within 10 minutes. Meanwhile the State column of the System table says in short what it waits for, like wait: RAM 99 % / 95 %.
+  each after the one before has rendered a frame. After an overload the next waits 5 s and its memory has to stay free for 5 s, then 30, 60 and 150 s if it happens again within 10 minutes. Meanwhile the State column of the System table says what it waits for, like waits for VRAM under 69 % (now 75 %): under that one more process fits; its tooltip says why.
 - **After a crash.** If JKrender goes down, its cards come back the next time it opens (the next render sent from Nuke).
   What is on disk counts, and Nuke processes left behind are ended. A render that was going waits for Render.
   Closing the window properly brings nothing back.
