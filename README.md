@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.92.4 alpha.** It works in tests; expect rough edges.
+**Version 0.93 alpha.** It works in tests; expect rough edges.
 
 A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pdf](docs/JKrender_navod.pdf).
 
@@ -41,7 +41,7 @@ A manual in Czech, with every button, panel and setting: [docs/JKrender_navod.pd
   are counted once the processes are going, each process's first frame and the start left out, as in a long render. It recommends the fastest.
   The table shows each round's time, Winner (the fastest, and how much longer the whole shot would take than with the fastest, in time and per cent),
   the fastest setup in green and the next in orange; a click on a column sorts by it. The frames go to a test folder and are deleted; nothing changes unless you press
-  Use these settings. Tables stay in `~/.jkrender/test_results`. A Write's render hooks do not run in a test, so it cannot write
+  Use these settings. Tables stay in `~/.nuke/JKrender/test_results`. A Write's render hooks do not run in a test, so it cannot write
   to the real output; a frame that does not arrive in the test folder stops the test.
 - A render says so when processes keep closing for VRAM, and suggests fewer processes with more threads. It changes nothing by itself.
 - **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
@@ -110,5 +110,5 @@ The window runs in Nuke's own Python, which already has PySide6 and psutil, so n
 
 Optional: for movie details and the movie player, put `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
 
-Renders and logs go to `log/` next to `JKrender.py`; folders older than 15 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.jkrender/renders/`.
-Settings are per user, in `~/.jkrender/settings.json`.
+Renders and logs go to `log/` next to `JKrender.py`; folders older than 15 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.nuke/JKrender/log/`.
+Settings and state are per user, in `~/.nuke/JKrender` (`settings.json`, `queue.json`, `sounds/`, `test_results/`). JKrender 0.93 moves them there from `~/.jkrender` the first time it opens.

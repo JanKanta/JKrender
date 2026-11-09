@@ -25,7 +25,7 @@ import nuke
 
 HERE = Path(__file__).resolve().parent
 NUKE_DIR = Path.home() / ".nuke"
-FALLBACK_RENDERS_DIR = Path.home() / ".jkrender" / "renders"  # when the folder next to JKrender.py is read-only
+FALLBACK_RENDERS_DIR = Path.home() / ".nuke" / "JKrender" / "log"  # when the folder next to JKrender.py is read-only
 CONFIG_PATH = NUKE_DIR / "jkrender_path.txt"  # location of JKrender.py
 PYTHON_CACHE = NUKE_DIR / "jkrender_python.txt"  # external Python that has PySide6
 DEFAULT_APP = Path.home() / "JKrender" / "JKrender.py"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.92.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.93 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,8 +52,9 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.92.4 alpha"
-HOME_DIR = Path.home() / ".jkrender"
+APP_VERSION = "0.93 alpha"
+HOME_DIR = Path.home() / ".nuke" / "JKrender"  # settings and state, per user, beside the program where Nuke installs it
+OLD_HOME = Path.home() / ".jkrender"  # where they were before 0.93
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
 TEST_RESULTS = HOME_DIR / "test_results"  # and its tables, kept
@@ -100,6 +101,24 @@ SOUNDS = {"done_v4": (1.6, ((0.00, 523.25, 1.10, 0.07), (0.00, 1046.50, 0.50, 0.
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
+def move_old_home():
+    """Settings, test tables and sounds from ~/.jkrender (before 0.93) to HOME_DIR, once. Whatever is already there stays;
+    old render folders (~/.jkrender/renders) are left where they are."""
+    for name in ("settings.json", "test_results", "sounds"):
+        src, dst = OLD_HOME / name, HOME_DIR / name
+        try:
+            if src.exists() and not dst.exists():
+                HOME_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+        except Exception:
+            pass
+    shutil.rmtree(OLD_HOME / "test", ignore_errors=True)  # Test this script's renders, deleted after each setup anyway
+    try:
+        OLD_HOME.rmdir()  # only when nothing is left in it
+    except OSError:
+        pass
+
+
 def sound_file(name):
     """The WAV of a sound, made the first time, with a short stereo echo."""
     path = HOME_DIR / "sounds" / (name + ".wav")
@@ -4193,7 +4212,7 @@ class ScriptTest(QtWidgets.QDialog):
         self._save_results(text)  # the line goes into the saved table only
 
     def _save_results(self, verdict):
-        """The table as text, to look at or compare later: ~/.jkrender/test_results."""
+        """The table as text, to look at or compare later: ~/.nuke/JKrender/test_results."""
         try:
             TEST_RESULTS.mkdir(parents=True, exist_ok=True)
             head = [self.table.horizontalHeaderItem(c).text() for c in range(self.table.columnCount())]
@@ -7641,6 +7660,7 @@ def hand_to_running(job_path):
 
 
 def main():
+    move_old_home()
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     alone = "--exit-when-done" in sys.argv  # scripted runs keep to themselves
     if not alone:

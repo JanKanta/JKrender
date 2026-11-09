@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.93 alpha — 2026-11-09
+
+- Settings and state live in `~/.nuke/JKrender` with the program, not in `~/.jkrender`: `settings.json`, `queue.json`, `sounds/`, `test_results/` and Test this script's `test/`. The first time it opens, JKrender moves the settings, test tables and sounds there; what is already in the new place stays. Old render folders in `~/.jkrender/renders` are left alone, and the folder goes once it is empty.
+- When the `log` folder next to JKrender.py is read-only, renders go to `~/.nuke/JKrender/log`, not `~/.jkrender/renders`.
+
 ## 0.92.4 alpha — 2026-11-09
 
 - Fresh Nuke after every chunk, When memory is short: the RAM or VRAM has to stay within 5 % of its limit for 30 s without a break before the processes get a fresh Nuke; one reading over it is not enough. A process closed for RAM or VRAM still counts at once.
