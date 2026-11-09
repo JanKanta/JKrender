@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.89.8 alpha — 2026-11-09
+
+- System › State of a waiting process is short again: "wait: VRAM 75 → 69 %" (now 75 %, one more process fits under 69 %), "wait: 25 s", "wait: W03 1st frame", "wait: VRAM ok, checking". The tooltip keeps the whole sentence.
+
 ## 0.89.7 alpha — 2026-11-09
 
 - System › State of a closed process says what it waits for: "waits for VRAM under 69 % (now 75 %)" instead of "wait: VRAM 75 % / 95 %", which read as if it waited for no reason (under the limit, one more process has to fit too). Also "waits 25 s (one just closed)", "waits for W03's first frame" and "VRAM 60 % fits: checking". The tooltip says it whole: the limit, how much one more process takes and what the ones starting will take; the same text goes into the log.

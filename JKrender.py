@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.89.7 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.89.8 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.89.7 alpha"
+APP_VERSION = "0.89.8 alpha"
 HOME_DIR = Path.home() / ".jkrender"
 SETTINGS_FILE = HOME_DIR / "settings.json"
 TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
@@ -6776,17 +6776,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if not why:
             return "coming back"
         m = re.match(r"(V?RAM) must drop under (\d+) % \(now (\d+) %", why)
-        if m:
-            return "waits for %s under %s %% (now %s %%)" % m.groups()
+        if m:  # now -> where one more fits
+            return "wait: %s %s → %s %%" % (m.group(1), m.group(3), m.group(2))
         m = re.match(r"(V?RAM) (\d+) %: one more fits, checking", why)
         if m:
-            return "%s %s %% fits: checking" % m.groups()
+            return "wait: %s ok, checking" % m.group(1)
         m = re.match(r"(?:next try|one closed for memory, the next can try) in (\d+) s", why)
         if m:
-            return "waits %s s (one just closed)" % m.group(1)
+            return "wait: %s s" % m.group(1)
         m = re.match(r"(W\d+) has not rendered its first frame yet", why)
         if m:
-            return "waits for %s's first frame" % m.group(1)
+            return "wait: %s 1st frame" % m.group(1)
         return "wait: " + why.split(";")[0]
 
     def _coming_back(self, rows):

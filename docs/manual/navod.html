@@ -354,7 +354,7 @@ svg { display: block; }
 <tr><th style="width:30mm">Sloupec</th><th>Význam</th></tr>
 <tr><td>Process</td><td>Číslo procesu (W01…).</td></tr>
 <tr><td>Render</td><td>Na kterém renderu pracuje.</td></tr>
-<tr><td>State</td><td>Co dělá: loading, rendering, idle, paused, closing… Při čekání na co, např. <i>waits for VRAM under 69 % (now 75 %)</i>: pod touto hranicí se vejde další proces; tooltip řekne proč.</td></tr>
+<tr><td>State</td><td>Co dělá: loading, rendering, idle, paused, closing… Při čekání na co, např. <i>wait: VRAM 75 → 69 %</i>: teď 75 %, další proces se vejde pod 69 %; tooltip řekne proč.</td></tr>
 <tr><td>CPU used</td><td>Kolik vláken procesoru proces opravdu vytěžuje.</td></tr>
 <tr><td>RAM · Cache</td><td>Skutečná paměť procesu a jeho cache Nuka proti limitu.</td></tr>
 <tr><td>GPU</td><td>Využití grafické karty a VRAM tohoto procesu.</td></tr>
@@ -452,7 +452,7 @@ svg { display: block; }
 
 <h3>Jak poznat, že nastavení není dobré</h3>
 <div class="cols">
-<div class="card"><h4 style="color:var(--rd)">Málo paměti</h4>System › RAM je u limitu, ve State je <i>waits for RAM under …</i>, procesy se zavírají a znovu startují (šedé bloky ve Workers). <b>Řešení:</b> méně procesů s více vlákny, nebo menší Cache.</div>
+<div class="card"><h4 style="color:var(--rd)">Málo paměti</h4>System › RAM je u limitu, ve State je <i>wait: RAM …</i>, procesy se zavírají a znovu startují (šedé bloky ve Workers). <b>Řešení:</b> méně procesů s více vlákny, nebo menší Cache.</div>
 <div class="card"><h4 style="color:var(--rd)">Plná grafická karta</h4>VRAM u 95 %, procesy se zavírají kvůli VRAM. JKrender sám navrhne méně procesů s více vlákny (sám nic nemění). <b>Řešení:</b> méně procesů s více vlákny (Test this script ukáže kolik), případně vypnout Use GPU.</div>
 <div class="card"><h4 style="color:var(--or)">Nevyužité CPU</h4>CPU threads jsou z velké části prázdné a RAM má rezervu. <b>Řešení:</b> přidat proces (pravé tlačítko › Add process) nebo zvýšit Threads.</div>
 <div class="card"><h4 style="color:var(--or)">Dlouhé otevírání scriptu</h4>Šedé bloky ve Workers jsou dlouhé, Script load je vysoký. Při startu se Nuky přetahují o licence a startovací skripty. <b>Řešení:</b> delší chunky se tolik neprojeví; se samotným scriptem to obvykle nesouvisí.</div>
@@ -504,7 +504,7 @@ svg { display: block; }
     <rect x="250" y="166" width="510" height="44" rx="6" fill="#f6f6f7"/><text x="262" y="184" font-weight="700">Opakované přetížení</text><text x="262" y="201">Čeká se 5 s, pak 30, 60 a 150 s, když se to opakuje do 10 minut.</text>
   </g>
 </svg>
-<div class="box">Když jde proces zpátky, musí se pod limit vejít jeden proces té velikosti, jakou v tomto renderu procesy měly (do té doby jeho Cache + 4 GB), s rezervou 2 % a s tím, co běžící procesy ještě naberou. Na co se právě čeká, ukazuje sloupec <b>State</b> v System, např. <i>waits for VRAM under 69 % (now 75 %)</i>: VRAM musí klesnout pod 69 %, aby se vešel další proces. Další stavy: <i>waits 25 s (one just closed)</i>, <i>waits for W03's first frame</i>, <i>VRAM 60 % fits: checking</i>.</div>
+<div class="box">Když jde proces zpátky, musí se pod limit vejít jeden proces té velikosti, jakou v tomto renderu procesy měly (do té doby jeho Cache + 4 GB), s rezervou 2 % a s tím, co běžící procesy ještě naberou. Na co se právě čeká, ukazuje sloupec <b>State</b> v System, např. <i>wait: VRAM 75 → 69 %</i>: VRAM je na 75 % a musí klesnout pod 69 %, aby se vešel další proces. Další stavy: <i>wait: 25 s</i> (proces právě spadl), <i>wait: W03 1st frame</i> (čeká na první frame W03, aby bylo vidět, kolik proces bere), <i>wait: VRAM ok, checking</i> (místo je, ověřuje se, že vydrží).</div>
 <div class="box r"><b>Plná karta a nic nejede:</b> když je VRAM nad limitem a žádný proces nedokončí frame déle než 4× obvyklou dobu framu (aspoň minutu), Nuke nejspíš přešel na CPU a všechny procesy čekají. Naposled spuštěný proces se pak zavře hned a jeho chunk se vrátí do fronty.</div>
 <div class="box b">Cache je limit cache Nuka na proces, ne celková paměť procesu. Těžký script si vezme mnohem víc; skutečné číslo je v System › RAM a pod Cache v Settings („this script took … GB per process last time“).</div>
 </section>
