@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.2 alpha — 2026-11-10
+
+- Test this script: Winner estimates the whole shot from the test's own time (the start and the first frames warming up) plus the shot's other frames at Frames / min. Before it used Frames / min alone, which leaves the start out: on 79 frames 1 x 32 showed +0:48 (+273 %) behind 6 x 5 although their tests took 0:28 and 0:18; now +0:43 (+143 %). The fastest setup is picked the same way, and each Winner cell's tooltip has the whole shot's time.
+- `test_script_test` checks it with those numbers (0.99.1 fails it).
+
 ## 0.99.1 alpha — 2026-11-10
 
 - Restart Nuke is now called **Reload Nuke** (Never, When memory is full, After every chunk). Test this script's columns are Reload Nuke and Reloads; State says "busy → reload (RAM 91 %)".

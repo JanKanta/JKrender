@@ -84,6 +84,23 @@ check("Fresh Nuke column: none never fresh, some fresh every chunk",
 check("the test folder is gone", not os.path.exists(str(jk.TEST_DIR)))
 check("the render's own frames untouched", files(job) == [])
 best = t.best
+
+say("Winner: the whole shot from the test's time and the rate, as on a 79 frame shot")
+keep = (t.setups, t.results, t.all_frames)
+t.setups = [(6, 5, 8, "short"), (1, 32, 68, "short")]
+t.all_frames = list(range(1001, 1080))
+t._fill_table()
+f24 = list(range(24))
+t.results = {t.setups[0]: {"rate": 271.0, "frames": f24, "done": 24, "took": 18.0, "complete": True, "round": "final"},
+             t.setups[1]: {"rate": 72.6, "frames": f24, "done": 24, "took": 28.0, "complete": True, "round": "final"}}
+t._rank(t.setups[0])
+cell = lambda i, c: t.table.item(t._row(i), c)
+slower = cell(1, t.C_SLOWER)
+check("1 x 32: +0:43 (+143 %), not +0:48 from the rates alone", slower.text().startswith("+0:43") and "+143 %" in slower.text(),
+      slower.text())
+check("the tooltip says the whole shot's time", "1:13" in slower.toolTip() and "0:30" in slower.toolTip(), slower.toolTip())
+t.setups, t.results, t.all_frames = keep
+t._fill_table()
 t.use()
 check("Use these settings: processes, threads, cache and fresh Nuke",
       (win.s_workers.value(), win.s_threads.value(), win.s_ram.value(), win.settings.get("fresh_after_chunk")) == best,
