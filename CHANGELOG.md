@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.4 alpha — 2026-11-10
+
+- Test this script: the columns Reload Nuke and Winner shot are called Reload Nuke Rule and Winner Whole Shot.
+
 ## 0.99.3 alpha — 2026-11-10
 
 - Test this script: Winner is two columns. Winner test: how much longer each setup took than the fastest on the test's frames (1 x 32 +0:10 behind 6 x 5 with 0:28 against 0:18). Winner shot: the same for the whole shot, as before (+0:43): Nuke's start is paid once, the slower rate on every frame, so on a long shot the difference grows. Each cell's tooltip has both times.

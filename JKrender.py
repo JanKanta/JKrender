@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.3 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.4 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.3 alpha"
+APP_VERSION = "0.99.4 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -80,7 +80,7 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
 # Reload Nuke (setting fresh_after_chunk): a process closes after its chunk and a new one opens the script again, with its
 # RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
 FRESH_MODES = (("off", "Never"), ("short", "When memory is full"), ("always", "After every chunk"))
-FRESH_SHORT = {"off": "never", "short": "memory full", "always": "every chunk"}  # the Reload Nuke column of Test this script
+FRESH_SHORT = {"off": "never", "short": "memory full", "always": "every chunk"}  # the Reload Nuke Rule column of Test this script
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
@@ -3678,7 +3678,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     @staticmethod
     def _label(k):
-        return "%d x %d, cache %d GB" % (k[0], k[1], k[2])  # the Reload Nuke column next to it says the rest
+        return "%d x %d, cache %d GB" % (k[0], k[1], k[2])  # the Reload Nuke Rule column next to it says the rest
 
     def _free_gb(self):
         """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
@@ -3963,7 +3963,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     PLACES = 6  # places spread over the shot, the same for every setup
     COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
-               ("Reload Nuke", "When a process closes after its chunk and a new one opens the script (Settings > Reload Nuke)"),
+               ("Reload Nuke Rule", "When a process closes after its chunk and a new one opens the script (Settings > Reload Nuke)"),
                ("Avg processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
                ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
                ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
@@ -3976,7 +3976,7 @@ class ScriptTest(QtWidgets.QDialog):
                ("Winner test", "How much longer each setup took than the fastest on the test's frames, in time and per cent:\n"
                                "the same frames for each, with the start of Nuke in it. One stopped early: the rest at its Frames / min.\n"
                                "The tooltip of each cell has the test's time"),
-               ("Winner shot", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent:\n"
+               ("Winner Whole Shot", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent:\n"
                                "the time of its test (start and the first frames in it) and the rest of the shot's frames at its Frames / min.\n"
                                "The start is paid once, the rate for every frame: on a long shot this grows beyond the test's difference.\n"
                                "The tooltip of each cell has the whole shot's time"), ("State", ""))

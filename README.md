@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.99.3 alpha.** It works in tests; expect rough edges.
+**Version 0.99.4 alpha.** It works in tests; expect rough edges.
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -40,7 +40,7 @@ A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_n
   a process for every setup, then Round 2: the two fastest (and any within 5 %) again with 20 frames (you can set how many). Frames per minute
   are counted once the processes are going, each process's first frame and the start left out, as in a long render. It recommends the fastest.
   The table shows each round's time, Frames / min and Frames / s, Winner test (how much longer each took than the fastest on the test's frames)
-  and Winner shot (how much longer the whole shot would take than with the fastest, in time and per cent),
+  and Winner Whole Shot (how much longer the whole shot would take than with the fastest, in time and per cent),
   the fastest setup in green and the next in orange; a click on a column sorts by it. The frames go to a test folder and are deleted; nothing changes unless you press
   Use these settings. Tables stay in `~/.nuke/JKrender/settings/test_results`. A Write's render hooks do not run in a test, so it cannot write
   to the real output; a frame that does not arrive in the test folder stops the test.

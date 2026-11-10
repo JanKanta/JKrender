@@ -59,8 +59,8 @@ t._add_setup()
 check("Add test: 2 x 2, 2 GB, fresh every chunk", (2, 2, 2, "always") in t.setups, t.setups)
 labels = [t.table.item(r, 0).text() for r in range(t.table.rowCount())]
 rules = [(t.table.item(r, 0).text(), t.table.item(r, t.C_RULE).text()) for r in range(t.table.rowCount())]
-check("the table says it, Reload Nuke right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
-      and t.table.horizontalHeaderItem(1).text() == "Reload Nuke", rules)
+check("the table says it, Reload Nuke Rule right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
+      and t.table.horizontalHeaderItem(1).text() == "Reload Nuke Rule", rules)
 index = t.setups.index((2, 2, 2, "always"))
 QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "off"))
 t._edit_setup(index)
@@ -108,7 +108,7 @@ check("Frames / s right after Frames / min: 4.52 and 1.21", (cell(0, t.C_FPS).te
       and t.table.horizontalHeaderItem(t.C_FPS).text() == "Frames / s" and t.C_FPS == t.C_RATE + 1,
       (cell(0, t.C_FPS).text(), cell(1, t.C_FPS).text()))
 heads = [t.table.horizontalHeaderItem(c).text() for c in range(t.table.columnCount())]
-check("the columns Winner test and Winner shot", heads[t.C_TEST] == "Winner test" and heads[t.C_SLOWER] == "Winner shot", heads)
+check("the columns Winner test and Winner Whole Shot", heads[t.C_TEST] == "Winner test" and heads[t.C_SLOWER] == "Winner Whole Shot", heads)
 t.setups, t.results, t.all_frames = keep
 t._fill_table()
 t.use()
