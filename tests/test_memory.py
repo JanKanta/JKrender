@@ -24,6 +24,7 @@ class E:
     def __init__(s, ws):
         s.workers, s.state, s.notes, s.killed, s.started, s.notice, s.settings = ws, "rendering", [], [], time.time(), None, {}
         s.size_seen, s.ram, s._vram_seen, s.last_frame_at = 26.0, 20, 0, time.time()
+        s.movie = False
 
     def note(s, t, lvl="ev"):
         s.notes.append(t)

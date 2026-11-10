@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.97 alpha.** It works in tests; expect rough edges.
+**Version 0.98 alpha.** It works in tests; expect rough edges.
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -103,9 +103,10 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, Fresh Nuke after 30 s, the State text |
 | `test_fresh_nuke` | Fresh Nuke after every chunk: Off, When memory is short, Always; same places, State, timeline |
 | `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
-| `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process |
+| `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
+| `test_movies` | movies each in their own process, all at once, beside a sequence's places; the Write column in System |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
-| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths |
+| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a red card after a crash |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 | `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |
 

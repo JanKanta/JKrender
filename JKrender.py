@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.97 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.98 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.97 alpha"
+APP_VERSION = "0.98 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -85,7 +85,7 @@ APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender ha
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
 SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
-SYSTEM_ORDER = ["Process", "Render", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
+SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay within 5 % of its limit before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
@@ -1876,8 +1876,8 @@ class RenderEngine:
 
     def _may_spawn(self):
         m = self.manager
-        if m is None:
-            return True
+        if m is None or self.movie:
+            return True  # a movie has its own process, outside the places of Processes
         if m.free_slots() <= 0:
             return False
         if self.restart_ids or self.hand_wids or any(self.workers[i].state == "gone" for i in getattr(self, "refresh_ids", []) if i in self.workers):
@@ -2527,6 +2527,24 @@ class RenderEngine:
         c = collections.Counter(fr.state for fr in self.frames.values())
         return c
 
+    def errors(self):
+        """What went wrong in this render, in a few words each; empty when nothing did. A process closed for RAM or VRAM
+        is not one: its chunk renders again."""
+        c = self.counts()
+        out = []
+        if self.state == "failed":
+            out.append("the render failed%s" % (": " + self.error if getattr(self, "error", None) else ""))
+        if c["failed"]:
+            out.append("%d frame(s) Nuke did not render" % c["failed"])
+        if c["bad"]:
+            out.append("%d broken frame(s) on disk" % c["bad"])
+        nuke_errors = sum(1 for x in self.log if x[0] == "" and " failed on W" in x[1])
+        if nuke_errors and not c["failed"]:
+            out.append("Nuke reported %d error(s), see the Log" % nuke_errors)
+        if self.crashes:
+            out.append("Nuke crashed %d time(s)" % self.crashes)
+        return out
+
     def rate(self):
         """Frames per second over the last minute (or since start)."""
         now = self.elapsed()
@@ -2635,7 +2653,9 @@ class RenderManager:
 
     Renders start one after another (Settings > Max renders at once allows up to 3 side by side).
     A render on its last chunks no longer counts, so the next one starts loading while it finishes.
-    Free processes are dealt out in turns, oldest render first, so 8 become 8, 4+4 or 3+3+2."""
+    Free processes are dealt out in turns, oldest render first, so 8 become 8, 4+4 or 3+3+2.
+    A movie is outside all that: each one renders at once in its own process, whatever Processes and Max renders at once
+    say, so there are as many movie processes as movies rendering."""
 
     def __init__(self, settings):
         self.settings = settings
@@ -2696,7 +2716,12 @@ class RenderManager:
         return [e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
 
     def live_count(self):
-        return sum(1 for e in self.engines for w in e.workers.values() if w.state != "gone")
+        """Processes running for image sequences: the places of Processes. A movie's process is on top of them."""
+        return sum(1 for e in self.engines if not e.movie for w in e.workers.values() if w.state != "gone")
+
+    def movie_count(self):
+        """Processes running for movies, one a movie."""
+        return sum(1 for e in self.engines if e.movie for w in e.workers.values() if w.state != "gone")
 
     def budget(self):
         """Processes the renders may use now: the total, unless the RAM or VRAM guard holds it lower."""
@@ -2913,7 +2938,7 @@ class RenderManager:
             self._ram_ok_since = None
             if pct >= min(98.0, limit + 6) and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
                 # Nearly out of memory: one process closes now instead of after its chunk.
-                running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
+                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
                 if running:
                     e, w = self._close_first(running)
                     e.note("!! RAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
@@ -3007,7 +3032,7 @@ class RenderManager:
             if stalled and live > 1 and now - self._last_vram_kill > 30 and now - self._last_kill > 5:
                 # The card is full and no process finishes a frame: Nuke falls back to the CPU and they all wait. One waiting
                 # to be replaced after its chunk never gets there, and neither does one to close after its chunk.
-                running = [(e, w) for e in self.engines for w in e.workers.values()
+                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
                 if len(running) > 1:
                     e, w = self._close_first(running)
@@ -3018,7 +3043,7 @@ class RenderManager:
                     self._fell_vram()
                     self._last_vram_kill = now
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
-                running = [(e, w) for e in self.engines for w in e.workers.values()
+                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
@@ -3143,7 +3168,7 @@ class RenderManager:
         W01-W08. A render never gets a number twice (its closed ones are started again under their own)."""
         running = {wid for e in self.engines for wid, w in e.workers.items() if w.state != "gone"}
         own = set(engine.workers) if engine is not None else set()
-        wid = 1
+        wid = self.total + 1 if engine is not None and engine.movie else 1
         while wid in running or wid in own:
             wid += 1
         return wid
@@ -3215,7 +3240,11 @@ class RenderManager:
         return bool(ready)
 
     def _admit(self):
-        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail()]
+        for e in [x for x in self.waiting if x.movie]:  # a movie starts at once, in its own process
+            self.waiting.remove(e)
+            e.state = e.resume_state
+            e.start(everything=e.everything)
+        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail() and not e.movie]
         while self.waiting and len(busy) < self.max_renders:
             e = self.waiting.pop(0)
             e.state = e.resume_state
@@ -3225,7 +3254,10 @@ class RenderManager:
 
     def _allocate(self):
         # a render with a process you started by hand first, so the place made for it is not dealt to another
-        active = sorted((e for e in self.engines if e.state in ("rendering", "paused")),
+        for e in self.engines:  # a movie: its one process, outside the places
+            if e.movie and e.state in ("rendering", "paused") and e.workers_target != min(1, e.need()):
+                e.set_workers(min(1, e.need()))
+        active = sorted((e for e in self.engines if e.state in ("rendering", "paused") and not e.movie),
                         key=lambda e: (not (e.restart_ids or e.hand_wids), e.started or 0, e.number))
         needs = {e: e.need() for e in active}
         share = {e: 0 for e in active}
@@ -4474,7 +4506,12 @@ class RenderCard(QtWidgets.QFrame):
                             % (color, STATE_LABELS.get(e.state, e.state), C["dim"], finished, total, left))
         self.badge.setStyleSheet("background: %s; color: %s; border-radius: 3px; font-weight: 600;"
                                  % (C["accent"] if selected else C["line"], "#111" if selected else C["text"]))
-        if e.state == "done":  # finished: the whole card goes green
+        errors = e.errors()
+        self.setToolTip("Errors: " + "; ".join(errors) if errors else "")
+        if errors:  # something went wrong: the whole card goes red, also while it renders
+            self.setStyleSheet("RenderCard { background: #4a2a26; border: %dpx solid %s; border-radius: 5px; }"
+                               % (2 if selected else 1, C["failed"]))
+        elif e.state == "done":  # finished: the whole card goes green
             self.setStyleSheet("RenderCard { background: #3b4a2f; border: %dpx solid %s; border-radius: 5px; }"
                                % (2 if selected else 1, C["done"]))
         else:
@@ -5676,9 +5713,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_slate = Toggle()
         self.c_slate.setChecked(bool(self.settings.get("slate", True)))
         self.c_slate.toggled.connect(lambda v: self._slate_changed("slate", v))
-        slate_note = QtWidgets.QLabel("the frame before the Framerange: 1001-1020 renders 1000 as the slate")
-        slate_note.setStyleSheet("color: %s; background: transparent;" % C["dim"])
-        row(jobs, "Slate frame", [self.c_slate, slate_note],
+        self.l_slate_frame = QtWidgets.QLabel("")
+        self.l_slate_frame.setStyleSheet("background: transparent;")
+        row(jobs, "Slate frame", [self.c_slate, self.l_slate_frame],
             "The project range starts after the slate.\n"
             "With this on, every render also renders the frame before its first frame as the slate (1001-1020: 1000).")
         self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
@@ -6264,10 +6301,10 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 17)
+        self.worker_table = QtWidgets.QTableWidget(0, 18)
         self.worker_table.setHorizontalHeaderLabels(
             ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
-             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame"])
+             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame", "Write"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
         self._worker_rows = []
@@ -6291,7 +6328,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, width in SYSTEM_WIDTHS.items():
             self.worker_table.setColumnWidth(names.index(name), width)
         self._header_defaults = {"system": head.saveState()}
-        arrange(self.settings.get("system_order", SYSTEM_ORDER), set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
+        order = list(self.settings.get("system_order", SYSTEM_ORDER))
+        if "Write" not in order:  # saved before it was there: after Render
+            order.insert(order.index("Render") + 1 if "Render" in order else 1, "Write")
+        arrange(order, set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
         head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
         head.sectionMoved.connect(lambda *_: self._save_column_order())
         lay.addWidget(self.worker_table, 1)
@@ -6471,6 +6511,8 @@ class MainWindow(QtWidgets.QMainWindow):
         e, m = self.engine, self.manager
         over = set(e.frames) - set(parse_frames(e.frames_text))  # a running render keeps the slate it started with
         self.l_slate.setText(str(min(over)) if over else "off")
+        if hasattr(self, "l_slate_frame"):
+            self.l_slate_frame.setText(str(min(over)) if over else "")
         self.range_edit.setText(e.frames_text)
         if hasattr(self, "e_frames") and not self.e_frames.hasFocus():
             self.e_frames.setText(e.frames_text)
@@ -6739,8 +6781,9 @@ class MainWindow(QtWidgets.QMainWindow):
         live = [w for w in e.workers.values() if w.state != "gone"]
         busy = sum(1 for w in live if w.state == "busy")
         self.t_workers.set("%d / %d" % (busy, len(live)),
-                           "rendering / running · %d of %d for all renders" % (self.manager.live_count(),
-                                                                               self.manager.total))
+                           "rendering / running · %d of %d for all renders%s" % (
+                               self.manager.live_count(), self.manager.total,
+                               " + %d for movies" % self.manager.movie_count() if self.manager.movie_count() else ""))
         checked = [fr for fr in e.frames.values() if fr.checks]
         bad = sum(1 for fr in e.frames.values() if frame_broken(fr))
         small = sum(1 for fr in e.frames.values() if fr.small)
@@ -6913,7 +6956,8 @@ class MainWindow(QtWidgets.QMainWindow):
                       "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
                       fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
-                      self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else ""]
+                      self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else "",
+                      ", ".join(str(x.get("name") or "") for x in x.job.get("writes") or [])]
             for col, v in enumerate(values):
                 item = t.item(row, col)
                 if item is None:

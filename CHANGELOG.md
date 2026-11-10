@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.98 alpha — 2026-11-10
+
+- Movies render each in its own process, all at once: as many movie processes as movies rendering, whatever Processes and Max renders at once say. Image sequences keep their own places beside them, and the RAM and VRAM limits never close a movie's process (it would start its whole movie again). Movie processes are numbered after the places (with Processes 2: W03, W04 ...). System says "+ 3 for movies".
+- System has a Write column after Render, shown by default: the Write each process renders.
+- Settings > Slate frame shows just the slate frame of the picked render.
+- A render with an error shows its card red, also while it renders: it failed, Nuke did not render a frame, broken frames on disk, a Nuke error or a crash. The card's tooltip says which. A process closed for RAM or VRAM is not an error.
+- New test `test_movies`; `test_settings` and `test_robust` check the rest (0.97 fails them).
+
 ## 0.97 alpha — 2026-11-10
 
 - Slate frame is no longer a set frame: with it on, every render also renders the frame before its Framerange as the slate (1001-1020 renders 1000; Framerange 1050-1060 renders 1049). Settings > Job has only the switch now; a slate frame saved by older versions is no longer used.

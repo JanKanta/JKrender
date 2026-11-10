@@ -52,6 +52,13 @@ check("it crashed once", os.path.exists(os.path.dirname(frame_path(job, 0)) + "/
 crash = [x[1] for x in e1.log if "W0" in x[1] and ("crash" in x[1].lower() or "exit" in x[1].lower() or "ended" in x[1].lower())]
 check("the Log says a process went down", bool(crash), [x[1] for x in e1.log][-12:])
 check("the places stay W01 and W02", sorted(e1.workers) == [1, 2], sorted(e1.workers))
+win._refresh_cards()
+card = win.cards[e1]
+check("its card is red, and says why", jk.C["failed"] in card.styleSheet() and "crashed" in card.toolTip(),
+      (card.styleSheet(), card.toolTip()))
+ok_card = win.cards[e]
+check("a render with no error stays green", jk.C["done"] in ok_card.styleSheet() and not ok_card.toolTip(),
+      (ok_card.styleSheet(), ok_card.toolTip()))
 
 say("A second JKrender hands its render to the one open")
 win.listen()
