@@ -224,6 +224,12 @@ try:
     t.start()
     wait(lambda: not t.timer.isActive() and t.run is None, 600, "test")
     pump(1.0)
+    # every column in the picture, Winner test and Winner Whole Shot too: as wide as the table needs
+    head = t.table.horizontalHeader()
+    need = head.length() + t.table.verticalHeader().width() + 40
+    if need > t.table.viewport().width():
+        t.resize(t.width() + need - t.table.viewport().width(), t.height())
+        pump(0.5)
     shot("11_test", t)
     popup("d2_add_test", t._add_setup)
     t.close()

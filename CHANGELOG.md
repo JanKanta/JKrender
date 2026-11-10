@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.7 — 2026-11-10
+
+- The manuals (Czech, English, German, Spanish, Polish, Russian; 19 pages each) are up to date for 0.99.7: Reload Nuke (Never, When memory is full, After every chunk) and its State and timeline texts, Remove process, Close after this chunk on a paused or closing process, the slate as the frame before the Framerange, the Write column in System, the red card on errors, and Test this script with Reload Nuke Rule, Frames / s, Reloads, Winner test and Winner Whole Shot. No longer called alpha. Screenshots taken again; the Test table shot is as wide as all its columns. JKrender itself is unchanged.
+
 ## 0.99.6 — 2026-11-10
 
 - No longer called alpha: the version is 0.99.6 in the window title, the README and the tags (`v0.99.6`). Older entries below keep their names.
