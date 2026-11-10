@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.2 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.3 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.2 alpha"
+APP_VERSION = "0.99.3 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -3968,14 +3968,19 @@ class ScriptTest(QtWidgets.QDialog):
                ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
                ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
                ("Frames / min", "Once the processes are going: each process's first frame and the start left out. From round 2 where it ran"),
+               ("Frames / s", "Frames / min divided by 60"),
                ("Frame", "Time of one frame in one process"),
                ("CPU avg", "CPU use and the threads it means"), ("RAM avg", "RAM use of the PC"), ("GPU avg", "Graphics card use"),
                ("VRAM avg", "Graphics card memory"), ("Fell", "Processes that crashed or were closed for RAM or VRAM"),
                ("Reloads", "Processes closed after their chunk and opened again (Reload Nuke)"),
-               ("Winner", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent:\n"
-                          "the time of its test (start and the first frames in it) and the rest of the shot's frames at its Frames / min.\n"
-                          "The tooltip of each cell has the whole shot's time"), ("State", ""))
-    C_SETUP, C_RULE, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_SLOWER, C_STATE = range(15)
+               ("Winner test", "How much longer each setup took than the fastest on the test's frames, in time and per cent:\n"
+                               "the same frames for each, with the start of Nuke in it. One stopped early: the rest at its Frames / min.\n"
+                               "The tooltip of each cell has the test's time"),
+               ("Winner shot", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent:\n"
+                               "the time of its test (start and the first frames in it) and the rest of the shot's frames at its Frames / min.\n"
+                               "The start is paid once, the rate for every frame: on a long shot this grows beyond the test's difference.\n"
+                               "The tooltip of each cell has the whole shot's time"), ("State", ""))
+    C_SETUP, C_RULE, C_RUN, C_R1, C_R2, C_RATE, C_FPS, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_TEST, C_SLOWER, C_STATE = range(17)
 
     def _header_key(self):
         return "test_header" if len(self.COLUMNS) == 13 else "test_header_%d" % len(self.COLUMNS)
@@ -4017,10 +4022,23 @@ class ScriptTest(QtWidgets.QDialog):
         """Seconds the whole shot would take: the test as it went (the start, the first frames warming up), then the shot's
         other frames at the rate once going. The rate alone left the start out and showed 1 x 32 +0:48 behind 6 x 5 on 79
         frames, with the tests 0:28 against 0:18."""
+        return self._time_for(r, len(self.all_frames))
+
+    @staticmethod
+    def _time_for(r, count):
+        """Seconds for count frames: the test as it went, then the frames it did not get to at its rate; a test of more
+        frames than that in proportion."""
         if not r.get("rate"):
             return float("inf")
         done = r.get("done", len(r["frames"]))
-        return r.get("took", 0.0) + max(0, len(self.all_frames) - done) / r["rate"] * 60
+        took = r.get("took", 0.0)
+        if done > count:
+            return took * count / float(done)
+        return took + (count - done) / r["rate"] * 60
+
+    def _rate_cells(self, i, rate):
+        self._cell(i, self.C_RATE, "%.1f" % rate if rate is not None else "", rate)
+        self._cell(i, self.C_FPS, "%.2f" % (rate / 60.0) if rate is not None else "", rate)
 
     def _tip(self, index, col, text):
         item = self.table.item(self._row(index), col)
@@ -4221,7 +4239,7 @@ class ScriptTest(QtWidgets.QDialog):
         if final:
             text += "  (%d of %d%s)" % (done, len(r["frames"]), ", start %.0f s" % r["start"] if r.get("start") is not None else "")
         self._cell(i, self.C_R1 if self.round == "quick" else self.C_R2, text, took)
-        self._cell(i, self.C_RATE, "%.1f" % rate if rate is not None else "", rate)
+        self._rate_cells(i, rate)
         if final:
             self._cell(i, self.C_FRAME, "%.1f s" % r["frame"] if r.get("frame") else "", r.get("frame") or None)
         average = lambda v: sum(v) / float(len(v))
@@ -4247,6 +4265,9 @@ class ScriptTest(QtWidgets.QDialog):
         next one coloured."""
         frames = len(self.all_frames)
         whole = self._whole
+        top = self.results[best]
+        tested = top.get("done", len(top["frames"]))  # the test's frames, as the fastest rendered them
+        test_time = lambda x: self._time_for(x, tested)
         order = sorted((k for k in self.results if self.results[k]["rate"]), key=lambda k: whole(self.results[k]))
         if best in order:
             order.remove(best)
@@ -4260,16 +4281,23 @@ class ScriptTest(QtWidgets.QDialog):
                 continue
             rate = r["rate"]
             if rate:
-                self._cell(i, self.C_RATE, "%.1f" % rate, rate)
+                self._rate_cells(i, rate)
             if k == best:
+                self._cell(i, self.C_TEST, "fastest", 0.0)
+                self._tip(i, self.C_TEST, "The test (%d frames): %s" % (tested, fmt_secs(test_time(r))))
                 self._cell(i, self.C_SLOWER, "fastest", 0.0)
                 self._tip(i, self.C_SLOWER, "The whole shot (%d frames): about %s" % (frames, fmt_secs(whole(r))))
             elif rate:
-                mine, fastest = whole(r), whole(self.results[best])
+                mine, fastest = test_time(r), test_time(top)
+                extra = mine - fastest
+                self._cell(i, self.C_TEST, "+%s  (+%.0f %%)" % (fmt_secs(max(0.0, extra)), max(0.0, (mine / fastest - 1) * 100)), extra)
+                self._tip(i, self.C_TEST, "The test (%d frames): %s, the fastest %s" % (tested, fmt_secs(mine), fmt_secs(fastest)))
+                mine, fastest = whole(r), whole(top)
                 extra = mine - fastest
                 self._cell(i, self.C_SLOWER, "+%s  (+%.0f %%)" % (fmt_secs(max(0.0, extra)), max(0.0, (mine / fastest - 1) * 100)), extra)
                 self._tip(i, self.C_SLOWER, "The whole shot (%d frames): about %s, the fastest %s" % (frames, fmt_secs(mine), fmt_secs(fastest)))
             else:
+                self._cell(i, self.C_TEST, "no frame", 1e12)
                 self._cell(i, self.C_SLOWER, "no frame", 1e12)
             colour = colours.get(k)
             row = self._row(i)

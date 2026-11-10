@@ -99,6 +99,16 @@ slower = cell(1, t.C_SLOWER)
 check("1 x 32: +0:43 (+143 %), not +0:48 from the rates alone", slower.text().startswith("+0:43") and "+143 %" in slower.text(),
       slower.text())
 check("the tooltip says the whole shot's time", "1:13" in slower.toolTip() and "0:30" in slower.toolTip(), slower.toolTip())
+test = cell(1, t.C_TEST)
+check("Winner test: 1 x 32 +0:10 (+56 %) on the test's 24 frames", test.text().startswith("+0:10") and "+56 %" in test.text(),
+      test.text())
+check("its tooltip has both tests' times", "0:28" in test.toolTip() and "0:18" in test.toolTip(), test.toolTip())
+check("both fastest in the 6 x 5 row", cell(0, t.C_TEST).text() == "fastest" and cell(0, t.C_SLOWER).text() == "fastest")
+check("Frames / s right after Frames / min: 4.52 and 1.21", (cell(0, t.C_FPS).text(), cell(1, t.C_FPS).text()) == ("4.52", "1.21")
+      and t.table.horizontalHeaderItem(t.C_FPS).text() == "Frames / s" and t.C_FPS == t.C_RATE + 1,
+      (cell(0, t.C_FPS).text(), cell(1, t.C_FPS).text()))
+heads = [t.table.horizontalHeaderItem(c).text() for c in range(t.table.columnCount())]
+check("the columns Winner test and Winner shot", heads[t.C_TEST] == "Winner test" and heads[t.C_SLOWER] == "Winner shot", heads)
 t.setups, t.results, t.all_frames = keep
 t._fill_table()
 t.use()

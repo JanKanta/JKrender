@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.3 alpha — 2026-11-10
+
+- Test this script: Winner is two columns. Winner test: how much longer each setup took than the fastest on the test's frames (1 x 32 +0:10 behind 6 x 5 with 0:28 against 0:18). Winner shot: the same for the whole shot, as before (+0:43): Nuke's start is paid once, the slower rate on every frame, so on a long shot the difference grows. Each cell's tooltip has both times.
+- Test this script: a Frames / s column right after Frames / min.
+- `test_script_test` checks both columns and Frames / s with those numbers.
+
 ## 0.99.2 alpha — 2026-11-10
 
 - Test this script: Winner estimates the whole shot from the test's own time (the start and the first frames warming up) plus the shot's other frames at Frames / min. Before it used Frames / min alone, which leaves the start out: on 79 frames 1 x 32 showed +0:48 (+273 %) behind 6 x 5 although their tests took 0:28 and 0:18; now +0:43 (+143 %). The fastest setup is picked the same way, and each Winner cell's tooltip has the whole shot's time.
