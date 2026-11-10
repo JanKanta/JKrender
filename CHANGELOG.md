@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99 alpha — 2026-11-10
+
+- Fresh Nuke after every chunk is now **Restart Nuke**, with *Never*, *When memory is full* (default) and *After every chunk*. Settings, Test this script, the State column ("busy → restart (RAM 91 %)"), the Log and the timeline say it so. What you had set stays set.
+- Test this script: a Restart Nuke column right after Processes x threads shows each setup's rule (never, memory full, every chunk); the Fresh Nuke column is now Restarts.
+- `test_script_test` and `test_fresh_nuke` check the new names.
+
 ## 0.98 alpha — 2026-11-10
 
 - Movies render each in its own process, all at once: as many movie processes as movies rendering, whatever Processes and Max renders at once say. Image sequences keep their own places beside them, and the RAM and VRAM limits never close a movie's process (it would start its whole movie again). Movie processes are numbered after the places (with Processes 2: W03, W04 ...). System says "+ 3 for movies".

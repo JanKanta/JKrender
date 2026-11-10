@@ -58,7 +58,9 @@ QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "always"))
 t._add_setup()
 check("Add test: 2 x 2, 2 GB, fresh every chunk", (2, 2, 2, "always") in t.setups, t.setups)
 labels = [t.table.item(r, 0).text() for r in range(t.table.rowCount())]
-check("the table says it", any(x == "2 x 2, cache 2 GB, fresh every chunk" for x in labels), labels)
+rules = [(t.table.item(r, 0).text(), t.table.item(r, t.C_RULE).text()) for r in range(t.table.rowCount())]
+check("the table says it, Restart Nuke right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
+      and t.table.horizontalHeaderItem(1).text() == "Restart Nuke", rules)
 index = t.setups.index((2, 2, 2, "always"))
 QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "off"))
 t._edit_setup(index)
@@ -71,14 +73,14 @@ t.setups, t.added = [(2, 2, 2, "off"), (2, 2, 2, "always")], set()
 t._fill_table()
 t.start()
 wait(lambda: not t.timer.isActive() and t.run is None, 400)
-rows = {t.table.item(r, 0).text(): [t.table.item(r, c).text() if t.table.item(r, c) else "" for c in range(t.table.columnCount())]
+rows = {t.table.item(r, t.C_RULE).text(): [t.table.item(r, c).text() if t.table.item(r, c) else "" for c in range(t.table.columnCount())]
         for r in range(t.table.rowCount())}
 check("both setups went through Round 2", all(v[t.C_STATE].startswith("Round 2") for v in rows.values()),
       {k: v[t.C_STATE] for k, v in rows.items()})
 check("a winner", getattr(t, "best", None) in t.setups, getattr(t, "best", None))
 fresh = {k: v[t.C_FRESH] for k, v in rows.items()}
 check("Fresh Nuke column: none never fresh, some fresh every chunk",
-      fresh.get("2 x 2, cache 2 GB, never fresh") == "0" and int(fresh.get("2 x 2, cache 2 GB, fresh every chunk") or 0) > 0, fresh)
+      fresh.get("never") == "0" and int(fresh.get("every chunk") or 0) > 0, fresh)
 check("the test folder is gone", not os.path.exists(str(jk.TEST_DIR)))
 check("the render's own frames untouched", files(job) == [])
 best = t.best

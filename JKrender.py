@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.98 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.98 alpha"
+APP_VERSION = "0.99 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -77,10 +77,10 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
-# Fresh Nuke after every chunk: a process closes after its chunk and a new one opens the script again, with its RAM and VRAM
-# back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
-FRESH_MODES = (("off", "Off"), ("short", "When memory is short"), ("always", "Always"))
-FRESH_SHORT = {"off": "never fresh", "short": "", "always": "fresh every chunk"}
+# Restart Nuke (setting fresh_after_chunk): a process closes after its chunk and a new one opens the script again, with its
+# RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
+FRESH_MODES = (("off", "Never"), ("short", "When memory is full"), ("always", "After every chunk"))
+FRESH_SHORT = {"off": "never", "short": "memory full", "always": "every chunk"}  # the Restart Nuke column of Test this script
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
@@ -1500,7 +1500,7 @@ class RenderEngine:
             return "%s → %d %s" % (state, w.leave_to.number, w.leave_to.name)
         fresh = self._fresh_due() if state == "busy" and not (w.retire or w.handover or w.leave) else ""
         if fresh:
-            return "busy → fresh Nuke" if fresh == "always" else "busy → fresh Nuke (%s)" % fresh
+            return "busy → restart" if fresh == "always" else "busy → restart (%s)" % fresh
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
             return "%s → closes (%s)" % (state, w.why_leaving)
         if w.handover or (w.retire and state == "busy"):
@@ -1763,7 +1763,7 @@ class RenderEngine:
             w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
             w.frame_ends = list(old.frame_ends)  # one lane: Test this script counts its frames across the restart
         w.pinned = by_hand
-        w.fresh = bool(old and old.closed_why == "fresh Nuke")  # in place of one closed for a fresh Nuke
+        w.fresh = bool(old and old.closed_why == "restart")  # in place of one closed to restart
         self.workers[wid] = w
         self.last_spawn = time.time()
         threading.Thread(target=self._reader, args=(w,), daemon=True).start()
@@ -2135,9 +2135,9 @@ class RenderEngine:
                            else "not needed")
             elif self._fresh_due():
                 fresh = self._fresh_due()
-                w.closed_why = "fresh Nuke"
+                w.closed_why = "restart"
                 self.refresh_ids.append(w.id)
-                self._quit(w, "fresh Nuke after its chunk%s, it took %.1f GB RAM%s" % (
+                self._quit(w, "restarts after its chunk%s, it took %.1f GB RAM%s" % (
                     "" if fresh == "always" else " (%s)" % fresh, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
         elif kind == "FAIL":
             c = w.chunk
@@ -3143,7 +3143,7 @@ class RenderManager:
         frame. Its name, or "". When memory is short the processes get theirs one at a time."""
         for e in self.engines:
             for w in e.workers.values():
-                if w.state == "quitting" and w.closed_why == "fresh Nuke":
+                if w.state == "quitting" and w.closed_why == "restart":
                     return w.name
                 if getattr(w, "fresh", False) and w.state in ("loading", "idle", "busy") and not w.frames_here:
                     return w.name
@@ -3678,8 +3678,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     @staticmethod
     def _label(k):
-        extra = FRESH_SHORT.get(k[3], "")
-        return "%d x %d, cache %d GB%s" % (k[0], k[1], k[2], ", " + extra if extra else "")
+        return "%d x %d, cache %d GB" % (k[0], k[1], k[2])  # the Restart Nuke column next to it says the rest
 
     def _free_gb(self):
         """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
@@ -3730,7 +3729,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.b_create.clicked.connect(self._create_setups)
         top.addWidget(self.b_create)
         self.b_add = QtWidgets.QPushButton("Add test")
-        self.b_add.setToolTip("A setup of your own: Processes, Threads, Cache and Fresh Nuke after every chunk. It is kept for the next time.")
+        self.b_add.setToolTip("A setup of your own: Processes, Threads, Cache and Restart Nuke. It is kept for the next time.")
         self.b_add.clicked.connect(self._add_setup)
         self.b_remove = QtWidgets.QPushButton("Remove test")
         self.b_remove.setToolTip("Removes the selected setups. A recommended one comes back the next time this window opens.")
@@ -3832,6 +3831,7 @@ class ScriptTest(QtWidgets.QDialog):
             item.setData(SortItem.KEY, n * 10000 + t * 100 + c + [m for m, _ in FRESH_MODES].index(k[3]) / 10.0)
             item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
             self.table.setItem(i, self.C_SETUP, item)
+            self._cell(i, self.C_RULE, FRESH_SHORT.get(k[3], k[3]), [m for m, _ in FRESH_MODES].index(k[3]))
             self._cell(i, self.C_STATE, "waiting")
         self.table.setSortingEnabled(True)
         self._fit_columns()
@@ -3859,7 +3859,7 @@ class ScriptTest(QtWidgets.QDialog):
             self.resize(min(wanted, room), self.height())
 
     def _setup_window(self, title, button, values):
-        """A small window with Processes, Threads, Cache and Fresh Nuke; the setup, or None when cancelled."""
+        """A small window with Processes, Threads, Cache and Restart Nuke; the setup, or None when cancelled."""
         n, t, c, fresh = values
         cpu, ram = self.add_defaults[4:]
         dialog = QtWidgets.QDialog(self)
@@ -3877,8 +3877,8 @@ class ScriptTest(QtWidgets.QDialog):
         for key, text in FRESH_MODES:
             combo.addItem(text, key)
         combo.setCurrentIndex(max(0, combo.findData(fresh)))
-        combo.setToolTip("Fresh Nuke after every chunk, as in Settings > Processes and Chunks")
-        form.addRow("Fresh Nuke after every chunk", combo)
+        combo.setToolTip("Restart Nuke, as in Settings > Processes and Chunks")
+        form.addRow("Restart Nuke", combo)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(button)
         buttons.accepted.connect(dialog.accept)
@@ -3926,7 +3926,7 @@ class ScriptTest(QtWidgets.QDialog):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _edit_setup(self, index):
-        """Edit test: Processes, Threads, Cache and Fresh Nuke of a setup; it is kept as one of your own."""
+        """Edit test: Processes, Threads, Cache and Restart Nuke of a setup; it is kept as one of your own."""
         old = self.setups[index]
         setup = self._setup_window("Edit test", "Save", old)
         if setup is None or setup == old:
@@ -3963,6 +3963,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     PLACES = 6  # places spread over the shot, the same for every setup
     COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
+               ("Restart Nuke", "When a process closes after its chunk and a new one opens the script (Settings > Restart Nuke)"),
                ("Avg processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
                ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
                ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
@@ -3970,9 +3971,9 @@ class ScriptTest(QtWidgets.QDialog):
                ("Frame", "Time of one frame in one process"),
                ("CPU avg", "CPU use and the threads it means"), ("RAM avg", "RAM use of the PC"), ("GPU avg", "Graphics card use"),
                ("VRAM avg", "Graphics card memory"), ("Fell", "Processes that crashed or were closed for RAM or VRAM"),
-               ("Fresh Nuke", "Processes closed after their chunk for a fresh Nuke (Fresh Nuke after every chunk), and started again"),
+               ("Restarts", "Processes closed after their chunk and started again (Restart Nuke)"),
                ("Winner", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent"), ("State", ""))
-    C_SETUP, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_SLOWER, C_STATE = range(14)
+    C_SETUP, C_RULE, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_SLOWER, C_STATE = range(15)
 
     def _header_key(self):
         return "test_header" if len(self.COLUMNS) == 13 else "test_header_%d" % len(self.COLUMNS)
@@ -4152,7 +4153,7 @@ class ScriptTest(QtWidgets.QDialog):
             r["vram"].append(m.vram[1] / m.vram[2] * 100)
             r["vram_gb"].append(m.vram[1] / 1024.0)
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
-        r["fresh"] = sum("fresh Nuke after its chunk" in x[1] for x in e.log)
+        r["fresh"] = sum("restarts after its chunk" in x[1] for x in e.log)
         rate = self.steady(e.workers.values())[0] if done else None
         self._show(self.index, r, rate, done)
         # time per frame: a setup with many processes renders more of them; only against the same round's frames
@@ -4300,11 +4301,11 @@ class ScriptTest(QtWidgets.QDialog):
         rate = self.results[best]["rate"]
         mine = self.results.get(self.current)
         if best == self.current:
-            text = "Your settings (Processes %d, Threads %d, Cache %d GB, Fresh Nuke %s) are the fastest of these for this script: " \
+            text = "Your settings (Processes %d, Threads %d, Cache %d GB, Restart Nuke %s) are the fastest of these for this script: " \
                    "%.1f frames / min." % (best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate)
         else:
             gain = " — %.0f %% faster than yours (%.1f)" % ((rate / mine["rate"] - 1) * 100, mine["rate"]) if mine and mine["rate"] else ""
-            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, Fresh Nuke %s, %.1f frames / min%s." % (
+            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, Restart Nuke %s, %.1f frames / min%s." % (
                 best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate, gain)
             self.b_use.setEnabled(True)
         if partial:
@@ -5751,7 +5752,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_gpu.toggled.connect(lambda v: (self.c_vram.setEnabled(v), self.s_vram.setEnabled(v and self.c_vram.isChecked())))
         row(perf, "VRAM limit", [self.c_vram, self.s_vram],
             "Every Nuke process uses the GPU. With room on the card nothing restarts. Close to the limit\n"
-            "the process that grew the most gets a fresh Nuke after its chunk.\n"
+            "the process that grew the most restarts after its chunk (Restart Nuke).\n"
             "Over the limit, fewer processes, like the RAM limit: the last one started closes first (after its chunk,\n"
             "or now if it is still opening the script), one at a time; places come back when one more fits.\n"
             "About to spill into the RAM (97 %), the last one started closes at once.\n"
@@ -5831,14 +5832,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.c_fresh.addItem(text, key)
         self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(self.settings.get("fresh_after_chunk", "short"))))
         self.c_fresh.currentIndexChanged.connect(lambda i: self._save_setting("fresh_after_chunk", self.c_fresh.itemData(i)))
-        row(procs, "Fresh Nuke after every chunk", [self.c_fresh],
+        row(procs, "Restart Nuke", [self.c_fresh],
             "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
-            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: fresh ones leave room for more processes.\n"
+            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: a restart leaves room for more processes.\n"
             "Each costs one script load.\n\n"
-            "Off: a process renders chunk after chunk, never a fresh one.\n"
-            "When memory is short: only once the RAM or VRAM has stayed\n"
+            "Never: a process renders chunk after chunk.\n"
+            "When memory is full: only once the RAM or VRAM has stayed\n"
             "within 5 %% of its limit for %d s (one reading over it is not enough), one process at a time.\n" % FRESH_HOLD +
-            "Always: after every chunk. Test this script can tell whether it pays for a script.")
+            "After every chunk: always. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
         scroll.reflow(10000)
