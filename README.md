@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.94.4 alpha.** It works in tests; expect rough edges.
+**Version 0.95 alpha.** It works in tests; expect rough edges.
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -48,7 +48,7 @@ A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_n
 - **Space** plays and stops the preview. It never presses a button, so it cannot stop a render.
 - **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
   (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
-- **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
+- **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close, in any state (paused, closing for a limit); a closed one waiting to come back has **Remove process**. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
 - **Render data**: every render writes a report.json in its log folder with this PC's CPU, RAM and graphics card, the settings, speed, memory peaks, limit closes, how long Nuke took to start and the script to open, and the kinds of nodes in the script.
 - **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem. It comes when the checks that are on are through. A render you stopped stays silent.
 - **Framerange** (Settings > Job): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are, and stay in Output marked `not in Framerange`.
@@ -104,6 +104,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_fresh_nuke` | Fresh Nuke after every chunk: Off, When memory is short, Always; same places, State, timeline |
 | `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process |
+| `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 | `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |

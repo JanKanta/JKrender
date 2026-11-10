@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.95 alpha — 2026-11-10
+
+- One process less in any state, from its menu (right click in System or Workers). Close after this chunk works also on a paused process (it goes on to finish its chunk first) and on one already closing for the RAM or VRAM limit or for another render (it then closes for good, by you). A process closed for memory and waiting to come back, or closed after a crash, has Remove process: it does not come back. Processes goes down by 1 each time. Before, all of these could not be removed. A removed process lends its name last, so the ones waiting keep theirs.
+- New test `test_process_menu` (0.94.4 fails it).
+
 ## 0.94.4 alpha — 2026-11-09
 
 - The manual is up to date for 0.94 and in six languages, 19 pages each: Czech (`docs/JKrender_navod.pdf`), English, German, Spanish, Polish and Russian (`docs/JKrender_manual_<lang>.pdf`). New in it: Fresh Nuke after every chunk, the frame check when a render ends, Render again on several renders, Output All, the new Settings, where the settings live, the State texts, the RAM limit at 95 %, no VRAM cap per process, installing from a GitHub zip and updating. Screenshots taken again. JKrender itself is unchanged.
