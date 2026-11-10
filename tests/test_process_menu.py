@@ -1,5 +1,6 @@
 """The process menu (right click in System or Workers): one process less in any state. A paused one, one closing for a
-limit, one closed and waiting to come back for memory: Processes goes down by 1 and the process does not come back."""
+limit, one closed and waiting to come back for memory, one you closed, an empty place: Processes goes down by 1 and the
+process does not come back."""
 from common import *
 from PySide6 import QtCore, QtWidgets
 
@@ -14,7 +15,7 @@ wait(lambda: sum(1 for w in e.workers.values() if w.state == "busy") >= 4, 60)
 REAL_MENU = QtWidgets.QMenu
 
 
-def menu(w, pick):
+def menu(w, pick, empty=None):
     """Open the process menu of w; returns {item: enabled}; picks the item named pick, as a click would. Offscreen a menu
     cannot be clicked, so QMenu is swapped for one whose exec returns that item."""
     seen = {}
@@ -33,7 +34,10 @@ def menu(w, pick):
             return target if target is not None and target.isEnabled() else None
     QtWidgets.QMenu = Menu
     try:
-        win._worker_menu(e, w, QtCore.QPoint(100, 100))
+        if empty is not None:
+            win._empty_place_menu(empty, QtCore.QPoint(100, 100))
+        else:
+            win._worker_menu(e, w, QtCore.QPoint(100, 100))
     finally:
         QtWidgets.QMenu = REAL_MENU
     pump(0.2)
@@ -75,6 +79,24 @@ items = menu(w3, "Remove process")
 check("Remove process is there and enabled", items.get("Remove process") is True, items)
 check("Processes goes down by 1", m.total == total - 1, (total, m.total))
 check("it is no longer among those waiting to come back", w3.user_leaving)
+
+say("A process you closed (Close keeps its place empty): Remove process")
+w4 = e.workers[4]
+e.user_close(w4)
+pump(0.3)
+total = m.total
+items = menu(w4, "Remove process")
+check("Remove process is there", items.get("Remove process") is True, items)
+check("Processes goes down by 1 and its place is let go", m.total == total - 1 and 4 not in e.held, (m.total, e.held))
+
+say("An empty place, no process in it yet: Remove process")
+m.ram_cap = max(1, m.live_count())  # the place waits for memory
+win.s_workers.setValue(m.total + 1)
+pump(0.3)
+total = m.total
+items = menu(None, "Remove process", empty=9)
+check("Remove process is there for an empty place", items.get("Remove process") is True, items)
+check("Processes goes down by 1", m.total == total - 1, (total, m.total))
 m.ram_cap = None
 m._ram_guard = ram_guard
 wait(lambda: e.state in ("done", "failed", "stopped"), 180)

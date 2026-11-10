@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.95 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.95.1 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.95 alpha"
+APP_VERSION = "0.95.1 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1529,6 +1529,7 @@ class RenderEngine:
         w.why_leaving = w.closed_why = "by you"
         w.handover = w.leave = False
         if w.state == "gone":  # Processes goes down with it, so its place is not taken again
+            self.held.discard(w.id)  # one you closed kept its place empty: that place goes with it
             for ids in (self.restart_ids, getattr(self, "refresh_ids", []), self.preferred_wids):
                 while w.id in ids:
                     ids.remove(w.id)
@@ -7085,6 +7086,15 @@ class MainWindow(QtWidgets.QMainWindow):
             m.vram_cap = max(1, m.vram_cap - 1)
         self.s_workers.setValue(m.total - 1)
 
+    def _remove_place(self):
+        """A place no process has taken, waiting for memory or for a render: one less."""
+        m = self.manager
+        if m.ram_cap is not None:
+            m.ram_cap = max(1, m.ram_cap - 1)
+        if m.vram_cap is not None:
+            m.vram_cap = max(1, m.vram_cap - 1)
+        self.s_workers.setValue(m.total - 1)
+
     def _empty_place_menu(self, wid, global_pos):
         """A place no process has taken: start one there by hand, in a render still going."""
         menu = QtWidgets.QMenu(self)
@@ -7095,6 +7105,10 @@ class MainWindow(QtWidgets.QMainWindow):
         sub.setEnabled(bool(running))
         for x in running:
             actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: x.user_start_here(wid))
+        act = menu.addAction("Remove process")
+        act.setEnabled(self.manager.total > 1)
+        act.setToolTip("One place less: Processes goes down by 1")
+        actions[act] = self._remove_place
         self._add_process_item(menu, actions)
         act = menu.exec(global_pos)
         if act in actions:
@@ -7134,7 +7148,7 @@ class MainWindow(QtWidgets.QMainWindow):
             act.setToolTip("One process less: it finishes its chunk and closes, and Processes goes down by 1")
             actions[act] = lambda: self._close_after_chunk(e, w)
             actions[menu.addAction("Close")] = lambda: e.user_close(w)
-        if w.state == "gone" and e.state in ("rendering", "paused") and w.id not in e.held:
+        if w.state == "gone" and e.state in ("rendering", "paused") and not w.user_leaving:
             # closed for memory and waiting to come back, or closed after a crash: one place less, it stays closed
             act = menu.addAction("Remove process")
             act.setEnabled(self.manager.total > 1)

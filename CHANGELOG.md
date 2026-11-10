@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.95.1 alpha — 2026-11-10
+
+- Remove process also for a process you closed with Close (its place is let go) and for an empty place no process has taken yet (a row waiting for memory or for a render). Processes goes down by 1.
+
 ## 0.95 alpha — 2026-11-10
 
 - One process less in any state, from its menu (right click in System or Workers). Close after this chunk works also on a paused process (it goes on to finish its chunk first) and on one already closing for the RAM or VRAM limit or for another render (it then closes for good, by you). A process closed for memory and waiting to come back, or closed after a crash, has Remove process: it does not come back. Processes goes down by 1 each time. Before, all of these could not be removed. A removed process lends its name last, so the ones waiting keep theirs.
