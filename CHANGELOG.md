@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.6 — 2026-11-10
+
+- No longer called alpha: the version is 0.99.6 in the window title, the README and the tags (`v0.99.6`). Older entries below keep their names.
+
 ## 0.99.5 alpha — 2026-11-10
 
 - Movies (MOV / MP4 / MXF) render as before 0.98: a render like any other, within the places of Processes, in one process with every thread (1 x 32). 0.98's one process per movie, all at once beside the places of Processes, is gone, and with it the "+ N for movies" in System.
