@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.97 alpha — 2026-11-10
+
+- Slate frame is no longer a set frame: with it on, every render also renders the frame before its Framerange as the slate (1001-1020 renders 1000; Framerange 1050-1060 renders 1049). Settings > Job has only the switch now; a slate frame saved by older versions is no longer used.
+- `test_settings` checks it (0.96 fails it).
+
 ## 0.96 alpha — 2026-11-10
 
 - Test this script: a new column, Fresh Nuke, counts the processes each setup closed after their chunk for a fresh Nuke, while it renders.

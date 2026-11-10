@@ -55,6 +55,21 @@ check("nothing saved", (saved()["processes"], saved()["threads"]) == (4, 6), sav
 win.select(seq)
 check("a sequence picked again: 4 x 6, unlocked", (win.s_workers.value(), win.s_threads.value(), win.s_workers.isEnabled()) == (4, 6, True))
 
+say("Slate: the frame before the Framerange, not a set frame")
+win.settings["slate_frame"] = 900  # what older versions saved: no longer used
+win.c_slate.setChecked(True)
+check("1001-1020 renders 1000-1020", (min(seq.frames), max(seq.frames), len(seq.frames)) == (1000, 1020, 21),
+      (min(seq.frames), max(seq.frames)))
+check("a movie too: 1000-1020", mov.default_range() == "1000-1020", mov.default_range())
+win.e_frames.setText("1050-1060")
+win._frames_edited()
+check("Framerange 1050-1060: the slate is 1049", (min(seq.frames), len(seq.frames)) == (1049, 12), (min(seq.frames), len(seq.frames)))
+check("the row by Render says 1049", win.l_slate.text() == "1049", win.l_slate.text())
+win.c_slate.setChecked(False)
+check("off: no slate", min(seq.frames) == 1050, min(seq.frames))
+win.e_frames.setText("")
+win._frames_edited()
+
 say("Reset to defaults")
 QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes)
 win._reset_settings()

@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.96 alpha.** It works in tests; expect rough edges.
+**Version 0.97 alpha.** It works in tests; expect rough edges.
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -52,7 +52,7 @@ A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_n
 - **Render data**: every render writes a report.json in its log folder with this PC's CPU, RAM and graphics card, the settings, speed, memory peaks, limit closes, how long Nuke took to start and the script to open, and the kinds of nodes in the script.
 - **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem. It comes when the checks that are on are through. A render you stopped stays silent.
 - **Framerange** (Settings > Job): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are, and stay in Output marked `not in Framerange`.
-- **Slate frame**: on by default, for projects that start at 1001 with the slate on 1000.
+- **Slate frame**: on by default. Every render also renders the frame before its Framerange as the slate (1001-1020 renders 1000).
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
   graphics card. A light 4K script with Kronos rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
   (on, 95 %) keeps the card from filling: within 5 % of the limit the processes get a fresh Nuke after their chunk (Fresh Nuke after every chunk);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.96 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.97 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.96 alpha"
+APP_VERSION = "0.97 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -75,7 +75,7 @@ PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
                     "vram_guard": True, "vram_limit": 95,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
-                    "slate": True, "slate_frame": 1000,
+                    "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
 # Fresh Nuke after every chunk: a process closes after its chunk and a new one opens the script again, with its RAM and VRAM
 # back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
@@ -1291,15 +1291,12 @@ class RenderEngine:
         return "%s-%s" % (self.job.get("first"), self.job.get("last"))
 
     def default_range(self):
-        """This render's Frames, with the slate frame in front of them when Settings asks for one.
-
-        Projects start at 1001 with the slate on 1000; the script's range leaves the slate out."""
+        """This render's Frames, with the slate frame in front of them when Settings asks for one: the frame before the
+        first, 1001-1020 -> 1000-1020. The script's range leaves the slate out."""
         text = self.frames_text
         frames = parse_frames(text)
-        slate = int(self.settings.get("slate_frame", 1000))
-        # a movie has no gaps: there the slate frame only goes right in front of its frames
-        if self.settings.get("slate") and slate < frames[0] and (not self.movie or slate == frames[0] - 1):
-            text = frames_to_spec([slate] + frames)  # 1000 + 1001-1100 -> 1000-1100
+        if self.settings.get("slate") and frames:
+            text = frames_to_spec([frames[0] - 1] + frames)
         return text
 
     def set_range(self, text):
@@ -1435,7 +1432,7 @@ class RenderEngine:
     def _find_outside(self):
         """What the range leaves out but is on disk: what Nuke sent, the slate frame, what was listed until now."""
         near = set(parse_frames(self.sent_frames())) | set(self.outside) | set(self.before)
-        near.add(int(self.settings.get("slate_frame", 1000)))
+        near.update(int(f) - 1 for f in (self.job.get("first"), (parse_frames(self.frames_text) or [None])[0]) if f is not None)
         near -= set(self.frames)
         near = sorted(near)
         checks = dict(zip(near, self.checker.map(lambda f: [check_file(p) for p in self.output_files(f)], near)))
@@ -5678,15 +5675,12 @@ class MainWindow(QtWidgets.QMainWindow):
         jobs = card("Job")
         self.c_slate = Toggle()
         self.c_slate.setChecked(bool(self.settings.get("slate", True)))
-        self.s_slate = QtWidgets.QSpinBox()
-        self.s_slate.setRange(-100000, 1000000)
-        self.s_slate.setValue(int(self.settings.get("slate_frame", 1000)))
-        self.s_slate.setEnabled(self.c_slate.isChecked())
-        self.c_slate.toggled.connect(lambda v: (self._slate_changed("slate", v), self.s_slate.setEnabled(v)))
-        self.s_slate.valueChanged.connect(lambda v: self._slate_changed("slate_frame", v))
-        row(jobs, "Slate frame", [self.c_slate, self.s_slate],
-            "The project range starts after the slate (e.g. 1001 with the slate on 1000).\n"
-            "With this on, every render also renders the slate frame on this frame.")
+        self.c_slate.toggled.connect(lambda v: self._slate_changed("slate", v))
+        slate_note = QtWidgets.QLabel("the frame before the Framerange: 1001-1020 renders 1000 as the slate")
+        slate_note.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        row(jobs, "Slate frame", [self.c_slate, slate_note],
+            "The project range starts after the slate.\n"
+            "With this on, every render also renders the frame before its first frame as the slate (1001-1020: 1000).")
         self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
         self.e_frames.setFixedWidth(FIELD * 2)
         self.e_frames.editingFinished.connect(self._frames_edited)
@@ -5876,7 +5870,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_slate, 1000), (self.s_limit, 95), (self.s_days, 15),
+                           (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
                            (self.s_vram, 95)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
