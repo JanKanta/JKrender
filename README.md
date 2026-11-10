@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.99 alpha.** It works in tests; expect rough edges.
+**Version 0.99.1 alpha.** It works in tests; expect rough edges.
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -15,9 +15,9 @@ A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_n
 - **Chunks across processes.** By default the work is spread over 8 Nuke processes with 4 threads each
   (Settings > Processes and Chunks). 4 × 8 can be faster for comps one Nuke already fills (Defocus, Denoise) and takes half the RAM.
   Chunks go to whichever process is free and shrink towards the end, so none sits idle.
-- **Restart Nuke** (Settings > Processes and Chunks): a process closes after its chunk and a new one opens the
+- **Reload Nuke** (Settings > Processes and Chunks): a process closes after its chunk and a new one opens the
   script again, with its RAM and VRAM back at the start. Some scripts make Nuke keep memory it no longer needs, chunk after chunk;
-  a restart leaves room for more processes, at the cost of a script load per chunk. *When memory is full* (default) restarts only
+  a reload leaves room for more processes, at the cost of a script load per chunk. *When memory is full* (default) reloads only
   once the RAM or VRAM has stayed within 5 % of its limit for 30 s, one process at a time; *After every chunk* always; *Never* never.
   Test this script takes it as a fourth field of Add test and Edit test and shows it in its own column, so you can compare.
 - **Several renders in one window.** Each Write is a card at the top. They share one budget of
@@ -55,8 +55,8 @@ A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_n
 - **Slate frame**: on by default. Every render also renders the frame before its Framerange as the slate (1001-1020 renders 1000).
 - **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
   graphics card. A light 4K script with Kronos rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
-  (on, 95 %) keeps the card from filling: within 5 % of the limit the processes restart after their chunk (Restart Nuke);
-  at the limit fewer processes run. With room on the card nothing restarts.
+  (on, 95 %) keeps the card from filling: within 5 % of the limit the processes reload after their chunk (Reload Nuke);
+  at the limit fewer processes run. With room on the card nothing reloads.
 - **RAM limit** (on by default, 95 %): over the limit fewer Nuke processes run, so Windows never swaps.
   The Cache setting is Nuke's cache limit per process (`-c`); a process takes more than that.
 - **Starting and falling.** A render starts all its processes at once. Over a limit, the process started last closes first:
@@ -100,8 +100,8 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 |---|---|
 | `test_disk_checks` | a render opening with frames whole, missing, cut off, empty; Check frames says the same; frames checked when a render ends, then the pixels; Stop |
 | `test_render_again` | Render again on one and on several renders, finished or stopped: Only missing, All frames again, Cancel |
-| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, Restart Nuke after 30 s, the State text |
-| `test_fresh_nuke` | Restart Nuke: Never, When memory is full, After every chunk; same places, State, timeline |
+| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, Reload Nuke after 30 s, the State text |
+| `test_fresh_nuke` | Reload Nuke: Never, When memory is full, After every chunk; same places, State, timeline |
 | `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
 | `test_movies` | movies each in their own process, all at once, beside a sequence's places; the Write column in System |

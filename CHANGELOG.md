@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.1 alpha — 2026-11-10
+
+- Restart Nuke is now called **Reload Nuke** (Never, When memory is full, After every chunk). Test this script's columns are Reload Nuke and Reloads; State says "busy → reload (RAM 91 %)".
+
 ## 0.99 alpha — 2026-11-10
 
 - Fresh Nuke after every chunk is now **Restart Nuke**, with *Never*, *When memory is full* (default) and *After every chunk*. Settings, Test this script, the State column ("busy → restart (RAM 91 %)"), the Log and the timeline say it so. What you had set stays set.

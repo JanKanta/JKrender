@@ -59,8 +59,8 @@ t._add_setup()
 check("Add test: 2 x 2, 2 GB, fresh every chunk", (2, 2, 2, "always") in t.setups, t.setups)
 labels = [t.table.item(r, 0).text() for r in range(t.table.rowCount())]
 rules = [(t.table.item(r, 0).text(), t.table.item(r, t.C_RULE).text()) for r in range(t.table.rowCount())]
-check("the table says it, Restart Nuke right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
-      and t.table.horizontalHeaderItem(1).text() == "Restart Nuke", rules)
+check("the table says it, Reload Nuke right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
+      and t.table.horizontalHeaderItem(1).text() == "Reload Nuke", rules)
 index = t.setups.index((2, 2, 2, "always"))
 QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "off"))
 t._edit_setup(index)
