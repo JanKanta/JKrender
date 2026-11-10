@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.4 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.5 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.4 alpha"
+APP_VERSION = "0.99.5 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1876,8 +1876,8 @@ class RenderEngine:
 
     def _may_spawn(self):
         m = self.manager
-        if m is None or self.movie:
-            return True  # a movie has its own process, outside the places of Processes
+        if m is None:
+            return True
         if m.free_slots() <= 0:
             return False
         if self.restart_ids or self.hand_wids or any(self.workers[i].state == "gone" for i in getattr(self, "refresh_ids", []) if i in self.workers):
@@ -2654,8 +2654,7 @@ class RenderManager:
     Renders start one after another (Settings > Max renders at once allows up to 3 side by side).
     A render on its last chunks no longer counts, so the next one starts loading while it finishes.
     Free processes are dealt out in turns, oldest render first, so 8 become 8, 4+4 or 3+3+2.
-    A movie is outside all that: each one renders at once in its own process, whatever Processes and Max renders at once
-    say, so there are as many movie processes as movies rendering."""
+    A movie takes its turn like any other render: one process with every thread."""
 
     def __init__(self, settings):
         self.settings = settings
@@ -2716,12 +2715,7 @@ class RenderManager:
         return [e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
 
     def live_count(self):
-        """Processes running for image sequences: the places of Processes. A movie's process is on top of them."""
-        return sum(1 for e in self.engines if not e.movie for w in e.workers.values() if w.state != "gone")
-
-    def movie_count(self):
-        """Processes running for movies, one a movie."""
-        return sum(1 for e in self.engines if e.movie for w in e.workers.values() if w.state != "gone")
+        return sum(1 for e in self.engines for w in e.workers.values() if w.state != "gone")
 
     def budget(self):
         """Processes the renders may use now: the total, unless the RAM or VRAM guard holds it lower."""
@@ -2938,7 +2932,7 @@ class RenderManager:
             self._ram_ok_since = None
             if pct >= min(98.0, limit + 6) and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
                 # Nearly out of memory: one process closes now instead of after its chunk.
-                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
+                running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
                 if running:
                     e, w = self._close_first(running)
                     e.note("!! RAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
@@ -3032,7 +3026,7 @@ class RenderManager:
             if stalled and live > 1 and now - self._last_vram_kill > 30 and now - self._last_kill > 5:
                 # The card is full and no process finishes a frame: Nuke falls back to the CPU and they all wait. One waiting
                 # to be replaced after its chunk never gets there, and neither does one to close after its chunk.
-                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values()
+                running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
                 if len(running) > 1:
                     e, w = self._close_first(running)
@@ -3043,7 +3037,7 @@ class RenderManager:
                     self._fell_vram()
                     self._last_vram_kill = now
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
-                running = [(e, w) for e in self.engines if not e.movie for w in e.workers.values()
+                running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
@@ -3168,7 +3162,7 @@ class RenderManager:
         W01-W08. A render never gets a number twice (its closed ones are started again under their own)."""
         running = {wid for e in self.engines for wid, w in e.workers.items() if w.state != "gone"}
         own = set(engine.workers) if engine is not None else set()
-        wid = self.total + 1 if engine is not None and engine.movie else 1
+        wid = 1
         while wid in running or wid in own:
             wid += 1
         return wid
@@ -3240,11 +3234,7 @@ class RenderManager:
         return bool(ready)
 
     def _admit(self):
-        for e in [x for x in self.waiting if x.movie]:  # a movie starts at once, in its own process
-            self.waiting.remove(e)
-            e.state = e.resume_state
-            e.start(everything=e.everything)
-        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail() and not e.movie]
+        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail()]
         while self.waiting and len(busy) < self.max_renders:
             e = self.waiting.pop(0)
             e.state = e.resume_state
@@ -3254,10 +3244,7 @@ class RenderManager:
 
     def _allocate(self):
         # a render with a process you started by hand first, so the place made for it is not dealt to another
-        for e in self.engines:  # a movie: its one process, outside the places
-            if e.movie and e.state in ("rendering", "paused") and e.workers_target != min(1, e.need()):
-                e.set_workers(min(1, e.need()))
-        active = sorted((e for e in self.engines if e.state in ("rendering", "paused") and not e.movie),
+        active = sorted((e for e in self.engines if e.state in ("rendering", "paused")),
                         key=lambda e: (not (e.restart_ids or e.hand_wids), e.started or 0, e.number))
         needs = {e: e.need() for e in active}
         share = {e: 0 for e in active}
@@ -6831,9 +6818,8 @@ class MainWindow(QtWidgets.QMainWindow):
         live = [w for w in e.workers.values() if w.state != "gone"]
         busy = sum(1 for w in live if w.state == "busy")
         self.t_workers.set("%d / %d" % (busy, len(live)),
-                           "rendering / running · %d of %d for all renders%s" % (
-                               self.manager.live_count(), self.manager.total,
-                               " + %d for movies" % self.manager.movie_count() if self.manager.movie_count() else ""))
+                           "rendering / running · %d of %d for all renders" % (self.manager.live_count(),
+                                                                               self.manager.total))
         checked = [fr for fr in e.frames.values() if fr.checks]
         bad = sum(1 for fr in e.frames.values() if frame_broken(fr))
         small = sum(1 for fr in e.frames.values() if fr.small)
