@@ -27,6 +27,16 @@ check("Round 1: the same frames for every setup", quick[0] == quick[1] == quick[
 check("from the start of the shot to its end", quick[0][0] < 1010 and quick[0][-1] > 1050, (quick[0][0], quick[0][-1]))
 t.round, t.round_procs = "final", [2, 4]
 check("Round 2: the same frames for both", t._frames_for(2) == t._frames_for(4))
+t.s_frames.setValue(20)
+t.round, t.round_procs = "final", [2, 3, 4]
+check("Frames per setup 20: Round 2 renders 20, not each stretch rounded up to 24", len(t._frames_for(2)) == 20,
+      len(t._frames_for(2)))
+t.round_procs = [2, 6]
+check("at least 4 a process: 6 processes get 24", len(t._frames_for(6)) == 24, len(t._frames_for(6)))
+t.s_frames.setValue(57)
+t.round_procs = [2]
+check("57 of 60, stretches that meet: still 57", len(t._frames_for(2)) == 57, len(t._frames_for(2)))
+t.s_frames.setValue(8)
 
 say("Add test and Edit test, with Fresh Nuke after every chunk")
 
@@ -66,6 +76,9 @@ rows = {t.table.item(r, 0).text(): [t.table.item(r, c).text() if t.table.item(r,
 check("both setups went through Round 2", all(v[t.C_STATE].startswith("Round 2") for v in rows.values()),
       {k: v[t.C_STATE] for k, v in rows.items()})
 check("a winner", getattr(t, "best", None) in t.setups, getattr(t, "best", None))
+fresh = {k: v[t.C_FRESH] for k, v in rows.items()}
+check("Fresh Nuke column: none never fresh, some fresh every chunk",
+      fresh.get("2 x 2, cache 2 GB, never fresh") == "0" and int(fresh.get("2 x 2, cache 2 GB, fresh every chunk") or 0) > 0, fresh)
 check("the test folder is gone", not os.path.exists(str(jk.TEST_DIR)))
 check("the render's own frames untouched", files(job) == [])
 best = t.best

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.95.1 alpha — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.96 alpha — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.95.1 alpha"
+APP_VERSION = "0.96 alpha"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -3730,7 +3730,7 @@ class ScriptTest(QtWidgets.QDialog):
         head.setStretchLastSection(True)
         self._sizing, self._auto_width = True, True  # columns grow with what they show until you size one yourself
         self.table.resizeColumnsToContents()
-        saved = window.settings.get("test_header")
+        saved = window.settings.get(self._header_key())
         if saved:  # as you left them last time
             try:
                 head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
@@ -3941,8 +3941,12 @@ class ScriptTest(QtWidgets.QDialog):
                ("Frame", "Time of one frame in one process"),
                ("CPU avg", "CPU use and the threads it means"), ("RAM avg", "RAM use of the PC"), ("GPU avg", "Graphics card use"),
                ("VRAM avg", "Graphics card memory"), ("Fell", "Processes that crashed or were closed for RAM or VRAM"),
+               ("Fresh Nuke", "Processes closed after their chunk for a fresh Nuke (Fresh Nuke after every chunk), and started again"),
                ("Winner", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent"), ("State", ""))
-    C_SETUP, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_SLOWER, C_STATE = range(13)
+    C_SETUP, C_RUN, C_R1, C_R2, C_RATE, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_SLOWER, C_STATE = range(14)
+
+    def _header_key(self):
+        return "test_header" if len(self.COLUMNS) == 13 else "test_header_%d" % len(self.COLUMNS)
 
     def _frames_for(self, processes):
         """Frames from the same places spread over the whole shot for every setup, a stretch of frames in a row at each: a shot
@@ -3955,14 +3959,16 @@ class ScriptTest(QtWidgets.QDialog):
         count = max(self._wanted(p) for p in (getattr(self, "round_procs", None) or [processes]))
         if count >= total:
             return list(frames)
-        places = max(1, min(self.PLACES, total // 3))
-        size = max(2, -(-count // places))  # at least 2 in a row: the first of a stretch warms up
-        if size * places >= total:
-            return list(frames)
+        places = max(1, min(self.PLACES, total // 3, count // 2))  # at least 2 in a row: the first of a stretch warms up
+        sizes = [count // places + (1 if k < count % places else 0) for k in range(places)]
         picked = set()
-        for k in range(places):  # the first at the shot's start, the last at its end, the rest evenly between
+        for k, size in enumerate(sizes):  # the first at the shot's start, the last at its end, the rest evenly between
             start = int(round(k * (total - size) / float(places - 1))) if places > 1 else (total - size) // 2
             picked.update(frames[start:start + size])
+        for f in frames:  # stretches that met: the rest from the start, so it is still that many
+            if len(picked) >= count:
+                break
+            picked.add(f)
         return sorted(picked)
 
     def _frames_note(self, *_):
@@ -4117,6 +4123,7 @@ class ScriptTest(QtWidgets.QDialog):
             r["vram"].append(m.vram[1] / m.vram[2] * 100)
             r["vram_gb"].append(m.vram[1] / 1024.0)
         r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
+        r["fresh"] = sum("fresh Nuke after its chunk" in x[1] for x in e.log)
         rate = self.steady(e.workers.values())[0] if done else None
         self._show(self.index, r, rate, done)
         # time per frame: a setup with many processes renders more of them; only against the same round's frames
@@ -4182,6 +4189,8 @@ class ScriptTest(QtWidgets.QDialog):
             self._cell(i, self.C_VRAM, "%.0f %% · %.1f GB" % (average(r["vram"]), average(r["vram_gb"])), average(r["vram"]))
         if final:
             self._cell(i, self.C_FELL, str(r.get("fell", "")), r.get("fell"))
+        if r.get("fresh") is not None:  # as it happens
+            self._cell(i, self.C_FRESH, str(r["fresh"]), r["fresh"])
         self._cell(i, self.C_STATE, ("%s: %s" % (self._round_name(), "stopped, slower" if r.get("slower") else "done")) if final
                    else "%s: rendering, %d frames" % (self._round_name(), done))
         self._fit_columns()
@@ -4284,7 +4293,7 @@ class ScriptTest(QtWidgets.QDialog):
             rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
                     for r in range(self.table.rowCount())]
             path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
-            lines = ["%s, %d frames per setup or more (of %d in the shot), %d threads" % (
+            lines = ["%s, Frames per setup %d (Round 1: 3 a process; Round 2: at least 4 a process), %d in the shot, %d threads" % (
                 self.src.name, self.s_frames.value(), len(self.all_frames), os.cpu_count() or 0),
                      " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -4301,7 +4310,7 @@ class ScriptTest(QtWidgets.QDialog):
 
     def closeEvent(self, event):
         self.stop()
-        self.main._save_setting("test_header", bytes(self.table.horizontalHeader().saveState().toBase64()).decode("ascii"))
+        self.main._save_setting(self._header_key(), bytes(self.table.horizontalHeader().saveState().toBase64()).decode("ascii"))
         super().closeEvent(event)
 
 

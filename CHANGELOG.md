@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.96 alpha — 2026-11-10
+
+- Test this script: a new column, Fresh Nuke, counts the processes each setup closed after their chunk for a fresh Nuke, while it renders.
+- Frames per setup is now exact. The stretches at the 6 places share the frames out (20: 4, 4, 3, 3, 3, 3) instead of each being rounded up (20 became 24). Round 1 still renders 3 frames a process and Round 2 at least 4 a process, so a setup with 6 processes renders 24; the saved table now says so in its first line.
+- `test_script_test` checks both (0.95.1 fails it).
+
 ## 0.95.1 alpha — 2026-11-10
 
 - Remove process also for a process you closed with Close (its place is let go) and for an empty place no process has taken yet (a row waiting for memory or for a render). Processes goes down by 1.
