@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.10 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.11 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.10"
+APP_VERSION = "0.99.11"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -903,11 +903,18 @@ PRORES_PROFILES = (("XQ", "4444 XQ"), ("4:4:4:4", "4444"), ("HQ", "HQ"), ("LT", 
 
 
 def find_tool(name):
-    """ffprobe / ffmpeg on PATH, or where WinGet puts them."""
+    """ffprobe / ffmpeg on PATH, or where WinGet puts them, else the one JKrender fetched into lib/ffmpeg."""
     found = shutil.which(name)
     if not found and sys.platform.startswith("win"):
         link = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / (name + ".exe")
         found = str(link) if link.is_file() else None
+    if not found:
+        try:
+            import jkrender_deps
+
+            found = jkrender_deps.find_tool(name)
+        except ImportError:
+            pass
     return found
 
 
@@ -980,7 +987,7 @@ def movie_checks(info, expected):
         return [("File", "bad", info["error"])]
     out = [("File", "ok", "%s on disk" % fmt_size(info.get("size")))]
     if info.get("no_probe"):
-        out.append(("Details", "warn", "ffprobe not found; install ffmpeg to check the movie"))
+        out.append(("Details", "warn", "ffprobe not found; restart Nuke to be offered the download, or winget install ffmpeg"))
         return out
     want = expected.get("frames")
     if want:

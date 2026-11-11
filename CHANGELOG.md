@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.11 — 2026-11-11
+
+- ffmpeg comes with JKrender: on the first Nuke start, if the PC has no ffmpeg (on PATH or from WinGet), JKrender offers it in the same question as numpy and OpenEXR. It downloads the LGPL build from github.com/BtbN/FFmpeg-Builds (about 77 MB, 149 MB unpacked), checks it against the release's SHA-256 and keeps only ffmpeg, ffprobe and their DLLs, in `lib/ffmpeg`. So the movie check and the movie player work on any PC, and the JKrender folder carries them when copied. Said no: delete `lib/DECLINED_FFMPEG` to be asked again. An ffmpeg of the PC's own is used first, as before.
+- `test_ffmpeg_fetch` checks it against a release served locally (0.99.10 fails it).
+
 ## 0.99.10 — 2026-11-11
 
 - The GitHub page is a short overview: what JKrender is good for and what it does, in points, install in three steps; the details are in the manuals. The test details moved to `tests/README.md`.

@@ -7,16 +7,18 @@ JKrender - install
        nuke.pluginAddPath("./JKrender")
 
 3. Restart Nuke. On the first start, JKrender asks to download numpy and OpenEXR
-   for the EXR preview (about 15 MB). They download in the background into JKrender\lib.
-   If you say No, rendering still works, only without the EXR preview, and you are not asked again.
-   To be asked again, delete JKrender\lib\DECLINED.
+   for the EXR preview (about 15 MB) and, if the PC has no ffmpeg, ffmpeg for checking and
+   playing movies (about 77 MB). They download in the background into JKrender\lib.
+   If you say No, rendering still works, only without the EXR preview or the movie check,
+   and you are not asked again. To be asked again, delete JKrender\lib\DECLINED
+   (numpy, OpenEXR) or JKrender\lib\DECLINED_FFMPEG.
 
 Use: select a Write (or a Group with Writes) and choose JKrender > Render Selected Write(s), or press Ctrl+Alt+R.
 
 The window runs in Nuke's own Python, so nothing else needs installing.
 Made for Nuke 16 on Windows.
 
-Optional: for MOV details and the MOV player, install ffmpeg:  winget install ffmpeg
+ffmpeg already on the PC (on PATH, or from winget install ffmpeg) is used first.
 
 Each render's logs, script copy and job file are in the JKrender\log folder (deleted after 15 days; Settings can change it).
 Your settings are in JKrender\settings.

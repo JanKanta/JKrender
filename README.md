@@ -5,7 +5,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
 
 ![JKrender with four renders: three rendering side by side and one done, the frame preview, the timeline of every Nuke process and the system monitor](docs/screenshot.png)
 
-**Version 0.99.10** · Nuke 16 · Windows · free
+**Version 0.99.11** · Nuke 16 · Windows · free
 
 📘 Manual, 19 pages: [English](docs/JKrender_manual_en.pdf) · [Čeština](docs/JKrender_navod.pdf) · [Deutsch](docs/JKrender_manual_de.pdf) · [Español](docs/JKrender_manual_es.pdf) · [Polski](docs/JKrender_manual_pl.pdf) · [Русский](docs/JKrender_manual_ru.pdf)
 
@@ -57,7 +57,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
    nuke.pluginAddPath("./JKrender")
    ```
 
-3. Restart Nuke. On the first start JKrender offers to download numpy and OpenEXR (about 15 MB) for the EXR preview; it renders without them too.
+3. Restart Nuke. On the first start JKrender offers to download numpy and OpenEXR (about 15 MB) for the EXR preview and, if the PC has no ffmpeg, ffmpeg (about 77 MB) for checking and playing movies. It renders without them too.
 
 Then select Writes in Nuke and choose **JKrender → Render Selected Write(s)** (**Ctrl+Alt+R**).
 
@@ -67,9 +67,9 @@ Then select Writes in Nuke and choose **JKrender → Render Selected Write(s)** 
 - The window runs in Nuke's own Python, which already has PySide6 and psutil: nothing else needs installing.
 - **Behind a firewall:** set `JKRENDER_NO_FETCH=1` and fill the folder by hand:
   `"C:\Program Files\Nuke16.0v9\python.exe" -m pip install --only-binary=:all: --target lib\win_amd64-cp311 numpy OpenEXR`
-- Said no to the download? Delete `lib/DECLINED` to be asked again.
+- Said no to the download? Delete `lib/DECLINED` (numpy, OpenEXR) or `lib/DECLINED_FFMPEG` to be asked again.
 - **Another Python:** set `JKRENDER_PYTHON`; it needs `pip install PySide6 psutil numpy OpenEXR`.
-- Movie details and the movie player need `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
+- ffmpeg: an ffmpeg on PATH or from `winget install ffmpeg` is used first; otherwise the LGPL build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), checked against its SHA-256, goes into `lib/ffmpeg` and travels with the JKrender folder.
 - Render logs go to `log/` next to `JKrender.py` (deleted after 15 days); settings are per user in `~/.nuke/JKrender/settings`.
 
 </details>
