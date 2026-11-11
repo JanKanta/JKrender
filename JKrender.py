@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.7 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.8 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.7"
+APP_VERSION = "0.99.8"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2541,9 +2541,26 @@ class RenderEngine:
         nuke_errors = sum(1 for x in self.log if x[0] == "" and " failed on W" in x[1])
         if nuke_errors and not c["failed"]:
             out.append("Nuke reported %d error(s), see the Log" % nuke_errors)
-        if self.crashes:
+        if self.crashes and not self.verified():
             out.append("Nuke crashed %d time(s)" % self.crashes)
         return out
+
+    def verified(self):
+        """Done, and every frame on disk passed the check when the render ended (a movie: it is complete and usable). A crash
+        before that cost only a chunk rendered again: its half-written frame was deleted, the rest went back to the queue."""
+        if self.state != "done":
+            return False
+        if self.movie:
+            return bool(self.movie_info) and self.movie_verdict() != "bad"
+        frames = list(self.frames.values())
+        return (bool(frames) and self.pending_checks <= 0 and all(fr.state != "bad" and fr.checks for fr in frames))
+
+    def recovered(self):
+        """For the card's tooltip: crashes JKrender made good, the render being whole and checked."""
+        if self.crashes and self.verified():
+            return ("Nuke crashed %d time(s); the chunk rendered again and every frame is on disk and passes the check"
+                    % self.crashes)
+        return ""
 
     def rate(self):
         """Frames per second over the last minute (or since start)."""
@@ -4544,7 +4561,7 @@ class RenderCard(QtWidgets.QFrame):
         self.badge.setStyleSheet("background: %s; color: %s; border-radius: 3px; font-weight: 600;"
                                  % (C["accent"] if selected else C["line"], "#111" if selected else C["text"]))
         errors = e.errors()
-        self.setToolTip("Errors: " + "; ".join(errors) if errors else "")
+        self.setToolTip("Errors: " + "; ".join(errors) if errors else e.recovered())
         if errors:  # something went wrong: the whole card goes red, also while it renders
             self.setStyleSheet("RenderCard { background: #4a2a26; border: %dpx solid %s; border-radius: 5px; }"
                                % (2 if selected else 1, C["failed"]))

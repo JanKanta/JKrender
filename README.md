@@ -6,7 +6,7 @@ Fast local rendering for Nuke. JKrender splits a render into chunks and renders 
 Nuke processes at once, each of which opens the script only once. Every finished frame is checked
 on disk.
 
-**Version 0.99.7.**
+**Version 0.99.8.**
 
 A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
 
@@ -107,7 +107,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
 | `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the Write column in System |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
-| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a red card after a crash |
+| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a green card after a crash once every frame is checked, red with a broken or unchecked frame |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 | `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |
 

@@ -52,10 +52,25 @@ check("it crashed once", os.path.exists(os.path.dirname(frame_path(job, 0)) + "/
 crash = [x[1] for x in e1.log if "W0" in x[1] and ("crash" in x[1].lower() or "exit" in x[1].lower() or "ended" in x[1].lower())]
 check("the Log says a process went down", bool(crash), [x[1] for x in e1.log][-12:])
 check("the places stay W01 and W02", sorted(e1.workers) == [1, 2], sorted(e1.workers))
+wait(lambda: e1.verified(), 60)
 win._refresh_cards()
 card = win.cards[e1]
-check("its card is red, and says why", jk.C["failed"] in card.styleSheet() and "crashed" in card.toolTip(),
+check("done and every frame checked after the crash: the card is green", e1.verified() and jk.C["done"] in card.styleSheet(),
+      (e1.verified(), card.styleSheet()))
+check("its tooltip says Nuke crashed and the frames are fine", "crashed 1 time" in card.toolTip() and "passes the check" in card.toolTip(),
+      card.toolTip())
+some = e1.frames[min(e1.frames)]
+keep = some.checks
+some.checks = {}  # as with Check frames when a render ends off: nothing says the files are whole
+win._refresh_cards()
+check("a frame not checked: red, Nuke crashed", jk.C["failed"] in card.styleSheet() and "crashed" in card.toolTip(),
       (card.styleSheet(), card.toolTip()))
+some.checks = keep
+some.state = "bad"
+win._refresh_cards()
+check("a broken frame: red", jk.C["failed"] in card.styleSheet() and "broken" in card.toolTip(), card.toolTip())
+some.state = "done"
+win._refresh_cards()
 ok_card = win.cards[e]
 check("a render with no error stays green", jk.C["done"] in ok_card.styleSheet() and not ok_card.toolTip(),
       (ok_card.styleSheet(), ok_card.toolTip()))

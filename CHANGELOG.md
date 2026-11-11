@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.8 — 2026-11-11
+
+- A render where Nuke crashed but that ended Done with every frame on disk and passing the check (a movie: complete and usable) shows its card green again. The tooltip says Nuke crashed and the chunk rendered again. A crash only costs that chunk: its half-written frame is deleted and the rest renders again. While it renders, or with a frame broken, not rendered or not checked (Check frames when a render ends off), the card stays red.
+- `test_robust` checks green, and red with an unchecked or a broken frame (0.99.7 fails it).
+
 ## 0.99.7 — 2026-11-10
 
 - The manuals (Czech, English, German, Spanish, Polish, Russian; 19 pages each) are up to date for 0.99.7: Reload Nuke (Never, When memory is full, After every chunk) and its State and timeline texts, Remove process, Close after this chunk on a paused or closing process, the slate as the frame before the Framerange, the Write column in System, the red card on errors, and Test this script with Reload Nuke Rule, Frames / s, Reloads, Winner test and Winner Whole Shot. No longer called alpha. Screenshots taken again; the Test table shot is as wide as all its columns. JKrender itself is unchanged.
