@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.11 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.12 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.11"
+APP_VERSION = "0.99.12"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -89,6 +89,12 @@ SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU used", "RAM",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay within 5 % of its limit before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
+# A card so full the Nuke processes stall: from this VRAM % on (or the limit, if lower) JKrender looks for it, also under
+# the limit. Stalled = every process rendering a frame has used less than STALL_CPU of a core for STALL_CPU_SECS and 2 x the
+# usual frame time (they wait for the card), or no frame finished for 4 x the usual frame time (at least a minute).
+STALL_VRAM = 90.0
+STALL_CPU = 0.1
+STALL_CPU_SECS = 30
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 # A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
 SOUNDS = {"done_v4": (1.6, ((0.00, 523.25, 1.10, 0.07), (0.00, 1046.50, 0.50, 0.06), (0.11, 783.99, 1.20, 0.07), (0.11, 1567.98, 0.50, 0.06),
@@ -2709,6 +2715,7 @@ class RenderManager:
         self.gpu_mem = {}  # pid -> (GPU %, VRAM bytes)
         self._vram_checked = 0.0
         self._last_vram_kill = 0.0
+        self._cpu_idle_since = None
 
     @property
     def max_renders(self):
@@ -3046,20 +3053,6 @@ class RenderManager:
                     self._vram_lowered_at = pct
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
-            stalled = self._vram_stalled(now)
-            if stalled and live > 1 and now - self._last_vram_kill > 30 and now - self._last_kill > 5:
-                # The card is full and no process finishes a frame: Nuke falls back to the CPU and they all wait. One waiting
-                # to be replaced after its chunk never gets there, and neither does one to close after its chunk.
-                running = [(e, w) for e in self.engines for w in e.workers.values()
-                           if w.gpu and w.state in ("loading", "idle", "busy")]
-                if len(running) > 1:
-                    e, w = self._close_first(running)
-                    e.note("!! VRAM %.0f %%: no frame finished for %.0f s, the card is full: %s closed now%s"
-                           % (pct, stalled, w.name, self._chunk_back(w)), "err")
-                    w.closed_why = "VRAM limit"
-                    e._kill(w, requeue=True, note="stopped")
-                    self._fell_vram()
-                    self._last_vram_kill = now
             if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
@@ -3073,7 +3066,7 @@ class RenderManager:
                     e._kill(w, requeue=True, note="stopped")
                     self._fell_vram()
                     self._last_vram_kill = now
-        elif self.vram_cap is not None:
+        elif self.vram_cap is not None and not self._stall_check(now, pct, limit):
             more = self._more_fit_vram(pct, limit, one)
             if more > 0:
                 # as many as fit under the limit at once, as with the RAM; one more would push it over again
@@ -3090,6 +3083,59 @@ class RenderManager:
                         self._note_running("VRAM is %.0f %%: up to %d Nuke processes" % (pct, self.vram_cap))
             else:
                 self._vram_ok_since = None
+        if pct >= limit or self.vram_cap is None:
+            self._stall_check(now, pct, limit)
+
+    def _stall_check(self, now, pct, limit):
+        """A card so full the processes stall (also under the limit, from STALL_VRAM): the last one started closes at
+        once, its chunk back to the queue, and the places go one down until the card has room. True when one closed.
+        Nuke waiting for a full card does not use the CPU and finishes no frame; Windows lends the card shared memory, so
+        the VRAM may stay just under the limit (94.8 % of 24 GB held three processes for 17 minutes)."""
+        if pct < min(limit, STALL_VRAM):
+            self._cpu_idle_since = None
+            return False
+        idle = self._cpu_stalled(now)
+        stalled = self._vram_stalled(now)
+        if not (idle or stalled) or now - self._last_vram_kill <= 30 or now - self._last_kill <= 5:
+            return False
+        # One waiting to be replaced after its chunk never gets there, and neither does one to close after its chunk.
+        running = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state in ("loading", "idle", "busy")]
+        if len(running) < 2:
+            return False
+        e, w = self._close_first(running)
+        if idle:
+            why = "every Nuke process has waited %.0f s for the card without using the CPU" % idle
+        else:
+            why = "no frame finished for %.0f s" % stalled
+        e.note("!! VRAM %.0f %%: %s, the card is full: %s closed now%s" % (pct, why, w.name, self._chunk_back(w)), "err")
+        w.closed_why = "VRAM limit"
+        e._kill(w, requeue=True, note="stopped")
+        self._fell_vram()
+        self._last_vram_kill = now
+        self._cpu_idle_since = None
+        cap = max(1, len(running) - 1)
+        if self.vram_cap is None or cap < self.vram_cap:
+            self.vram_cap = cap  # until the card has room: the usual way back
+            self._vram_ok_since = None
+            self._vram_lowered_at = pct
+            self._note_running("!! VRAM %.0f %%: the processes stalled, down to %d Nuke processes until it drops" % (pct, cap),
+                               "warn")
+        return True
+
+    def _cpu_stalled(self, now):
+        """Seconds every GPU process rendering a frame has used (almost) no CPU, once that is STALL_CPU_SECS and 2 x the
+        usual frame time; else 0."""
+        busy = [w for e in self.engines if e.state == "rendering" for w in e.workers.values()
+                if w.gpu and w.state == "busy"]
+        if len(busy) < 2 or any(getattr(w, "cpu", None) is None or w.cpu >= STALL_CPU for w in busy):
+            self._cpu_idle_since = None
+            return 0.0
+        if self._cpu_idle_since is None:
+            self._cpu_idle_since = now
+        idle = now - self._cpu_idle_since
+        secs = [x for w in busy for x in w.frame_secs[-10:]]
+        wait = max(STALL_CPU_SECS, 2 * statistics.median(secs)) if secs else STALL_CPU_SECS  # a long GPU frame is no stall
+        return idle if idle >= wait else 0.0
 
     def _vram_stalled(self, now):
         """Seconds since any GPU process of a running render finished a frame, when that is far longer than a frame takes

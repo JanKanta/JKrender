@@ -115,6 +115,52 @@ m._vram_checked = 0
 m._vram_guard()
 check("VRAM 96 %, a frame 20 s ago: none closes at once", e.killed == [], e.killed)
 
+say("Stalled just under the limit: the card full enough that the processes wait, VRAM 94.8 % with the limit at 95 %")
+
+
+def stalled(vram_pct, cpu=(1.0, 1.0, 1.0, 1.0), idle_for=None, last_frame=5, frame_secs=10.0):
+    m, e, ws = manager()
+    m.ram_percent = lambda: 40.0
+    m.vram_others = lambda: 1.0
+    m.gpu_mem = {w.proc.pid: (10, 5000 * 1024 ** 2) for w in ws.values()}
+    m.vram = [100, 24576 * vram_pct / 100, 24576.0]
+    m._last_vram_kill = m._last_kill = 0
+    e.started, e.last_frame_at = time.time() - 900, time.time() - last_frame
+    for w, c in zip(ws.values(), cpu):
+        w.cpu, w.frame_secs = c, [frame_secs]
+    if idle_for is not None:
+        m._cpu_idle_since = time.time() - idle_for
+    m._vram_checked = 0
+    m._vram_guard()
+    return m, e, ws
+
+
+m, e, ws = stalled(94.8, last_frame=300)
+check("no frame for 5 minutes at 94.8 %: the one started last closes", e.killed == ["W04"], e.killed)
+check("and the places go one down until the card has room", m.vram_cap == 3, m.vram_cap)
+check("the note says why", any("no frame finished" in t and "W04 closed now" in t for t in e.notes), e.notes)
+for v, want in ((93.0, 3), (60.0, None)):
+    m.vram = [60, 24576 * v / 100, 24576.0]
+    settle(m, m._vram_guard)
+    check("VRAM %.0f %%: places %s" % (v, want or "all back"), m.vram_cap == want, m.vram_cap)
+m, e, ws = stalled(94.8, cpu=(0.0, 0.02, 0.0, 0.01), idle_for=40)
+check("every process 40 s without CPU at 94.8 %, a frame 5 s ago: one closes", e.killed == ["W04"], e.killed)
+check("the note says they waited for the card", any("without using the CPU" in t for t in e.notes), e.notes)
+m, e, ws = stalled(94.8, cpu=(0.0, 0.02, 0.0, 0.01), idle_for=10)
+check("only 10 s without CPU: none closes", e.killed == [], e.killed)
+m, e, ws = stalled(94.8, cpu=(0.0, 3.5, 0.0, 0.0), idle_for=40)
+check("one process still uses the CPU: none closes", e.killed == [], e.killed)
+m, e, ws = stalled(94.8, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=40, frame_secs=60.0)
+check("frames take a minute (a long GPU frame): 40 s without CPU is no stall", e.killed == [], e.killed)
+m, e, ws = stalled(80.0, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=400, last_frame=600)
+check("VRAM 80 %: never a stall, whatever the CPU and the frames", e.killed == [] and m.vram_cap is None, (e.killed, m.vram_cap))
+m, e, ws = stalled(94.8, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=40)
+e.killed.clear()
+m._vram_checked = 0
+m._cpu_idle_since = time.time() - 40
+m._vram_guard()
+check("not a second one within 30 s", e.killed == [], e.killed)
+
 say("Fresh Nuke when memory is short: only after 30 s near the limit, never because a process waits")
 jk.FRESH_HOLD = 0.5
 m, e, ws = manager()

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.99.12 — 2026-11-11
+
+- A graphics card so full that the Nuke processes stall is found under the VRAM limit too, from 90 %. On a heavy comp, 4 x 8 sat at 94.8 % of 24 GB (limit 95 %) for 17 minutes: Windows lent the card shared memory, the three Nukes waited without using the CPU and no frame finished. JKrender only looked for that over the limit.
+- Stalled is: every process rendering a frame has used almost no CPU for 30 s (and for 2 x the usual frame time, so a long GPU frame is no stall), or no frame finished for 4 x the usual frame time (at least a minute). The one started last then closes at once, its chunk goes back to the queue, and the places go one down until the card has room, as with the limit.
+- Measured on that comp, 199 frames: plain Nuke 51.0 min, JKrender 4 x 8 27.1 min (17 of them stalled), JKrender 3 x 10 10.6 min (4.8 x faster).
+- `test_memory` checks it (0.99.11 fails it).
+
 ## 0.99.11 — 2026-11-11
 
 - ffmpeg comes with JKrender: on the first Nuke start, if the PC has no ffmpeg (on PATH or from WinGet), JKrender offers it in the same question as numpy and OpenEXR. It downloads the LGPL build from github.com/BtbN/FFmpeg-Builds (about 77 MB, 149 MB unpacked), checks it against the release's SHA-256 and keeps only ffmpeg, ffprobe and their DLLs, in `lib/ffmpeg`. So the movie check and the movie player work on any PC, and the JKrender folder carries them when copied. Said no: delete `lib/DECLINED_FFMPEG` to be asked again. An ffmpeg of the PC's own is used first, as before.

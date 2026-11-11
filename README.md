@@ -5,7 +5,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
 
 ![JKrender with four renders: three rendering side by side and one done, the frame preview, the timeline of every Nuke process and the system monitor](docs/screenshot.png)
 
-**Version 0.99.11** · Nuke 16 · Windows · free
+**Version 0.99.12** · Nuke 16 · Windows · free
 
 📘 Manual, 19 pages: [English](docs/JKrender_manual_en.pdf) · [Čeština](docs/JKrender_navod.pdf) · [Deutsch](docs/JKrender_manual_de.pdf) · [Español](docs/JKrender_manual_es.pdf) · [Polski](docs/JKrender_manual_pl.pdf) · [Русский](docs/JKrender_manual_ru.pdf)
 
