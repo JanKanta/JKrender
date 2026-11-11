@@ -19,7 +19,9 @@ def pick(engines):
 
 
 def all_done(engines, secs=150):
-    return wait(lambda: all(e.state == "done" for e in engines), secs)
+    """Done, and the checks at the end through: until then JKrender is reading the frames (Check frames, Check pixels),
+    and Windows will not let a frame being read be deleted (that made this test fail now and then)."""
+    return wait(lambda: all(e.state == "done" and e.pending_checks <= 0 and not e.pixels_pending for e in engines), secs)
 
 
 asked = []

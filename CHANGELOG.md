@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.9 — 2026-11-11
+
+- `test_render_again` no longer fails now and then: it deleted a frame while JKrender was still reading it for Check pixels right after the render (Windows does not let a file being read be deleted). It now waits for the checks at the end, as the bar shows them. JKrender holds no frame open: every file is free about 0.3 s after the render ends. JKrender itself is unchanged.
+
 ## 0.99.8 — 2026-11-11
 
 - A render where Nuke crashed but that ended Done with every frame on disk and passing the check (a movie: complete and usable) shows its card green again. The tooltip says Nuke crashed and the chunk rendered again. A crash only costs that chunk: its half-written frame is deleted and the rest renders again. While it renders, or with a frame broken, not rendered or not checked (Check frames when a render ends off), the card stays red.
