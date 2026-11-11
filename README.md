@@ -1,145 +1,81 @@
 # JKrender
 
-![JKrender rendering with 8 Nuke processes: render cards on top, chunks under the tiles, the EXR preview and frame list on the left, the Workers timeline and Settings on the right](docs/screenshot.png)
+**Fast local rendering for Nuke.** JKrender splits a render into chunks and renders them in several Nuke processes at once,
+on one PC, checks every frame it writes, and keeps the PC from running out of memory.
 
-Fast local rendering for Nuke. JKrender splits a render into chunks and renders them in several
-Nuke processes at once, each of which opens the script only once. Every finished frame is checked
-on disk.
+![JKrender with four renders: three rendering side by side and one done, the frame preview, the timeline of every Nuke process and the system monitor](docs/screenshot.png)
 
-**Version 0.99.9.**
+**Version 0.99.10** · Nuke 16 · Windows · free
 
-A manual with every button, panel and setting, 19 pages: [Czech](docs/JKrender_navod.pdf), [English](docs/JKrender_manual_en.pdf), [Deutsch](docs/JKrender_manual_de.pdf), [Español](docs/JKrender_manual_es.pdf), [Polski](docs/JKrender_manual_pl.pdf), [Русский](docs/JKrender_manual_ru.pdf).
+📘 Manual, 19 pages: [English](docs/JKrender_manual_en.pdf) · [Čeština](docs/JKrender_navod.pdf) · [Deutsch](docs/JKrender_manual_de.pdf) · [Español](docs/JKrender_manual_es.pdf) · [Polski](docs/JKrender_manual_pl.pdf) · [Русский](docs/JKrender_manual_ru.pdf)
+
+## Why
+
+- ⚡ **Faster than one Nuke.** Several Nuke processes render side by side, each opening the script only once. A heavy 4K comp rendered **1.9–2.6× faster** than one Nuke with all the threads, on the same PC.
+- 🧪 **Finds the best setup for your script.** *Test this script* tries processes × threads × cache on frames from the whole shot and tells you the fastest, and how much time each setup would cost on the whole shot.
+- ✅ **Every frame checked.** Missing, empty or cut-off files, black or one-colour frames, NaN and inf, duplicated frames, a wrong size or bit depth. A red or green card tells you at a glance.
+- 🛡️ **Never runs the PC out of memory.** RAM and VRAM limits start fewer processes when memory is short, and bring them back when it is free.
 
 ## What it does
 
-- **Chunks across processes.** By default the work is spread over 8 Nuke processes with 4 threads each
-  (Settings > Processes and Chunks). 4 × 8 can be faster for comps one Nuke already fills (Defocus, Denoise) and takes half the RAM.
-  Chunks go to whichever process is free and shrink towards the end, so none sits idle.
-- **Reload Nuke** (Settings > Processes and Chunks): a process closes after its chunk and a new one opens the
-  script again, with its RAM and VRAM back at the start. Some scripts make Nuke keep memory it no longer needs, chunk after chunk;
-  a reload leaves room for more processes, at the cost of a script load per chunk. *When memory is full* (default) reloads only
-  once the RAM or VRAM has stayed within 5 % of its limit for 30 s, one process at a time; *After every chunk* always; *Never* never.
-  Test this script takes it as a fourth field of Add test and Edit test and shows it in its own column, so you can compare.
-- **Several renders in one window.** Each Write is a card at the top. They share one budget of
-  Nuke processes, and up to 3 run side by side. Shift+click cards to pick several: Render, Pause and Stop then act on all of them.
-  Right of the cards: when all renders should be done and how long they have taken so far; once through, how long they took altogether.
-  With **Start next render when one ends** (Settings > General, off by default), the next card not yet started starts by itself when a render
-  finishes or fails. A render you stopped stays stopped and starts nothing.
-- **Render asks before it clears the cache of open Nukes.** With a Nuke open, Render asks whether it should free its buffers, playback cache and Blink cache, so the render has the memory. The render starts either way, and No is the default.
-  The disk cache stays. Resume, the next render starting by itself clear nothing. A Nuke has to be restarted once after an update to take part.
-- **Output check.**
-  - Image sequences, when the render ends (or is stopped), then the pixel check, or with Check frames: missing, empty or cut-off files (EXR, PNG, JPEG, DPX), and suspiciously small frames. Settings > General can turn the automatic check off.
-  - Pixels, when a render opens, when it ends or with Check pixels: black, empty or one-colour frames, frames exactly the same as another anywhere in the sequence, and a size, channels or bit depth unlike the rest, in EXR, PNG, JPEG, TIFF and DPX; in EXR also NaN and inf, and the compression. Other formats: only frames that are the same file. In the background, it only reports, and Render stops the check at opening (Settings > General, both on by default).
-  - Movies (MOV / MP4 / MXF): codec, profile, fps, resolution, timecode and frame count against the Write's settings.
-    The movie has a looping player with zoom.
-  - Rendered frames: a frame bar with Play and a slider under the preview, and an enlarged view over the panes.
-  - Output lists what is on disk: All has every frame rendered or found there, also one queued to render again (`on disk, queued again`) until the new one replaces it; Rendered only those rendered in the run now. Framerange shows every frame of the range.
-- **Delete** in Output removes all rendered frames (the default) or a frame range, after asking.
-- **Test this script** (Settings > Performance and Optimization): renders frames from 6 places spread over the whole shot (the same for every setup, a stretch of frames in a row at each; a shot with no more frames than that renders them all and says so) with a few
-  Processes x Threads x Cache setups made by Create tests from this PC (7 of them, from 1 process with all the threads to as many as the CPU, at least 4 threads each, and the RAM, at least 4 GB of cache each, take; each with its share of the threads and of the RAM limit), and any you add with Add test (right click on one: Edit test), in two rounds: Round 1 of 3 frames
-  a process for every setup, then Round 2: the two fastest (and any within 5 %) again with 20 frames (you can set how many). Frames per minute
-  are counted once the processes are going, each process's first frame and the start left out, as in a long render. It recommends the fastest.
-  The table shows each round's time, Frames / min and Frames / s, Winner test (how much longer each took than the fastest on the test's frames)
-  and Winner Whole Shot (how much longer the whole shot would take than with the fastest, in time and per cent),
-  the fastest setup in green and the next in orange; a click on a column sorts by it. The frames go to a test folder and are deleted; nothing changes unless you press
-  Use these settings. Tables stay in `~/.nuke/JKrender/settings/test_results`. A Write's render hooks do not run in a test, so it cannot write
-  to the real output; a frame that does not arrive in the test folder stops the test.
-- A render says so when processes keep closing for VRAM, and suggests fewer processes with more threads. It changes nothing by itself.
-- **Pause** freezes every Nuke mid-frame. **Stop** cleans up half-written frames and Nuke's temp files.
-- **Space** plays and stops the preview. It never presses a button, so it cannot stop a render.
-- **Workers**: a timeline of every process. **System**: CPU, RAM, disk, network, GPU, and each process
-  (CPU, RAM, GPU and VRAM). Right-click a process to pause, close, start it again or move it to another render (Work on).
-- **Add and remove processes while rendering**: right-click in System or on the Workers timeline. **Add process** starts one more; **Close after this chunk** lets a process finish its chunk and close, in any state (paused, closing for a limit); a closed one, one waiting to come back and an empty place have **Remove process**. Processes follows and stays at the new number. The RAM and VRAM limits still apply.
-- **Render data**: every render writes a report.json in its log folder with this PC's CPU, RAM and graphics card, the settings, speed, memory peaks, limit closes, how long Nuke took to start and the script to open, and the kinds of nodes in the script.
-- **Sound when a render ends** (Settings, on by default): one sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem. It comes when the checks that are on are through. A render you stopped stays silent.
-- **Framerange** (Settings > Job): the frames of the render picked at the top, like 1001-1100 or 1001-1010,1050. Every render has its own; empty goes back to what Nuke sent, and a new send from Nuke starts from its range again. Frames on disk stay where they are, and stay in Output marked `not in Framerange`.
-- **Slate frame**: on by default. Every render also renders the frame before its Framerange as the slate (1001-1020 renders 1000).
-- **Use GPU** (Settings, on by default): starts the Nuke processes with `--gpu`, so GPU nodes such as Kronos render on the
-  graphics card. A light 4K script with Kronos rendered 3x faster with identical frames. Every process takes its own VRAM, and the VRAM limit
-  (on, 95 %) keeps the card from filling: within 5 % of the limit the processes reload after their chunk (Reload Nuke);
-  at the limit fewer processes run. With room on the card nothing reloads.
-- **RAM limit** (on by default, 95 %): over the limit fewer Nuke processes run, so Windows never swaps.
-  The Cache setting is Nuke's cache limit per process (`-c`); a process takes more than that.
-- **Starting and falling.** A render starts all its processes at once. Over a limit, the process started last closes first:
-  at once if it is still opening the script, otherwise after its chunk. Only when the card is nearly full (97 %) does the process taking the most VRAM close at once. A process that fell or closed comes back by itself
-  when it fits: the RAM left under the limit, less a 2 % margin and what the running processes are still going to take, must hold
-  one process of the size seen this run (before that, its cache + 4 GB), and there must be room in the VRAM. They come back one at a time,
-  each after the one before has rendered a frame. After an overload the next waits 5 s and its memory has to stay free for 5 s, then 30, 60 and 150 s if it happens again within 10 minutes. Meanwhile the State column of the System table says what it waits for, like wait: VRAM 75 → 69 % (now 75 %, one more process fits under 69 %); its tooltip says why.
-- **After a crash.** If JKrender goes down, its cards come back the next time it opens (the next render sent from Nuke).
-  What is on disk counts, and Nuke processes left behind are ended. A render that was going waits for Render.
-  Closing the window properly brings nothing back.
+**Rendering**
+- One Write (or a Group with Writes) per card; up to 3 renders side by side, sharing one budget of processes
+- Chunks go to whichever process is free and get smaller towards the end, so all processes finish together
+- Image sequences (EXR, PNG, JPEG, TIFF, DPX) and movies (MOV, MP4, MXF)
+- Slate frame, your own frame range, Render again (only the missing frames or all of them)
+- Use GPU: GPU nodes such as Kronos render on the graphics card
+- Start the next render by itself when one ends
 
-## Files
+**Control while it renders**
+- Pause freezes every Nuke mid-frame; Stop cleans up half-written frames and Nuke's temp files
+- Add or remove processes on the fly, or move a process to another render
+- Reload Nuke: a process can reopen the script after its chunk to give back the memory Nuke holds on to
+- When will everything be done: a clock for all renders together
 
-| File | Runs in | Role |
-|---|---|---|
-| `JKrender.py` | Nuke's own Python (PySide6 and psutil) | the window and the scheduler |
-| `jkrender_worker.py` | each Nuke process (`nuke -t`) | opens the script once and renders the chunks it is sent |
-| `JKrender_NukeIntegration.py` | Nuke GUI | the **JKrender** menu (Ctrl+Alt+R) |
-| `menu.py` | Nuke GUI | adds the menu when this folder is on Nuke's plugin path |
-| `jkrender_deps.py` | Nuke GUI and the window | fetches numpy and OpenEXR for the EXR preview, and finds them |
-| `INSTALL.txt` | | the install steps in short |
-| `lib/<platform>-cp<version>/` | the window | numpy and OpenEXR, fetched on the first Nuke start (not in git) |
-| `log/` | | one folder per render: script snapshot, job file and the log of every Nuke process (not in git) |
-| `tests/` | Nuke's Python | the tests, see below |
+**Checking the output**
+- Frame check when a render ends, pixel check in the background
+- Movie check: codec, profile, fps, resolution, timecode and frame count against the Write
+- Preview with zoom, a frame player, a looping movie player
+- A red card on any error, a sound when a render finishes or fails
 
-## Tests
+**Seeing what happens**
+- Workers: a timeline of every Nuke process and its chunks
+- System: CPU, RAM, disk, network, GPU and VRAM, for the PC and for each process
+- A log per process, and a report of every render (speed, memory, settings)
 
-```
-python tests/run_tests.py            # all, in about 2 minutes
-python tests/run_tests.py disk fresh # only tests whose name has one of these words
-python tests/run_tests.py --real     # also a small render and Test this script with the real Nuke
-```
+**Safe when things go wrong**
+- A Nuke that crashes: its chunk renders again, and the render ends whole
+- JKrender itself going down: the renders come back the next time it opens
+- A full graphics card or RAM: processes close one by one and come back when there is room
 
-Each test runs JKrender offscreen and silent, in a home folder of its own under `tests/_runs/`, so it never touches your settings,
-renders or open Nukes. Renders run on **FakeNuke** (`tests/fakenuke/FakeNuke.cs`, built on the first run with the C# compiler that
-comes with Windows): it speaks the worker's protocol and writes PNG frames in a fraction of a second, without a licence, and can
-crash mid-chunk on purpose. Nuke's Python is found under `C:/Program Files/Nuke*` (or set `NUKE_DIR`). `--real` needs a Nuke licence
-and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tests against another copy, an older version for one.
+## Install
 
-| Test | What it checks |
-|---|---|
-| `test_disk_checks` | a render opening with frames whole, missing, cut off, empty; Check frames says the same; frames checked when a render ends, then the pixels; Stop |
-| `test_render_again` | Render again on one and on several renders, finished or stopped: Only missing, All frames again, Cancel |
-| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, Reload Nuke after 30 s, the State text |
-| `test_fresh_nuke` | Reload Nuke: Never, When memory is full, After every chunk; same places, State, timeline |
-| `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
-| `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
-| `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the Write column in System |
-| `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
-| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a green card after a crash once every frame is checked, red with a broken or unchecked frame |
-| `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
-| `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |
-
-## Setup
-
-1. Copy the whole `JKrender` folder into `~/.nuke/` (Windows: `%USERPROFILE%\.nuke\`).
-   Downloaded from GitHub as a zip, the folder is called `JKrender-main`: rename it to `JKrender`.
-2. Add one line to `~/.nuke/init.py`, creating the file if it is not there:
+1. Copy the `JKrender` folder into `~/.nuke/` (Windows: `%USERPROFILE%\.nuke\`). A zip from GitHub gives `JKrender-main`: rename it to `JKrender`.
+2. Add one line to `~/.nuke/init.py` (create the file if it is not there):
 
    ```python
    nuke.pluginAddPath("./JKrender")
    ```
 
-3. Restart Nuke.
-   - On the first start, JKrender asks to download numpy and OpenEXR for the EXR preview (about 15 MB).
-   - They download in the background, with Nuke's own python, into `lib/win_amd64-cp311` (for Nuke 16).
-   - If you say no, rendering still works and you are not asked again.
-   - Delete `lib/DECLINED` to be asked again on the next start.
+3. Restart Nuke. On the first start JKrender offers to download numpy and OpenEXR (about 15 MB) for the EXR preview; it renders without them too.
 
-In Nuke, select Writes (or Groups that contain Writes) and choose **JKrender → Render Selected Write(s)**.
+Then select Writes in Nuke and choose **JKrender → Render Selected Write(s)** (**Ctrl+Alt+R**).
 
-The window runs in Nuke's own Python, which already has PySide6 and psutil, so nothing else needs installing.
+<details>
+<summary>More about installing</summary>
 
+- The window runs in Nuke's own Python, which already has PySide6 and psutil: nothing else needs installing.
 - **Behind a firewall:** set `JKRENDER_NO_FETCH=1` and fill the folder by hand:
+  `"C:\Program Files\Nuke16.0v9\python.exe" -m pip install --only-binary=:all: --target lib\win_amd64-cp311 numpy OpenEXR`
+- Said no to the download? Delete `lib/DECLINED` to be asked again.
+- **Another Python:** set `JKRENDER_PYTHON`; it needs `pip install PySide6 psutil numpy OpenEXR`.
+- Movie details and the movie player need `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
+- Render logs go to `log/` next to `JKrender.py` (deleted after 15 days); settings are per user in `~/.nuke/JKrender/settings`.
 
-  ```
-  "C:\Program Files\Nuke16.0v9\python.exe" -m pip install --only-binary=:all: --target lib\win_amd64-cp311 numpy OpenEXR
-  ```
+</details>
 
-- **Another Python:** set `JKRENDER_PYTHON`. That Python needs `python -m pip install PySide6 psutil numpy OpenEXR`.
+## For developers
 
-Optional: for movie details and the movie player, put `ffprobe` / `ffmpeg` on PATH (`winget install ffmpeg`).
-
-Renders and logs go to `log/` next to `JKrender.py`; folders older than 15 days are deleted when JKrender opens (Settings). If that folder is read-only, they go to `~/.nuke/JKrender/log/`.
-Settings and state are per user, in `~/.nuke/JKrender/settings` (`settings.json`, `queue.json`, `sounds/`, `test_results/`). JKrender moves them there from `~/.jkrender` (before 0.93) or `~/.nuke/JKrender` (0.93) the first time it opens.
+`JKrender.py` is the window and the scheduler, `jkrender_worker.py` runs inside each Nuke process, `JKrender_NukeIntegration.py` and `menu.py` add the menu.
+The tests run JKrender offscreen with a stand-in Nuke, no licence needed: `python tests/run_tests.py` (about 2 minutes), see [tests/README.md](tests/README.md).
+What changed in each version: [CHANGELOG.md](CHANGELOG.md).

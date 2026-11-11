@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.10 — 2026-11-11
+
+- The GitHub page is a short overview: what JKrender is good for and what it does, in points, install in three steps; the details are in the manuals. The test details moved to `tests/README.md`.
+- A new screenshot with four renders: three rendering side by side and one done (`docs/manual/hero.py` takes it with the stand-in Nuke).
+- JKrender itself is unchanged.
+
 ## 0.99.9 — 2026-11-11
 
 - `test_render_again` no longer fails now and then: it deleted a frame while JKrender was still reading it for Check pixels right after the render (Windows does not let a file being read be deleted). It now waits for the checks at the end, as the bar shows them. JKrender holds no frame open: every file is free about 0.3 s after the render ends. JKrender itself is unchanged.
