@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.32 — 2026-11-14
+
+- Kill at closes the right process: while some processes are starting (no frame rendered yet, at the start of a render or a fresh Nuke after a reload), the least loaded of those, as it has done no work yet; once all render, the one holding the most RAM or VRAM, so one close frees enough. Before, always the one started last, often the smallest.
+- `test_memory` checks it (0.99.31 fails it).
+
 ## 0.99.31 — 2026-11-14
 
 - State for Reload Nuke shows the threshold, not the reading: **busy → reload (VRAM over 95 %)** (or RAM, or both).

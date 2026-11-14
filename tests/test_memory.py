@@ -18,6 +18,7 @@ class W:
     def __init__(s, i, base=4000.0):
         s.name, s.id, s.proc, s.gpu, s.state, s.pinned = "W%02d" % i, i, P(100 + i), True, "busy", False
         s.rss, s.frames_here, s.vram_base, s.spawned = 20.0, 10, base, time.time() - 900 + i
+        s.rss_base = None
         s.retire = s.handover = s.leave = False
         s.chunk, s.closed_why, s.frame_secs, s.frame_ends = None, None, [10.0], [time.time()]
 
@@ -105,10 +106,10 @@ m.gpu_mem = {w.proc.pid: (10, 2000 * 1024 ** 2) for w in ws.values()}
 m.gpu_mem[ws[1].proc.pid] = (10, 9000 * 1024 ** 2)
 m._last_vram_kill = m._last_kill = 0
 m._vram_guard()
-check("VRAM 98 %: W04 (started last) closed now, not W01 (the largest)", e.killed == ["W04"], e.killed)
-check("State says closed (VRAM 98 %), no 'VRAM limit'", ws[4].closed_why == "VRAM 98 %", ws[4].closed_why)
+check("VRAM 98 %, all rendering: W01 (the largest, 9 GB) closed now", e.killed == ["W01"], e.killed)
+check("State says closed (VRAM 98 %), no 'VRAM limit'", ws[1].closed_why == "VRAM 98 %", ws[1].closed_why)
 check("and its place waits: 3 places", m.vram_cap == 3, m.vram_cap)
-ws[4].state = "busy"
+ws[1].state = "busy"
 e.killed.clear()
 e.started, e.last_frame_at = time.time() - 600, time.time() - 300
 m._last_vram_kill = m._last_kill = 0
@@ -154,6 +155,36 @@ check("VRAM 98.5 %, Kill at 99 %: none closes at once", e.killed == [], e.killed
 m, e, ws = nearly_full(vram=97.5, kill_vram=97)
 check("VRAM 97.5 %, Kill at 97 %: W04 closes at once", e.killed == ["W04"], e.killed)
 check("pct_kill: RAM 98, VRAM 98 by default", (jk.pct_kill({}, "RAM"), jk.pct_kill({}, "VRAM")) == (98.0, 98.0))
+
+say("Kill at while processes start: the least loaded of the starting ones; once all render: the one holding the most")
+m, e, ws = manager()
+m.vram_others = lambda: 1.0
+m.ram_percent = lambda: 40.0
+m.vram = [50, 24576 * 0.985, 24576.0]
+m.gpu_mem = {ws[1].proc.pid: (10, 9 * 1024 ** 3), ws[2].proc.pid: (10, 6 * 1024 ** 3),
+             ws[3].proc.pid: (10, 1 * 1024 ** 3), ws[4].proc.pid: (10, 3 * 1024 ** 3)}
+ws[3].frames_here = ws[4].frames_here = 0  # W03 and W04 have not rendered a frame yet
+m._last_vram_kill = m._last_kill = 0
+m._vram_checked = 0
+m._vram_guard()
+check("VRAM 98.5 %, W03 and W04 starting: W03 (the least loaded starting one) closes, not W01", e.killed == ["W03"], e.killed)
+m, e, ws = manager()
+m.vram_others = lambda: 1.0
+m.vram = [10, 24576 * 0.3, 24576.0]
+m.ram_percent = lambda: 98.5
+for w, gb in zip(ws.values(), (12.0, 30.0, 14.0, 13.0)):
+    w.rss = gb
+m._last_vram_kill = m._last_kill = 0
+m._ram_checked = 0
+m._ram_guard()
+check("RAM 98.5 %, all rendering: W02 (30 GB, the most) closes", e.killed == ["W02"], e.killed)
+ws[2].state = "busy"
+e.killed.clear()
+ws[1].frames_here = ws[4].frames_here = 0
+m._last_vram_kill = m._last_kill = 0
+m._ram_checked = 0
+m._ram_guard()
+check("RAM 98.5 %, W01 and W04 starting: W01 (12 GB, the least loaded starting) closes", e.killed == ["W01"], e.killed)
 
 say("Stalled just under the limit: the card full enough that the processes wait, VRAM 94.8 % with the limit at 95 %")
 

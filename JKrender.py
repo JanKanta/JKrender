@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.31 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.32 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.31"
+APP_VERSION = "0.99.32"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2996,6 +2996,17 @@ class RenderManager:
         the script or just started goes before one with work behind it. One you started by hand only when nothing else is left."""
         return max(running, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
 
+    def _kill_pick(self, running, name):
+        """Of (engine, worker) pairs, the one Kill at closes at once. While some are starting (no frame rendered yet: the
+        start of a render, or a fresh Nuke after a reload), the least loaded of those: it has done no work yet. Once all
+        render, the one holding the most RAM or VRAM: it frees the most at once, so one close is enough. One you started
+        by hand only when nothing else is left; even sizes go to the one started last."""
+        pool = [ew for ew in running if not ew[1].pinned] or running
+        starting = [ew for ew in pool if not ew[1].frames_here]
+        if starting:
+            return min(starting, key=lambda ew: (self._held(ew[1], name)[0], -ew[1].spawned))
+        return max(pool, key=lambda ew: (self._held(ew[1], name)[0], ew[1].spawned))
+
     @staticmethod
     def _chunk_back(w):
         return ", its chunk goes back to the queue" if w.chunk is not None else ""
@@ -3018,7 +3029,7 @@ class RenderManager:
                 # Nearly out of memory: one process closes now, mid-frame, and its place waits until it fits.
                 running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
                 if running:
-                    e, w = self._close_first(running)
+                    e, w = self._kill_pick(running, "RAM")
                     e.note("!! RAM %.0f %% (Kill at): %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
                     w.closed_why = "RAM %.0f %%" % pct
                     e._kill(w, requeue=True, note="stopped")
@@ -3096,8 +3107,8 @@ class RenderManager:
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
                 # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
                 if len(running) > 1:
-                    # as with the RAM: the last one started, it has the least work to lose. By hand last.
-                    e, w = self._close_first(running)
+                    # as with the RAM: while some are starting the least loaded of them, else the one holding the most
+                    e, w = self._kill_pick(running, "VRAM")
                     e.note("!! VRAM %.0f %% (Kill at): %s (%.1f GB) closed now%s"
                            % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM %.0f %%" % pct
