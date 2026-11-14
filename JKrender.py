@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.47 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.48 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.47"
+APP_VERSION = "0.99.48"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1964,7 +1964,8 @@ class RenderEngine:
             first = min(seen.setdefault(i, now) for i in refresh)
             if now - first < RELOAD_SETTLE:
                 return False
-            over = m.memory_over()
+            # the last one always starts again: with none running the render would stand still for good
+            over = m.memory_over() if m.live_count() > 0 else []
             if over:
                 for i in refresh:
                     self.refresh_ids.remove(i)
@@ -6100,19 +6101,23 @@ class MainWindow(QtWidgets.QMainWindow):
             "When memory is full: only once the RAM or VRAM has stayed\n"
             "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
             "After every chunk: always. Test this script can tell whether it pays for a script.")
+        note(perf, "When memory is full: the process holding the most reloads, once RAM or VRAM stays over Reload Nuke at. "
+                   "After every chunk: every process, every chunk.")
         self.c_reload_after = QtWidgets.QComboBox()
-        for key, text in (("frame", "The frame"), ("chunk", "The chunk")):
+        for key, text in (("frame", "Frame"), ("chunk", "Chunk")):
             self.c_reload_after.addItem(text, key)
         self.c_reload_after.setCurrentIndex(max(0, self.c_reload_after.findData(self.settings.get("reload_after", "frame"))))
         self.c_reload_after.currentIndexChanged.connect(
             lambda i: self._save_setting("reload_after", self.c_reload_after.itemData(i)))
         row(perf, "Reload after", [self.c_reload_after],
             "When a reload for memory (When memory is full, the 1.3 rule) happens.\n"
-            "The frame: right after the frame the process just finished and wrote; the rest of its chunk goes back to the queue\n"
+            "Frame: right after the frame the process just finished and wrote; the rest of its chunk goes back to the queue\n"
             "for the others. Nothing is lost, and the memory is free within a frame.\n"
-            "The chunk: once its whole chunk is done; with long chunks that can take minutes, the frames of a chunk stay together\n"
+            "Chunk: once its whole chunk is done; with long chunks that can take minutes, the frames of a chunk stay together\n"
             "in one process (a node that reads the frames around it finds them in its cache).\n"
             "After every chunk is always after the chunk.")
+        note(perf, "Frame: right after the frame it is on, the rest of its chunk goes to the others; nothing is lost. "
+                   "Chunk: once its chunk is done, the chunk's frames stay in one process.")
         self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         reload_parts = []
         for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):

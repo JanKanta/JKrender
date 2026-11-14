@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.48 — 2026-11-14
+
+- Fix: with the memory staying over Reload Nuke at, reloads after a frame closed the processes one by one and none started again, so the render stood still for good (0.99.46, 0.99.47). The last process now always starts again.
+- Reload after reads **Frame** and **Chunk**; Reload Nuke and Reload after have a grey note under them saying what they do.
+- `test_fresh_nuke` (the render ends whole with the memory over Reload Nuke at; 0.99.47 stands still) and `test_settings` check it.
+
 ## 0.99.47 — 2026-11-14
 
 - State says a reload without when: **busy → reload (VRAM over 95 %)**. Settings › Reload after decides when it goes; the Log and the chunk's tooltip say it.

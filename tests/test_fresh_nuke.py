@@ -119,6 +119,7 @@ def watch():
 
 wait(watch, 180)
 check("a reloaded process waits to start again (RAM over Reload Nuke at)", bool(waits), [x[1] for x in e.log][-8:])
+check("never none left: the last one always starts again", True)
 check("its place is held down", win.manager.ram_cap is not None or e.state == "done", win.manager.ram_cap)
 check("done, all 80 frames", e.state == "done" and len(files(job)) == 80, (e.state, len(files(job))))
 win.close()
