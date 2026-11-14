@@ -18,7 +18,16 @@ def in_refresh(e):
     return n
 
 
-for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none", 2), ("short", 91.0, "some", 4),
+say("No Never any more: the menu has When memory is full and After every chunk; Never saved before reads When memory is full")
+check("menu", [k for k, _ in jk.FRESH_MODES] == ["short", "always"], jk.FRESH_MODES)
+raw = json.loads(jk.SETTINGS_FILE.read_text(encoding="utf-8"))
+raw.update({"fresh_after_chunk": "off", "test_setups": [[2, 2, 2, "off"], [3, 4, 5, "always"]]})
+jk.SETTINGS_FILE.write_text(json.dumps(raw), encoding="utf-8")
+old = jk.read_settings()
+check("Never saved before: When memory is full", old["fresh_after_chunk"] == "short", old["fresh_after_chunk"])
+check("Test this script setups with Never: When memory is full", old["test_setups"] == [[2, 2, 2, "short"], [3, 4, 5, "always"]],
+      old["test_setups"])
+for mode, ram, want, procs in (("short", 40.0, "none", 2), ("short", 91.0, "some", 4),
                                ("always", None, "some", 2)):
     say("Fresh Nuke %s%s, %d processes" % (mode, ", RAM %.0f %%" % ram if ram else "", procs))
     job = make_job("r_%s_%s" % (mode, int(ram or 0)), 1001, 1024 if procs == 2 else 1048,
@@ -69,7 +78,8 @@ job = make_job("limit_one", 1001, 1040, env={"FAKE_SECS": "1.0"})
 win = jk.MainWindow(job)
 win.s_workers.setValue(4)
 e = win.engine
-win.c_fresh.setCurrentIndex(win.c_fresh.findData("off"))
+win.c_fresh.setCurrentIndex(win.c_fresh.findData("short"))
+win.manager.ram_percent = lambda: 40.0
 win._start()
 wait(lambda: sum(1 for w in e.workers.values() if w.state == "busy") == 4, 60)
 win.manager.ram_cap = 2

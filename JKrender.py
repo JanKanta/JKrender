@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.40 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.41 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.40"
+APP_VERSION = "0.99.41"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -79,8 +79,8 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
 # Reload Nuke (setting fresh_after_chunk): a process closes after its chunk and a new one opens the script again, with its
 # RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
-FRESH_MODES = (("off", "Never"), ("short", "When memory is full"), ("always", "After every chunk"))
-FRESH_SHORT = {"off": "never", "short": "memory full", "always": "every chunk"}  # the Reload Nuke Rule column of Test this script
+FRESH_MODES = (("short", "When memory is full"), ("always", "After every chunk"))  # no Never since 0.99.41
+FRESH_SHORT = {"short": "memory full", "always": "every chunk"}  # the Reload Nuke Rule column of Test this script
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
@@ -184,6 +184,12 @@ def read_settings():
         pass
     settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
     settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
+    if settings.get("fresh_after_chunk") not in ("short", "always"):  # 0.99.41: no Never; the memory rules need it
+        settings["fresh_after_chunk"] = "short"
+    setups = settings.get("test_setups")
+    if isinstance(setups, list):  # Test this script setups saved with Never: When memory is full
+        settings["test_setups"] = [list(x[:3]) + ["short"] if isinstance(x, (list, tuple)) and len(x) > 3 and x[3] == "off"
+                                   else x for x in setups]
     if "ram_limit" in settings or "vram_limit" in settings:  # 0.99.30: no Memory Limit; Reload Nuke at took its place
         settings.pop("ram_limit", None)
         settings.pop("vram_limit", None)
@@ -5975,7 +5981,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
             "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: a reload leaves room for more processes.\n"
             "Each costs one script load.\n\n"
-            "Never: a process renders chunk after chunk.\n"
             "When memory is full: only once the RAM or VRAM has stayed\n"
             "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
             "After every chunk: always. Test this script can tell whether it pays for a script.")

@@ -4,10 +4,11 @@ process does not come back."""
 from common import *
 from PySide6 import QtCore, QtWidgets
 
-jk, app = start({"processes": 4, "threads": 2, "ram": 2, "chunk_auto": False, "chunk_size": 6, "fresh_after_chunk": "off"})
+jk, app = start({"processes": 4, "threads": 2, "ram": 2, "chunk_auto": False, "chunk_size": 6})
 job = make_job("sh010", 1001, 1060, env={"FAKE_SECS": "0.5"})
 win = jk.MainWindow(job)
 e, m = win.engine, win.manager
+m.ram_percent = lambda: 40.0  # whatever this PC is doing: no reload for memory gets in the way here
 win._start()
 wait(lambda: sum(1 for w in e.workers.values() if w.state == "busy") >= 4, 60)
 

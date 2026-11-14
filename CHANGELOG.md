@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.41 — 2026-11-14
+
+- Reload Nuke has no **Never** any more: When memory is full and After every chunk. Never switched off the gentle memory rules (the reload over Reload Nuke at), leaving only Kill at. Settings and Test this script setups saved with Never read When memory is full.
+- `test_fresh_nuke` checks it (0.99.40 fails it).
+
 ## 0.99.40 — 2026-11-14
 
 - A place closed for memory (Kill at, GPU frozen) comes back the way a reload does: as soon as the RAM and the VRAM are under Reload Nuke at (95 %). It no longer waits until one more whole process fits under it (W04 waited for the RAM to drop under 74 % and had to be started by hand). One place at a time: the next only once the last one back has rendered a frame. Reload Nuke and Kill at catch it if it grows too big.

@@ -62,14 +62,14 @@ rules = [(t.table.item(r, 0).text(), t.table.item(r, t.C_RULE).text()) for r in 
 check("the table says it, Reload Nuke Rule right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
       and t.table.horizontalHeaderItem(1).text() == "Reload Nuke Rule", rules)
 index = t.setups.index((2, 2, 2, "always"))
-QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "off"))
+QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "short"))
 t._edit_setup(index)
-check("Edit test: now never fresh", (2, 2, 2, "off") in t.setups and (2, 2, 2, "always") not in t.setups, t.setups)
+check("Edit test: now when memory is full", (2, 2, 2, "short") in t.setups and (2, 2, 2, "always") not in t.setups, t.setups)
 saved = json.load(open(SETTINGS_DIR + "/settings.json", encoding="utf-8")).get("test_setups")
-check("kept for next time", [2, 2, 2, "off"] in saved, saved)
+check("kept for next time", [2, 2, 2, "short"] in saved, saved)
 
-say("Both rounds with FakeNuke: never fresh against fresh every chunk")
-t.setups, t.added = [(2, 2, 2, "off"), (2, 2, 2, "always")], set()
+say("Both rounds with FakeNuke: when memory is full against fresh every chunk")
+t.setups, t.added = [(2, 2, 2, "short"), (2, 2, 2, "always")], set()
 t._fill_table()
 t.start()
 wait(lambda: not t.timer.isActive() and t.run is None, 400)
@@ -79,8 +79,8 @@ check("both setups went through Round 2", all(v[t.C_STATE].startswith("Round 2")
       {k: v[t.C_STATE] for k, v in rows.items()})
 check("a winner", getattr(t, "best", None) in t.setups, getattr(t, "best", None))
 fresh = {k: v[t.C_FRESH] for k, v in rows.items()}
-check("Fresh Nuke column: none never fresh, some fresh every chunk",
-      fresh.get("never") == "0" and int(fresh.get("every chunk") or 0) > 0, fresh)
+check("Reloads column: some after every chunk, fewer when memory is full",
+      "memory full" in fresh and int(fresh.get("every chunk") or 0) > int(fresh.get("memory full") or 0), fresh)
 check("the test folder is gone", not os.path.exists(str(jk.TEST_DIR)))
 check("the render's own frames untouched", files(job) == [])
 best = t.best

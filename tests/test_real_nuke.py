@@ -62,7 +62,7 @@ check("the pixels too", bool(log_lines(e, "Pixels checked")) and not any(jk.pixe
 
 say("Test this script with the real Nuke: 1 x 4 against 2 x 4")
 t = jk.ScriptTest(win, e)
-t.setups, t.added = [(1, 4, 2, "off"), (2, 4, 2, "off")], set()
+t.setups, t.added = [(1, 4, 2, "short"), (2, 4, 2, "short")], set()
 t._fill_table()
 t.start()
 wait(lambda: not t.timer.isActive() and t.run is None, 900)
