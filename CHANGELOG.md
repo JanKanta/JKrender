@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.19 — 2026-11-14
+
+- **Reload Nuke at** in Settings › Performance and Optimization: two fields side by side, RAM and VRAM, 90 % each by default. Once the RAM or VRAM stays at or over it for 30 s, Reload Nuke (When memory is full) reloads the processes after their chunk, one at a time. Before, it was always 5 % under the limit. Reset puts them back to 90 %.
+- `test_memory` checks a lower value moves the threshold, `test_settings` that Reset restores it and the VRAM limit to 95 % (0.99.18 fails it).
+
 ## 0.99.18 — 2026-11-14
 
 - After a process closes for RAM or VRAM, the next try to bring a place back is always 5 s later. The wait no longer grows to 30, 60 and 150 s when it happens again within 10 minutes. A place still comes back only once the memory has room and stays free for 5 s.

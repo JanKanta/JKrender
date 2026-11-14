@@ -242,6 +242,15 @@ check("RAM drops: VRAM only", short(70, 93) == "VRAM 93 %", m.memory_short())
 check("both low: nothing", short(70, 50) == "")
 m.ram_cap = m.vram_cap = 3
 check("a process waiting to come back is no reason by itself", m.memory_short() == "", m.memory_short())
+m.ram_cap = m.vram_cap = None
+say("Reload Nuke at set lower (Settings): RAM 80 %, VRAM 85 %")
+m.settings.update({"reload_ram": 80, "reload_vram": 85})
+short(70, 50)
+check("RAM 79 %: nothing", short(79, 50, 0.6) == "")
+check("RAM 82 % held: RAM, under the old 90 %", short(82, 50, 0.6) == "RAM 82 %", m.memory_short())
+check("VRAM 86 % held too: both", short(82, 86, 0.6) == "RAM 82 %, VRAM 86 %", m.memory_short())
+m.settings.update({"reload_ram": 90, "reload_vram": 90})
+check("back to 90 %: VRAM 86 % is no reason", short(70, 86, 0.6) == "", m.memory_short())
 
 say("State says what the decision is: the target with the room kept for processes still starting")
 GB = 1024 ** 3

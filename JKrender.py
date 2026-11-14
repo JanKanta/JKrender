@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.18 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.19 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.18"
+APP_VERSION = "0.99.19"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -73,7 +73,7 @@ SLOW_START = 15  # seconds of Nuke starting before the script opens that are wor
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
-                    "vram_guard": True, "vram_limit": 95,
+                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
@@ -87,7 +87,7 @@ SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked 
 SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
 SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
-FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay within 5 % of its limit before processes get a fresh Nuke after their chunk
+FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 # A card so full the Nuke processes stall: from this VRAM % on (or the limit, if lower) JKrender looks for it, also under
 # the limit. Stalled = every process rendering a frame has used less than STALL_CPU of a core for STALL_CPU_SECS and 2 x the
@@ -360,6 +360,12 @@ def clear_open_nukes():
 def pct_limit(settings, name):
     """The RAM or VRAM limit in %, as set."""
     return float(settings.get("ram_limit", 95) if name == "RAM" else settings.get("vram_limit", 95))
+
+
+def pct_reload(settings, name):
+    """From this RAM or VRAM % on (held FRESH_HOLD s), Reload Nuke "When memory is full" reloads: Settings > Performance and
+    Optimization > Reload Nuke at. 90 % unless set."""
+    return float(settings.get("reload_ram", 90) if name == "RAM" else settings.get("reload_vram", 90))
 
 
 def hidden():
@@ -1943,7 +1949,7 @@ class RenderEngine:
 
     def _fresh_due(self):
         """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when the RAM or VRAM has been
-        within 5 % of its limit for FRESH_HOLD s, one process at a time: the next only once the last fresh one rendered its
+        at its Reload Nuke at % for FRESH_HOLD s, one process at a time: the next only once the last fresh one rendered its
         first frame, and only if memory is still short then. Never with no chunk left to hand out: the new one would have nothing to do.
         What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
         mode = self.settings.get("fresh_after_chunk", "short")
@@ -2716,7 +2722,7 @@ class RenderManager:
         self.pauses = []  # times when every render was paused: the timeline leaves them out
         self.paused_at = None
         self.ram_cap = None  # RAM guard's lower process count while memory is short
-        self._short_since = {}  # "RAM" / "VRAM": since when it has been within 5 % of its limit (Fresh Nuke after every chunk)
+        self._short_since = {}  # "RAM" / "VRAM": since when it has been at its Reload Nuke at % (Reload Nuke)
         self._wait_since = {}  # "RAM" / "VRAM": since when a place has waited to come back for it
         self._ram_checked = 0.0
         self._ram_ok_since = None
@@ -3047,7 +3053,7 @@ class RenderManager:
         # (only a guess while the VRAM of other programs is unknown: ours also grow, frame after frame)
         no_help = others is None and self._vram_lowered_at is not None and live <= (self.vram_cap or live) \
             and pct > self._vram_lowered_at - one / 2
-        # within 5 % of the limit the processes get a fresh Nuke after their chunk (Fresh Nuke after every chunk)
+        # from Reload Nuke at % on the processes reload after their chunk (Reload Nuke)
         if pct >= limit:
             self._vram_ok_since = None
             theirs = others is not None and others + one >= limit
@@ -3202,10 +3208,10 @@ class RenderManager:
         return max(0, int(room // one))
 
     def _short_update(self):
-        """Since when the RAM and the VRAM have been within 5 % of their limits, without a break."""
+        """Since when the RAM and the VRAM have been at their Reload Nuke at %, without a break."""
         now = time.time()
         for name, pct in self._mem_now().items():
-            if pct is None or pct < pct_limit(self.settings, name) - 5:
+            if pct is None or pct < pct_reload(self.settings, name):
                 self._short_since.pop(name, None)
             else:
                 self._short_since.setdefault(name, now)
@@ -5934,6 +5940,21 @@ class MainWindow(QtWidgets.QMainWindow):
             "otherwise after its chunk). They come back when they fit again.\n"
             "Off: nothing watches RAM; Windows starts swapping when it runs out.")
         note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
+        self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        reload_parts = []
+        for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):
+            box.setRange(50, 98)
+            box.setSuffix(" %")
+            box.setValue(int(self.settings.get(key, 90)))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            reload_parts += [lab, box]
+        row(perf, "Reload Nuke at", reload_parts,
+            "Reload Nuke When memory is full (Processes and Chunks): once the RAM or the VRAM has stayed at or over\n"
+            "this %% for %d s, the processes reload Nuke after their chunk, one at a time, and start small again.\n"
+            "Lower: they reload sooner (each costs one script load). Keep it under the limits above." % FRESH_HOLD)
+        note(perf, "Held %d s at this, the processes reload Nuke after their chunk, one at a time." % FRESH_HOLD)
 
         cards.remove(jobs)
         cards.remove(perf)
@@ -6001,7 +6022,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Each costs one script load.\n\n"
             "Never: a process renders chunk after chunk.\n"
             "When memory is full: only once the RAM or VRAM has stayed\n"
-            "within 5 %% of its limit for %d s (one reading over it is not enough), one process at a time.\n" % FRESH_HOLD +
+            "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
             "After every chunk: always. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
@@ -6072,7 +6093,7 @@ class MainWindow(QtWidgets.QMainWindow):
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
-                           (self.s_vram, 95)):
+                           (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),

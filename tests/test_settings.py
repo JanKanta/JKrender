@@ -79,5 +79,8 @@ win._reset_settings()
 s = saved()
 check("Fresh Nuke back to When memory is short", s["fresh_after_chunk"] == "short" and win.c_fresh.currentData() == "short")
 check("RAM limit back to 95", s["ram_limit"] == 95 and win.s_limit.value() == 95, s.get("ram_limit"))
+check("VRAM limit back to 95", s["vram_limit"] == 95 and win.s_vram.value() == 95, s.get("vram_limit"))
+check("Reload Nuke at back to RAM 90 %, VRAM 90 %", s["reload_ram"] == 90 and s["reload_vram"] == 90
+      and win.s_reload_ram.value() == 90 and win.s_reload_vram.value() == 90, (s.get("reload_ram"), s.get("reload_vram")))
 check("what JKrender learned of scripts is kept", s.get("script_ram") == {"sh010": 7.5}, s.get("script_ram"))
 finish()
