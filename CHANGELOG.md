@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.37 — 2026-11-14
+
+- A closed reload reads **closed (reload)** again, without the rule; quitting → reload (1.3 rule) stays.
+
 ## 0.99.36 — 2026-11-14
 
 - A reload keeps its rule in State until the fresh Nuke is back: **quitting → reload (1.3 rule)**, then **closed (reload, 1.3 rule)**; for Reload Nuke at **closed (reload, VRAM over 95 %)**. Before, the rule showed only in busy → reload, often for a second or two.

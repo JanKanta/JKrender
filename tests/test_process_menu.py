@@ -113,9 +113,7 @@ r.closed_why, r.reload_rule = "reload", "1.3 rule"
 r.state = "quitting"
 check("quitting → reload (1.3 rule)", e.worker_state(r) == "quitting → reload (1.3 rule)", e.worker_state(r))
 r.state = "gone"
-check("closed (reload, 1.3 rule)", e.worker_state(r) == "closed (reload, 1.3 rule)", e.worker_state(r))
-r.reload_rule = "VRAM over 95 %"
-check("closed (reload, VRAM over 95 %)", e.worker_state(r) == "closed (reload, VRAM over 95 %)", e.worker_state(r))
+check("closed: plain closed (reload), no rule", e.worker_state(r) == "closed (reload)", e.worker_state(r))
 r.state, r.closed_why, r.reload_rule = keep_r
 
 say("A process going to another render after its chunk")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.36 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.37 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.36"
+APP_VERSION = "0.99.37"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1536,9 +1536,8 @@ class RenderEngine:
 
     def worker_state(self, w):
         rule = getattr(w, "reload_rule", None)
-        if w.closed_why == "reload" and rule and w.state in ("quitting", "gone"):
-            # a reload is shown with its rule until the fresh Nuke is back
-            return ("quitting → reload (%s)" if w.state == "quitting" else "closed (reload, %s)") % rule
+        if w.closed_why == "reload" and rule and w.state == "quitting":
+            return "quitting → reload (%s)" % rule  # closed, it is plain closed (reload) again
         if w.state == "gone":
             if w.closed_why == "by me":
                 return "closed by me"  # no brackets: you closed it, it is no reason JKrender had
