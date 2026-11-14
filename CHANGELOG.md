@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.36 — 2026-11-14
+
+- A reload keeps its rule in State until the fresh Nuke is back: **quitting → reload (1.3 rule)**, then **closed (reload, 1.3 rule)**; for Reload Nuke at **closed (reload, VRAM over 95 %)**. Before, the rule showed only in busy → reload, often for a second or two.
+- The Log names the 1.3 rule first: "W02 closing (1.3 rule, reloads after its chunk: a place waits 7 s for VRAM; W02 holds the most, 5.8 GB, up from 3.2 GB)".
+- `test_process_menu` checks it (0.99.35 fails it).
+
 ## 0.99.35 — 2026-11-14
 
 - System tiles in a new order: **CPU, GPU, RAM, VRAM**, then Disk write, Disk read, Network. GPU and VRAM are two tiles now (VRAM: % and GB of the card).

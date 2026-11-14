@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.35 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.36 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.35"
+APP_VERSION = "0.99.36"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1155,6 +1155,7 @@ class Worker:
         self.leave = False  # Work on another render: this one hands its place over first
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
         self.why_leaving = None  # "RAM full" while it closes after its chunk because the RAM holds the places down
+        self.reload_rule = None  # which rule reloads it, shown in State until it is back: "1.3 rule", "VRAM over 95 %"
         self.closed_why = None  # why it closed, shown in State: "RAM 98 %", "VRAM 98 %", "GPU frozen", "reload", "by me"
         self.exit_code = None
         try:
@@ -1534,6 +1535,10 @@ class RenderEngine:
                 pass
 
     def worker_state(self, w):
+        rule = getattr(w, "reload_rule", None)
+        if w.closed_why == "reload" and rule and w.state in ("quitting", "gone"):
+            # a reload is shown with its rule until the fresh Nuke is back
+            return ("quitting → reload (%s)" if w.state == "quitting" else "closed (reload, %s)") % rule
         if w.state == "gone":
             if w.closed_why == "by me":
                 return "closed by me"  # no brackets: you closed it, it is no reason JKrender had
@@ -2227,11 +2232,13 @@ class RenderEngine:
                            else "not needed")
             elif self._wait_due(w):
                 w.closed_why = "reload"
+                w.reload_rule = "1.3 rule"
                 self.refresh_ids.append(w.id)
-                self._quit(w, "reloads after its chunk: %s" % self._wait_why)
+                self._quit(w, "1.3 rule, reloads after its chunk: %s" % self._wait_why.split(": ", 1)[-1])
             elif self._fresh_due(w):
                 fresh = self._fresh_due(w)
                 w.closed_why = "reload"
+                w.reload_rule = "after every chunk" if fresh == "always" else fresh
                 self.refresh_ids.append(w.id)
                 self._quit(w, "reloads after its chunk%s, it took %.1f GB RAM%s" % (
                     "" if fresh == "always" else " (%s)" % fresh, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))

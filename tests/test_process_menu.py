@@ -105,6 +105,19 @@ wait(lambda: e.state in ("done", "failed", "stopped"), 180)
 check("the render ends whole", e.state == "done" and len(files(job)) == 60, (e.state, len(files(job))))
 names = [x[1] for x in e.log if "W03 started again" in x[1] and x[0] == ""]
 check("no 'W03 started again' after it was removed", not names, names)
+say("A reload shows its rule in State until the fresh Nuke is back")
+import types as _types
+r = next(iter(e.workers.values()))
+keep_r = (r.state, r.closed_why, getattr(r, "reload_rule", None))
+r.closed_why, r.reload_rule = "reload", "1.3 rule"
+r.state = "quitting"
+check("quitting → reload (1.3 rule)", e.worker_state(r) == "quitting → reload (1.3 rule)", e.worker_state(r))
+r.state = "gone"
+check("closed (reload, 1.3 rule)", e.worker_state(r) == "closed (reload, 1.3 rule)", e.worker_state(r))
+r.reload_rule = "VRAM over 95 %"
+check("closed (reload, VRAM over 95 %)", e.worker_state(r) == "closed (reload, VRAM over 95 %)", e.worker_state(r))
+r.state, r.closed_why, r.reload_rule = keep_r
+
 say("A process going to another render after its chunk")
 import types
 mover = next(iter(e.workers.values()))
