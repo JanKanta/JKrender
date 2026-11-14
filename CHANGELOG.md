@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.40 — 2026-11-14
+
+- A place closed for memory (Kill at, GPU frozen) comes back the way a reload does: as soon as the RAM and the VRAM are under Reload Nuke at (95 %). It no longer waits until one more whole process fits under it (W04 waited for the RAM to drop under 74 % and had to be started by hand). One place at a time: the next only once the last one back has rendered a frame. Reload Nuke and Kill at catch it if it grows too big.
+- State: wait: Reload at 95 % of RAM / VRAM, or wait: W03 1st frame.
+- `test_memory` checks it (0.99.39 fails it).
+
 ## 0.99.39 — 2026-11-14
 
 - System tiles: **CPU, RAM, GPU, VRAM**, then Disk write, Disk read, Network.

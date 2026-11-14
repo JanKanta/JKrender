@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.39 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.40 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.39"
+APP_VERSION = "0.99.40"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2845,14 +2845,18 @@ class RenderManager:
         return psutil.virtual_memory().percent if psutil else 0.0
 
     def _more_fit(self, pct, limit):
-        """How many more Nuke processes fit: the RAM left under the limit, less a margin and what the processes running
-        now are still going to take, split by the size of one process."""
+        """How many more Nuke processes may start for the RAM: one, while the RAM is under Reload Nuke at and every
+        process running has rendered a frame (then how much one takes is known); else none. One at a time, as after a
+        reload: Reload Nuke and Kill at catch it if the new one grows too big."""
         if not psutil:
             return 0
-        total = psutil.virtual_memory().total / 1024 ** 3
-        room = total * (limit - 2 - pct) / 100.0 - self._ram_pending()
-        one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
-        return max(0, int(room // max(0.5, one)))
+        return 1 if pct < limit and not self.starting() else 0
+
+    def starting(self):
+        """A process still opening the script or before its first frame (for 5 minutes at most), or None."""
+        now = time.time()
+        return next((w for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")
+                     and not w.frames_here and now - w.spawned < 300), None)
 
     def _ram_pending(self):
         """GB the processes still starting are going to take: those opening the script or before their second frame, up to
@@ -2957,49 +2961,22 @@ class RenderManager:
         if psutil and self.settings.get("ram_guard", True):
             limit = pct_limit(self.settings, "RAM")
             pct = self.ram_percent()
-            if self._more_fit(pct, limit) < 1:
+            if pct >= limit:
                 return self._ram_target(pct, limit)
-        gpu_guard = self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)
-        one = self.vram_one(engine)
-        if one and gpu_guard:
-            total = float(self.vram[2])
-            # processes that have not finished their first chunk take their VRAM yet: count them at full size,
-            # or one closing frees a moment of VRAM and several start into it at once
-            growing = 0.0
-            for e in self.engines:
-                size = self.vram_one(e)
-                for w in e.workers.values():
-                    if size and w.gpu and w.state != "gone" and w.vram_base is None:
-                        now_pct = self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100
-                        growing += max(0.0, size - now_pct)
-            real = float(self.vram[1]) / total * 100
-            pct = real + growing
-            others = self.vram_others()
+        if self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
             limit = pct_limit(self.settings, "VRAM")
-            # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
-            # never into the last few % where Windows starts moving VRAM into the RAM
-            if pct + one >= 97.0 or (pct + one >= limit and (others is None or others + one < limit)):
-                starting = sum(1 for e in self.engines for w in e.workers.values()
-                               if w.gpu and w.state != "gone" and w.vram_base is None)
-                return self._vram_target(real, limit, one, growing, starting)
+            real = float(self.vram[1]) / float(self.vram[2]) * 100
+            if real >= limit:
+                return self._vram_target(real, limit, 0.0)
         return ""
 
     def _ram_target(self, pct, limit):
-        """What a process waiting for RAM waits for: the RAM to drop under the % where one more fits (as _more_fit)."""
-        total = psutil.virtual_memory().total / 1024 ** 3 if psutil else 1.0
-        pending = self._ram_pending()
-        one = max([e.size_gb() for e in self.engines if e.state == "rendering"] or [total * 0.08])
-        target = max(0.0, limit - 2 - (max(0.5, one) + pending) / total * 100)
-        return "RAM must drop under %.0f %% (now %.0f %%; limit %.0f %%, one more process takes about %.1f GB%s)" % (
-            target, pct, limit, one, ", and the ones starting %.1f GB more" % pending if pending >= 0.5 else "")
+        """What a process waiting for RAM waits for: the RAM under Reload Nuke at (as _more_fit)."""
+        return "RAM must drop under %.0f %% (now %.0f %%, Reload Nuke at)" % (limit, pct)
 
-    def _vram_target(self, real, limit, one, growing=0.0, starting=0):
-        """What a process waiting for VRAM waits for: the card to drop under the % where one more fits."""
-        total = float(self.vram[2]) / 1024 if self.vram and self.vram[2] else 0.0
-        target = max(0.0, min(limit - 2, 97.0) - one - growing)
-        return "VRAM must drop under %.0f %% (now %.0f %%; limit %.0f %%, one more process takes about %.1f GB%s)%s" % (
-            target, real, limit, one / 100 * total,
-            ", and %d starting will take %.1f GB more" % (starting, growing / 100 * total) if growing else "", self.vram_holder())
+    def _vram_target(self, real, limit, one=0.0, growing=0.0, starting=0):
+        """What a process waiting for VRAM waits for: the card under Reload Nuke at (as _more_fit_vram)."""
+        return "VRAM must drop under %.0f %% (now %.0f %%, Reload Nuke at)%s" % (limit, real, self.vram_holder())
 
     def _note_running(self, text, level="ev"):
         for e in self.engines:
@@ -3258,18 +3235,10 @@ class RenderManager:
         return growing, starting
 
     def _more_fit_vram(self, pct, limit, one):
-        """How many more Nuke processes fit on the graphics card: the % left under the limit, less a margin and what the
-        processes still starting are going to take, split by the size of one process (what they took after their first chunk)."""
-        if not self.vram or not self.vram[2] or not one:
+        """As _more_fit, for the graphics card: one more while the VRAM is under Reload Nuke at and none is starting."""
+        if not self.vram or not self.vram[2]:
             return 0
-        total = float(self.vram[2])
-        room = limit - 2 - pct
-        for e in self.engines:
-            size = self.vram_one(e)
-            for w in e.workers.values():
-                if size and w.gpu and w.state != "gone" and w.vram_base is None:
-                    room -= max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
-        return max(0, int(room // one))
+        return 1 if pct < limit and not self.starting() else 0
 
     def _short_update(self):
         """Since when the RAM and the VRAM have been at their Reload Nuke at %, without a break."""
@@ -7274,6 +7243,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if wait:
             return "next try in %d s: a process closed for memory a moment ago" % math.ceil(wait)
         if m.live_count() >= m.budget():
+            first = m.starting()
+            if first is not None:  # one at a time: the next only once this one has rendered a frame
+                return "%s has not rendered its first frame yet" % first.name
             if m.vram_bound() and m.vram and m.vram[2]:
                 pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, pct_limit(m.settings, "VRAM")
                 if m._vram_ok_since is not None:

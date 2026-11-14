@@ -74,7 +74,7 @@ m._hold_down("RAM", 96.0, live=3)  # as when a reload's fresh Nuke does not fit
 check("a place that does not fit waits: 3 places", m.ram_cap == 3, m.ram_cap)
 ws[4].state = "gone"
 check("the ones going are not counted as still to come", m._ram_pending() < 0.5, m._ram_pending())
-for v, want in ((80.0, 3), (62.0, None)):
+for v, want in ((96.0, 3), (80.0, None)):  # under Reload Nuke at (95 %) it comes back, as after a reload
     pct["v"] = v
     settle(m, m._ram_guard)
     check("RAM %.0f %%: places %s" % (v, want or "all back"), m.ram_cap == want, m.ram_cap)
@@ -92,10 +92,24 @@ check("VRAM 96 %: none closes", m.vram_cap is None and e.killed == [], (m.vram_c
 m._hold_down("VRAM", 96.0, live=3)
 check("a place that does not fit waits: 3 places", m.vram_cap == 3, m.vram_cap)
 ws[4].state = "gone"
-for v, want in ((80.0, 3), (55.0, None)):
+for v, want in ((96.0, 3), (80.0, None)):
     m.vram = [60, 24576 * v / 100, 24576.0]
     settle(m, m._vram_guard)
     check("VRAM %.0f %%: places %s" % (v, want or "all back"), m.vram_cap == want, m.vram_cap)
+say("Places come back one at a time: the next only once the last one has rendered a frame")
+m, e, ws = manager()
+m.ram_percent = lambda: 60.0
+m.vram = [10, 24576 * 0.3, 24576.0]
+m._hold_down("RAM", 96.0, live=2)
+ws[3].state = ws[4].state = "gone"
+ws[2].frames_here, ws[2].spawned = 0, time.time()  # W02 has not rendered a frame yet
+settle(m, m._ram_guard)
+check("RAM 60 %, W02 before its first frame: no place back yet", m.ram_cap == 2, m.ram_cap)
+check("State says why: W02 1st frame", "W02 has not rendered its first frame" in (m.no_room() or ""), m.no_room())
+ws[2].frames_here = 1
+m._ram_ok_since = None
+settle(m, m._ram_guard, 0.5)
+check("W02 has a frame: one place back, not both", m.ram_cap == 3, m.ram_cap)
 
 say("A full card: the one started last closes at once; a card so full no frame finishes")
 m, e, ws = manager()
@@ -211,7 +225,7 @@ check("no frame for 5 minutes at 94.8 %: the one started last closes", e.killed 
 check("and the places go one down until the card has room", m.vram_cap == 3, m.vram_cap)
 check("the note says why", any("no frame finished" in t and "W04 closed now" in t for t in e.notes), e.notes)
 check("State says closed (GPU frozen)", ws[4].closed_why == "GPU frozen", ws[4].closed_why)
-for v, want in ((93.0, 3), (60.0, None)):
+for v, want in ((96.0, 3), (60.0, None)):
     m.vram = [60, 24576 * v / 100, 24576.0]
     settle(m, m._vram_guard)
     check("VRAM %.0f %%: places %s" % (v, want or "all back"), m.vram_cap == want, m.vram_cap)
@@ -334,25 +348,18 @@ check("VRAM 86 % held too: both", short(82, 86, 0.6) == "RAM over 80 %, VRAM ove
 m.settings.update({"reload_ram": 90, "reload_vram": 90})
 check("back to 90 %: VRAM 86 % is no reason", short(70, 86, 0.6) == "", m.memory_short())
 
-say("State says what the decision is: the target with the room kept for processes still starting")
-GB = 1024 ** 3
-for label, bases, now_gb, starting in (("3 just started", {1: 6144.0, 5: 5120.0}, {1: 6, 2: 1.5, 3: 1.5, 4: 2, 5: 5}, 3),
-                                       ("none starting", {i: 4096.0 for i in range(1, 6)}, {1: 4, 2: 4, 3: 3, 4: 3, 5: 3}, 0)):
-    m, e, ws = manager(6)
-    for i, w in ws.items():
-        w.vram_base = bases.get(i)
-    ws[6].state = "gone"
-    m.vram_cap = 5
-    m.falls = []
-    m.gpu_mem = {100 + i: (10, now_gb[i] * GB) for i in now_gb}
-    used = sum(now_gb.values()) + 2
-    m.vram = [20, used * 1024, 24576.0]
-    why = jk.MainWindow._memory_why(type("X", (), {"manager": m})())
-    shown = jk.MainWindow._short_why(why)
-    fits = m._more_fit_vram(used / 24 * 100, 95, m.vram_one()) > 0
-    check("%s: 'wait: Reload at N %% of VRAM'" % label, shown.startswith("wait: Reload at ") and " % of VRAM" in shown, shown)
-    target = float(shown.split("Reload at ")[1].split("%")[0])
-    check("%s: '%s'" % (label, shown), ("(%d starting)" % starting in shown) if starting else "starting" not in shown, why[:120])
-    check("%s: it comes back exactly when VRAM is under the target shown" % label, (used / 24 * 100 <= target) == fits,
-          (used / 24 * 100, target, fits))
+say("State says what a place waits for: Reload Nuke at, or a process before its first frame")
+m, e, ws = manager(6)
+ws[6].state = "gone"
+m.vram_cap = 5
+m.falls = []
+m.vram = [20, 24576 * 0.96, 24576.0]
+why = jk.MainWindow._memory_why(type("X", (), {"manager": m})())
+check("VRAM 96 %: 'wait: Reload at 95 % of VRAM'", jk.MainWindow._short_why(why) == "wait: Reload at 95 % of VRAM", (why, jk.MainWindow._short_why(why)))
+ws[3].frames_here, ws[3].spawned = 0, time.time()
+why = jk.MainWindow._memory_why(type("X", (), {"manager": m})())
+check("W03 before its first frame: 'wait: W03 1st frame'", jk.MainWindow._short_why(why) == "wait: W03 1st frame", why)
+ws[3].frames_here = 1
+m.vram = [20, 24576 * 0.80, 24576.0]
+check("VRAM 80 %, none starting: one more fits", m._more_fit_vram(80.0, 95, 10.0) == 1)
 finish()
