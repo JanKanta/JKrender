@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.25 — 2026-11-14
+
+- The Job tab comes before Settings: System, Job, Settings.
+
 ## 0.99.24 — 2026-11-14
 
 - A **Job** tab next to Settings holds the Job card (Slate frame, Framerange, Test this script) and Processes and Chunks. Settings keeps General and Performance and Optimization.

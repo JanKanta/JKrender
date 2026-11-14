@@ -94,7 +94,7 @@ check("a guard switched off in older settings is on again", back["ram_guard"] an
 check("the row shows RAM and VRAM side by side", win.s_limit.parentWidget() is win.s_vram.parentWidget())
 check("Kill at: RAM 98 %, VRAM 98 %", (win.s_kill_ram.value(), win.s_kill_vram.value()) == (98, 98))
 tabs = [win.sub_tabs.tabText(i) for i in range(win.sub_tabs.count())]
-check("a Job tab next to Settings", tabs == ["System", "Settings", "Job"], tabs)
+check("a Job tab before Settings", tabs == ["System", "Job", "Settings"], tabs)
 job_page = win.sub_tabs.widget(tabs.index("Job"))
 check("Processes and Chunks are on the Job tab", job_page.isAncestorOf(win.s_workers) and job_page.isAncestorOf(win.s_chunk))
 check("Memory Limit stays on Settings", win.sub_tabs.widget(tabs.index("Settings")).isAncestorOf(win.s_limit))

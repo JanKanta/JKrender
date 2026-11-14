@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.24 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.25 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.24"
+APP_VERSION = "0.99.25"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -5728,8 +5728,9 @@ class MainWindow(QtWidgets.QMainWindow):
         split.addWidget(self.pages)
         self.sub_tabs = QtWidgets.QTabWidget()
         self.sub_tabs.addTab(self._system_tab(), "System")
-        self.sub_tabs.addTab(self._settings_tab(), "Settings")
+        settings_page = self._settings_tab()  # builds the Job tab too
         self.sub_tabs.addTab(self._job_scroll, "Job")
+        self.sub_tabs.addTab(settings_page, "Settings")
         split.addWidget(self.sub_tabs)
         split.setSizes([464, 576])
         rlay.addWidget(split, 1)
@@ -6040,7 +6041,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: every chunk keeps the size set under Chunk.")
         note(procs, "Every process finishes at about the same time.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
-        # Job and Processes and Chunks have a tab of their own, Job, next to Settings
+        # Job and Processes and Chunks have a tab of their own, Job, before Settings
         job_cards = [jobs, procs]
         for c in job_cards:
             cards.remove(c)
