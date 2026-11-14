@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.33 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.34 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.33"
+APP_VERSION = "0.99.34"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1535,6 +1535,8 @@ class RenderEngine:
 
     def worker_state(self, w):
         if w.state == "gone":
+            if w.closed_why == "by me":
+                return "closed by me"  # no brackets: you closed it, it is no reason JKrender had
             return "closed (%s)" % w.closed_why if w.closed_why else "closed"
         state = "paused" if w.user_paused else w.state
         # where it goes after this chunk
@@ -1546,6 +1548,8 @@ class RenderEngine:
         if fresh:
             return "busy → reload" if fresh == "always" else "busy → reload (%s)" % fresh
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
+            if w.why_leaving == "by me":
+                return "%s → closes by me" % state
             return "%s → closes (%s)" % (state, w.why_leaving)
         if w.handover or (w.retire and state == "busy"):
             return "%s → another render" % state if self.manager and len(self.manager.engines) > 1 else "%s → closes" % state

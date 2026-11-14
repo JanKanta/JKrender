@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.34 — 2026-11-14
+
+- Close after this chunk reads **busy → closes by me** and then **closed by me** in State, without brackets.
+- `test_process_menu` checks it (0.99.33 fails it).
+
 ## 0.99.33 — 2026-11-14
 
 - The **1.3 rule** (a place waiting for memory: the process holding the most of it reloads after its chunk, if it grew 1.3 x since its first chunk) waits 5 s instead of 15 s, and State says it ahead on that one process: **busy → reload (1.3 rule)**. The Log line starts with "1.3 rule".

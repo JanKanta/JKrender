@@ -60,6 +60,8 @@ items = menu(w2, "Close after this chunk")
 check("enabled while closing for the RAM limit", items.get("Close after this chunk") is True, items)
 check("Processes 3 -> 2", m.total == 2, m.total)
 check("it closes by me now, not for the limit", w2.user_leaving and w2.closed_why == "by me" and e.worker_state(w2) != "closed (RAM limit)", e.worker_state(w2))
+check("State says it without brackets: 'busy → closes by me' / 'closed by me'",
+      e.worker_state(w2) in ("busy → closes by me", "closed by me", "quitting"), e.worker_state(w2))
 
 say("A process closed for memory and waiting to come back: Remove process")
 win.s_workers.setValue(4)
