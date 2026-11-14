@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.49 — 2026-11-14
+
+- Test this script tests **Reload after** too: Add test and Edit test have it (with When memory is full), the Reload Nuke Rule column says "memory full, frame", "memory full, chunk" or "every chunk", and Use these settings sets it. Setups saved before get Reload after as it is set now.
+- `test_script_test` checks it (0.99.48 fails it).
+- Tests on a busy PC: a test may take 30 minutes (was 15), and the render of test_fresh_nuke with the memory staying over Reload Nuke at gets 400 s (was 180 s); it renders with fewer processes. The check says the processes' states if it fails.
+
 ## 0.99.48 — 2026-11-14
 
 - Fix: with the memory staying over Reload Nuke at, reloads after a frame closed the processes one by one and none started again, so the render stood still for good (0.99.46, 0.99.47). The last process now always starts again.

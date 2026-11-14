@@ -117,11 +117,11 @@ def watch():
     return e.state in ("done", "failed", "stopped")
 
 
-wait(watch, 180)
+wait(watch, 400)  # the memory stays over: it renders with fewer processes, slowly on a busy PC
 check("a reloaded process waits to start again (RAM over Reload Nuke at)", bool(waits), [x[1] for x in e.log][-8:])
 check("never none left: the last one always starts again", True)
 check("its place is held down", win.manager.ram_cap is not None or e.state == "done", win.manager.ram_cap)
-check("done, all 80 frames", e.state == "done" and len(files(job)) == 80, (e.state, len(files(job))))
+check("done, all 80 frames", e.state == "done" and len(files(job)) == 80, (e.state, len(files(job)), [e.worker_state(w) for w in e.workers.values()], win.manager.ram_cap, [x[1] for x in e.log][-6:]))
 win.close()
 say("Reload after: The chunk (Settings): a reload for memory waits for the end of the chunk")
 job = make_job("reload_chunk", 1001, 1048, env={"FAKE_LOAD_SECS": "2", "FAKE_SECS": "0.8"})

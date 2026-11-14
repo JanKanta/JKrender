@@ -72,11 +72,11 @@ def main():
         t = time.time()
         try:
             r = subprocess.run([nd + "/python.exe", "-X", "faulthandler", test], env=env, capture_output=True, text=True,
-                               encoding="utf-8", errors="replace", timeout=900, cwd=HERE)
+                               encoding="utf-8", errors="replace", timeout=1800, cwd=HERE)  # a busy PC: test_fresh_nuke took 17 min
             out = r.stdout + r.stderr
         except subprocess.TimeoutExpired as exc:
             out = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-            out += "\nTIMEOUT after 900 s"
+            out += "\nTIMEOUT after 1800 s"
         os.makedirs(HERE + "/_runs", exist_ok=True)
         with open(HERE + "/_runs/%s.log" % name, "w", encoding="utf-8") as f:
             f.write(out)

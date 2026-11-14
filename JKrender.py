@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.48 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.49 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.48"
+APP_VERSION = "0.99.49"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -81,6 +81,12 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
 # RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
 FRESH_MODES = (("short", "When memory is full"), ("always", "After every chunk"))  # no Never since 0.99.41
 FRESH_SHORT = {"short": "memory full", "always": "every chunk"}  # the Reload Nuke Rule column of Test this script
+RELOAD_AFTER = (("frame", "Frame"), ("chunk", "Chunk"))  # Settings > Reload after
+
+
+def rule_text(fresh, after):
+    """The Reload Nuke Rule column of Test this script: "memory full, frame", "memory full, chunk", "every chunk"."""
+    return FRESH_SHORT.get(fresh, fresh) + (", " + after if fresh == "short" else "")
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
@@ -191,8 +197,8 @@ def read_settings():
         settings["fresh_after_chunk"] = "short"
     setups = settings.get("test_setups")
     if isinstance(setups, list):  # Test this script setups saved with Never: When memory is full
-        settings["test_setups"] = [list(x[:3]) + ["short"] if isinstance(x, (list, tuple)) and len(x) > 3 and x[3] == "off"
-                                   else x for x in setups]
+        settings["test_setups"] = [list(x[:3]) + ["short"] + list(x[4:]) if isinstance(x, (list, tuple)) and len(x) > 3
+                                   and x[3] == "off" else x for x in setups]
     if "ram_limit" in settings or "vram_limit" in settings:  # 0.99.30: no Memory Limit; Reload Nuke at took its place
         settings.pop("ram_limit", None)
         settings.pop("vram_limit", None)
@@ -3972,13 +3978,15 @@ class ScriptTest(QtWidgets.QDialog):
         return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE))) for n in counts]
 
     def _setup(self, x):
-        """A saved setup as (processes, threads, cache, fresh); one saved before Fresh Nuke gets the setting as it is now."""
+        """A saved setup as (processes, threads, cache, Reload Nuke, Reload after); one saved before a part of it existed
+        gets that setting as it is now."""
         x = list(x)
         fresh = x[3] if len(x) > 3 and x[3] in FRESH_SHORT else self.fresh
-        return (int(x[0]), int(x[1]), int(x[2]), fresh)
+        after = x[4] if len(x) > 4 and x[4] in dict(RELOAD_AFTER) else self.after
+        return (int(x[0]), int(x[1]), int(x[2]), fresh, after)
 
     def _planned(self, cpu):
-        return [k + (self.fresh,) for k in self.plan(cpu, self._free_gb())]
+        return [k + (self.fresh, self.after) for k in self.plan(cpu, self._free_gb())]
 
     @staticmethod
     def _label(k):
@@ -4019,7 +4027,8 @@ class ScriptTest(QtWidgets.QDialog):
         cpu = os.cpu_count() or 8
         m = window.manager
         self.fresh = window.settings.get("fresh_after_chunk", "short")
-        cur = (m.total, m.threads, m.ram, self.fresh)
+        self.after = window.settings.get("reload_after", "frame")
+        cur = (m.total, m.threads, m.ram, self.fresh, self.after)
         self.current = cur
         self.added = {self._setup(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
         self.setups = sorted(set(self._planned(cpu)) | self.added)
@@ -4095,7 +4104,7 @@ class ScriptTest(QtWidgets.QDialog):
         self.l_frames = label("")  # how many frames each round renders, top right, after Add test and Remove test
         self.l_frames.setToolTip("Every setup of a round renders the same frames: stretches of frames in a row at the same 6 places\n"
                                  "spread over the whole shot, as many as the setup with the most processes needs.")
-        self.add_defaults = (m.total, m.threads, m.ram, self.fresh, cpu, ram)  # what Add test starts from, and its limits
+        self.add_defaults = (m.total, m.threads, m.ram, self.fresh, self.after, cpu, ram)  # what Add test starts from, and its limits
         top.addWidget(self.l_frames)
         buttons = QtWidgets.QHBoxLayout()
         self.b_start = QtWidgets.QPushButton("Start")
@@ -4126,10 +4135,12 @@ class ScriptTest(QtWidgets.QDialog):
         for i, k in enumerate(self.setups):
             n, t, c = k[:3]
             item = SortItem(self._label(k))
-            item.setData(SortItem.KEY, n * 10000 + t * 100 + c + [m for m, _ in FRESH_MODES].index(k[3]) / 10.0)
+            item.setData(SortItem.KEY, n * 10000 + t * 100 + c + [m for m, _ in FRESH_MODES].index(k[3]) / 10.0
+                         + [a for a, _ in RELOAD_AFTER].index(k[4]) / 100.0)
             item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
             self.table.setItem(i, self.C_SETUP, item)
-            self._cell(i, self.C_RULE, FRESH_SHORT.get(k[3], k[3]), [m for m, _ in FRESH_MODES].index(k[3]))
+            self._cell(i, self.C_RULE, rule_text(k[3], k[4]), [m for m, _ in FRESH_MODES].index(k[3]) * 10
+                       + [a for a, _ in RELOAD_AFTER].index(k[4]))
             self._cell(i, self.C_STATE, "waiting")
         self.table.setSortingEnabled(True)
         self._fit_columns()
@@ -4157,9 +4168,9 @@ class ScriptTest(QtWidgets.QDialog):
             self.resize(min(wanted, room), self.height())
 
     def _setup_window(self, title, button, values):
-        """A small window with Processes, Threads, Cache and Reload Nuke; the setup, or None when cancelled."""
-        n, t, c, fresh = values
-        cpu, ram = self.add_defaults[4:]
+        """A small window with Processes, Threads, Cache, Reload Nuke and Reload after; the setup, or None when cancelled."""
+        n, t, c, fresh, after = values
+        cpu, ram = self.add_defaults[5:]
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle(title)
         form = QtWidgets.QFormLayout(dialog)
@@ -4175,15 +4186,23 @@ class ScriptTest(QtWidgets.QDialog):
         for key, text in FRESH_MODES:
             combo.addItem(text, key)
         combo.setCurrentIndex(max(0, combo.findData(fresh)))
-        combo.setToolTip("Reload Nuke, as in Settings > Processes and Chunks")
+        combo.setToolTip("Reload Nuke, as in Settings > Performance and Optimization")
         form.addRow("Reload Nuke", combo)
+        combo_after = QtWidgets.QComboBox()
+        for key, text in RELOAD_AFTER:
+            combo_after.addItem(text, key)
+        combo_after.setCurrentIndex(max(0, combo_after.findData(after)))
+        combo_after.setToolTip("Reload after, as in Settings > Performance and Optimization (When memory is full only)")
+        combo.currentIndexChanged.connect(lambda _: combo_after.setEnabled(combo.currentData() == "short"))
+        combo_after.setEnabled(fresh == "short")
+        form.addRow("Reload after", combo_after)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(button)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         form.addRow(buttons)
         accepted = dialog.exec() == QtWidgets.QDialog.Accepted
-        setup = tuple(spin.value() for spin in spins) + (combo.currentData(),)
+        setup = tuple(spin.value() for spin in spins) + (combo.currentData(), combo_after.currentData())
         dialog.deleteLater()
         return setup if accepted else None
 
@@ -4199,10 +4218,10 @@ class ScriptTest(QtWidgets.QDialog):
 
     def _add_setup(self):
         """Add test: a setup of your own, kept for next time."""
-        setup = self._setup_window("Add test", "Add", self.add_defaults[:4])
+        setup = self._setup_window("Add test", "Add", self.add_defaults[:5])
         if setup is None:
             return
-        self.add_defaults = setup + self.add_defaults[4:]
+        self.add_defaults = setup + self.add_defaults[5:]
         self.added.add(setup)
         self.main._save_setting("test_setups", sorted(self.added))
         if setup not in self.setups:
@@ -4395,10 +4414,10 @@ class ScriptTest(QtWidgets.QDialog):
             self._finish()
             return
         self.index = self.queue.pop(0)
-        n, t, c, fresh = self.setups[self.index]
+        n, t, c, fresh, after = self.setups[self.index]
         settings = dict(self.main.settings)
-        settings.update(processes=n, threads=t, ram=c, fresh_after_chunk=fresh, max_renders=1, _test=True)
-        root = TEST_DIR / ("%s_%dx%d_%d_%s" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c, fresh))
+        settings.update(processes=n, threads=t, ram=c, fresh_after_chunk=fresh, reload_after=after, max_renders=1, _test=True)
+        root = TEST_DIR / ("%s_%dx%d_%d_%s_%s" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c, fresh, after))
         out = root / "out"
         out.mkdir(parents=True, exist_ok=True)
         job = copy.deepcopy(self.src.job)
@@ -4644,12 +4663,12 @@ class ScriptTest(QtWidgets.QDialog):
         mine = self.results.get(self.current)
         if best == self.current:
             text = "Your settings (Processes %d, Threads %d, Cache %d GB, Reload Nuke %s) are the fastest of these for this script: " \
-                   "%.1f frames / min." % (best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate)
+                   "%.1f frames / min." % (best[0], best[1], best[2], rule_text(best[3], best[4]), rate)
         else:
             gain = (" — the whole shot about %s instead of %s with yours" % (fmt_secs(self._whole(self.results[best])), fmt_secs(self._whole(mine)))
                     if mine and mine["rate"] else "")
             text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, Reload Nuke %s, %.1f frames / min%s." % (
-                best[0], best[1], best[2], dict(FRESH_MODES)[best[3]].lower(), rate, gain)
+                best[0], best[1], best[2], rule_text(best[3], best[4]), rate, gain)
             self.b_use.setEnabled(True)
         if partial:
             text = "(Stopped before all setups were tested.) " + text
@@ -4674,11 +4693,12 @@ class ScriptTest(QtWidgets.QDialog):
             pass
 
     def use(self):
-        n, t, c, fresh = self.best
+        n, t, c, fresh, after = self.best
         self.main.s_workers.setValue(n)
         self.main.s_threads.setValue(t)
         self.main.s_ram.setValue(c)
         self.main.c_fresh.setCurrentIndex(max(0, self.main.c_fresh.findData(fresh)))
+        self.main.c_reload_after.setCurrentIndex(max(0, self.main.c_reload_after.findData(after)))
         self.b_use.setEnabled(False)
 
     def closeEvent(self, event):

@@ -12,8 +12,8 @@ job = make_job("sh010", 1001, 1060)
 win = jk.MainWindow(job)
 win.c_fresh.setCurrentIndex(win.c_fresh.findData("short"))
 t = jk.ScriptTest(win, win.engine)
-check("every setup has four fields", all(len(k) == 4 for k in t.setups), t.setups[:3])
-check("a setup saved with three fields gets the setting as it is now", (3, 2, 2, "short") in t.added, t.added)
+check("every setup has five fields (Reload after the fifth)", all(len(k) == 5 for k in t.setups), t.setups[:3])
+check("a setup saved with three fields gets the settings as they are now", (3, 2, 2, "short", "frame") in t.added, t.added)
 check("Create tests makes up to %d setups" % t.TESTS, 1 <= len(t.plan(os.cpu_count() or 8, t._free_gb())) <= t.TESTS)
 plan = t.plan(32, 80.0)
 check("32 threads, 80 GB: from 1 process with all threads", plan[0][:2] == (1, 32), plan)
@@ -39,35 +39,39 @@ check("the note at the top says it", "Round 2: 8 a process" in t.l_frames.text()
 say("Add test and Edit test, with Fresh Nuke after every chunk")
 
 
-def fill(values, fresh):
+def fill(values, fresh, after="frame"):
     d = app.activeModalWidget()
     if d is None:
-        QtCore.QTimer.singleShot(30, lambda: fill(values, fresh))
+        QtCore.QTimer.singleShot(30, lambda: fill(values, fresh, after))
         return
     spins = d.findChildren(QtWidgets.QSpinBox)
     for s, v in zip(spins, values):
         s.setValue(v)
-    combo = d.findChildren(QtWidgets.QComboBox)[0]
-    combo.setCurrentIndex(combo.findData(fresh))
+    combos = d.findChildren(QtWidgets.QComboBox)
+    combos[0].setCurrentIndex(combos[0].findData(fresh))
+    combos[1].setCurrentIndex(combos[1].findData(after))
     d.accept()
 
 
 QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "always"))
 t._add_setup()
-check("Add test: 2 x 2, 2 GB, fresh every chunk", (2, 2, 2, "always") in t.setups, t.setups)
+check("Add test: 2 x 2, 2 GB, fresh every chunk", (2, 2, 2, "always", "frame") in t.setups, t.setups)
 labels = [t.table.item(r, 0).text() for r in range(t.table.rowCount())]
 rules = [(t.table.item(r, 0).text(), t.table.item(r, t.C_RULE).text()) for r in range(t.table.rowCount())]
 check("the table says it, Reload Nuke Rule right after Processes x threads", ("2 x 2, cache 2 GB", "every chunk") in rules
       and t.table.horizontalHeaderItem(1).text() == "Reload Nuke Rule", rules)
-index = t.setups.index((2, 2, 2, "always"))
-QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "short"))
+index = t.setups.index((2, 2, 2, "always", "frame"))
+QtCore.QTimer.singleShot(30, lambda: fill((2, 2, 2), "short", "chunk"))
 t._edit_setup(index)
-check("Edit test: now when memory is full", (2, 2, 2, "short") in t.setups and (2, 2, 2, "always") not in t.setups, t.setups)
+check("Edit test: now when memory is full, after the chunk", (2, 2, 2, "short", "chunk") in t.setups
+      and (2, 2, 2, "always", "frame") not in t.setups, t.setups)
+rules = [t.table.item(r, t.C_RULE).text() for r in range(t.table.rowCount())]
+check("the Reload Nuke Rule column says it: 'memory full, chunk'", "memory full, chunk" in rules, rules)
 saved = json.load(open(SETTINGS_DIR + "/settings.json", encoding="utf-8")).get("test_setups")
-check("kept for next time", [2, 2, 2, "short"] in saved, saved)
+check("kept for next time", [2, 2, 2, "short", "chunk"] in saved, saved)
 
 say("Both rounds with FakeNuke: when memory is full against fresh every chunk")
-t.setups, t.added = [(2, 2, 2, "short"), (2, 2, 2, "always")], set()
+t.setups, t.added = [(2, 2, 2, "short", "frame"), (2, 2, 2, "always", "frame")], set()
 t._fill_table()
 t.start()
 wait(lambda: not t.timer.isActive() and t.run is None, 400)
@@ -78,14 +82,14 @@ check("both setups went through Round 2", all(v[t.C_STATE].startswith("Round 2")
 check("a winner", getattr(t, "best", None) in t.setups, getattr(t, "best", None))
 fresh = {k: v[t.C_FRESH] for k, v in rows.items()}
 check("Reloads column: some after every chunk, fewer when memory is full",
-      "memory full" in fresh and int(fresh.get("every chunk") or 0) > int(fresh.get("memory full") or 0), fresh)
+      "memory full, frame" in fresh and int(fresh.get("every chunk") or 0) > int(fresh.get("memory full, frame") or 0), fresh)
 check("the test folder is gone", not os.path.exists(str(jk.TEST_DIR)))
 check("the render's own frames untouched", files(job) == [])
 best = t.best
 
 say("Winner: the whole shot from the test's time and the rate, as on a 79 frame shot")
 keep = (t.setups, t.results, t.all_frames)
-t.setups = [(6, 5, 8, "short"), (1, 32, 68, "short")]
+t.setups = [(6, 5, 8, "short", "frame"), (1, 32, 68, "short", "frame")]
 t.all_frames = list(range(1001, 1080))
 t._fill_table()
 f24 = list(range(24))
@@ -110,7 +114,8 @@ check("the columns Winner test and Winner Whole Shot", heads[t.C_TEST] == "Winne
 t.setups, t.results, t.all_frames = keep
 t._fill_table()
 t.use()
-check("Use these settings: processes, threads, cache and fresh Nuke",
-      (win.s_workers.value(), win.s_threads.value(), win.s_ram.value(), win.settings.get("fresh_after_chunk")) == best,
+check("Use these settings: processes, threads, cache, Reload Nuke and Reload after",
+      (win.s_workers.value(), win.s_threads.value(), win.s_ram.value(), win.settings.get("fresh_after_chunk"),
+       win.settings.get("reload_after")) == best,
       (win.s_workers.value(), win.s_threads.value(), win.s_ram.value(), win.settings.get("fresh_after_chunk"), best))
 finish()
