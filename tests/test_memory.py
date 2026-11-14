@@ -1,4 +1,5 @@
-"""The RAM and VRAM guards with made-up readings: closing at the limit, coming back when there is room, the full card,
+"""Since 0.99.30 there is no Memory Limit: over Reload Nuke at (95 %) nothing closes at once, Reload Nuke takes the
+process holding the most. The RAM and VRAM guards with made-up readings: closing at the limit, coming back when there is room, the full card,
 a card so full no frame finishes, Fresh Nuke when memory is short, and that State says what the decision is."""
 import time
 import types
@@ -39,8 +40,7 @@ class E:
 
 
 def manager(n=4, **settings):
-    base = {"processes": n, "threads": 8, "ram": 20, "ram_guard": True, "ram_limit": 95, "vram_guard": True, "vram_limit": 95,
-            "use_gpu": True}
+    base = {"processes": n, "threads": 8, "ram": 20, "ram_guard": True, "vram_guard": True, "use_gpu": True}
     base.update(settings)
     m = jk.RenderManager(base)
     ws = {i: W(i) for i in range(1, n + 1)}
@@ -60,13 +60,17 @@ def settle(m, fn, secs=1.0):
         m._ram_checked = m._vram_checked = 0
 
 
-say("RAM over the limit, then free again")
+say("RAM over Reload Nuke at: nothing closes at once; a place held down comes back when it fits")
+check("Reload Nuke at is 95 % by default, and it is the limit places come back under",
+      (jk.pct_limit({}, "RAM"), jk.pct_limit({}, "VRAM")) == (95.0, 95.0))
 m, e, ws = manager()
 pct = {"v": 96.0}
 m.ram_percent = lambda: pct["v"]
 m.vram = [10, 24576 * 0.3, 24576.0]
 m._ram_guard()
-check("RAM 96 % over 95 %: one process fewer", m.ram_cap == 3, m.ram_cap)
+check("RAM 96 %: no 'one process fewer' any more, none closes", m.ram_cap is None and e.killed == [], (m.ram_cap, e.killed))
+m._hold_down("RAM", 96.0, live=3)  # as when a reload's fresh Nuke does not fit
+check("a place that does not fit waits: 3 places", m.ram_cap == 3, m.ram_cap)
 ws[4].state = "gone"
 check("the ones going are not counted as still to come", m._ram_pending() < 0.5, m._ram_pending())
 for v, want in ((80.0, 3), (62.0, None)):
@@ -76,14 +80,16 @@ for v, want in ((80.0, 3), (62.0, None)):
 ws[4].state, ws[4].frames_here, ws[4].rss = "loading", 0, 2.0
 check("one opening the script counts what it will take", abs(m._ram_pending() - 24.0) < 0.1, m._ram_pending())
 
-say("VRAM over the limit, then free again")
+say("VRAM over Reload Nuke at: nothing closes at once; a place held down comes back when it fits")
 m, e, ws = manager()
 m.ram_percent = lambda: 40.0
 m.gpu_mem = {w.proc.pid: (50, 4000 * 1024 ** 2) for w in ws.values()}
 m.vram = [90, 24576 * 0.96, 24576.0]
 m.vram_others = lambda: 1.0
 m._vram_guard()
-check("VRAM 96 %: one process fewer", m.vram_cap == 3, m.vram_cap)
+check("VRAM 96 %: none closes", m.vram_cap is None and e.killed == [], (m.vram_cap, e.killed))
+m._hold_down("VRAM", 96.0, live=3)
+check("a place that does not fit waits: 3 places", m.vram_cap == 3, m.vram_cap)
 ws[4].state = "gone"
 for v, want in ((80.0, 3), (55.0, None)):
     m.vram = [60, 24576 * v / 100, 24576.0]
@@ -100,6 +106,8 @@ m.gpu_mem[ws[1].proc.pid] = (10, 9000 * 1024 ** 2)
 m._last_vram_kill = m._last_kill = 0
 m._vram_guard()
 check("VRAM 98 %: W04 (started last) closed now, not W01 (the largest)", e.killed == ["W04"], e.killed)
+check("State says closed (VRAM 98 %), no 'VRAM limit'", ws[4].closed_why == "VRAM 98 %", ws[4].closed_why)
+check("and its place waits: 3 places", m.vram_cap == 3, m.vram_cap)
 ws[4].state = "busy"
 e.killed.clear()
 e.started, e.last_frame_at = time.time() - 600, time.time() - 300
@@ -116,7 +124,7 @@ m._vram_checked = 0
 m._vram_guard()
 check("VRAM 96 %, a frame 20 s ago: none closes at once", e.killed == [], e.killed)
 
-say("Kill at: from this % the one started last closes at once; never under the Memory Limit")
+say("Kill at: from this % the one started last closes at once; never under Reload Nuke at")
 
 
 def nearly_full(ram=None, vram=None, **settings):
@@ -136,6 +144,7 @@ m, e, ws = nearly_full(ram=96.5)
 check("RAM 96.5 %, Kill at 98 % (default): none closes at once", e.killed == [], e.killed)
 m, e, ws = nearly_full(ram=96.5, kill_ram=96)
 check("RAM 96.5 %, Kill at 96 %: W04 closes at once", e.killed == ["W04"], e.killed)
+check("State says closed (RAM 96 %)", ws[4].closed_why == "RAM 96 %", ws[4].closed_why)
 m, e, ws = nearly_full(ram=93.0, kill_ram=80)
 check("Kill at 80 % is never under the limit (95 %): RAM 93 %, none", e.killed == [], e.killed)
 m, e, ws = nearly_full(vram=98.5)
@@ -246,9 +255,10 @@ m.falls.clear()
 m.falls.append(t - jk.RETURN_CHECK - 1)
 check("and none once it is over", m.fall_wait() == 0.0, m.fall_wait())
 
-say("Fresh Nuke when memory is short: only after 30 s near the limit, never because a process waits")
+say("Reload Nuke when memory is full: only once held over Reload Nuke at (here set to 90 %), never because a process waits")
+check("held 10 s by default", jk.FRESH_HOLD == 10, jk.FRESH_HOLD)
 jk.FRESH_HOLD = 0.5
-m, e, ws = manager()
+m, e, ws = manager(reload_ram=90, reload_vram=90)
 r = {"ram": 80.0}
 m.ram_percent = lambda: r["ram"]
 

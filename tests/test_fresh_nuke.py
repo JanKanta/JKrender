@@ -22,13 +22,16 @@ for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none",
                                ("always", None, "some", 2)):
     say("Fresh Nuke %s%s, %d processes" % (mode, ", RAM %.0f %%" % ram if ram else "", procs))
     job = make_job("r_%s_%s" % (mode, int(ram or 0)), 1001, 1024 if procs == 2 else 1048,
-                   env={"FAKE_LOAD_SECS": "2"} if procs > 2 else None)  # a longer script load: chunks ending together show
+                   env={"FAKE_LOAD_SECS": "2", "FAKE_SECS": "0.8"} if procs > 2 else None)  # a longer script load: chunks ending together show
     win = jk.MainWindow(job)
     win.s_workers.setValue(procs)
     e = win.engine
     win.c_fresh.setCurrentIndex(win.c_fresh.findData(mode))
+    win.s_reload_ram.setValue(90)
     if ram is not None:
-        win.manager.ram_percent = lambda r=ram: r
+        # RAM drops while a process reloads (the old Nuke gone, the new one still small), as it does
+        win.manager.ram_percent = lambda r=ram, e=e: 80.0 if r > 90 and any(
+            w.state in ("quitting", "gone", "loading") for w in e.workers.values()) else r
     win._start()
     seen = set()
     most = {"n": 0, "shown": 0}
@@ -61,7 +64,7 @@ for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none",
             check("State shows 'busy → reload' on one process at a time", most["shown"] == 1, most["shown"])
     win.close()
     win = None
-say("Over a limit with room for 2 of 4: one marked 'closes (RAM limit)' at a time")
+say("RAM holding 2 of 4 places: one marked 'closes (RAM full)' at a time")
 job = make_job("limit_one", 1001, 1040, env={"FAKE_SECS": "1.0"})
 win = jk.MainWindow(job)
 win.s_workers.setValue(4)
@@ -73,9 +76,31 @@ win.manager.ram_cap = 2
 e.workers_target = 2
 e._balance_workers()
 e._balance_workers()
-marked = [e.worker_state(w) for w in e.workers.values() if "closes (RAM limit)" in e.worker_state(w)]
-check("only one shows 'busy → closes (RAM limit)'", len(marked) == 1, [e.worker_state(w) for w in e.workers.values()])
+marked = [e.worker_state(w) for w in e.workers.values() if "closes (RAM full)" in e.worker_state(w)]
+check("only one shows 'busy → closes (RAM full)', no 'RAM limit'", len(marked) == 1, [e.worker_state(w) for w in e.workers.values()])
 win._stop()
 wait(lambda: e.state == "stopped", 30)
+win.close()
+say("The RAM stays over Reload Nuke at after a reload: the fresh Nuke waits for room, the render ends whole")
+job = make_job("reload_waits", 1001, 1080, env={"FAKE_SECS": "0.5"})
+win = jk.MainWindow(job)
+win.s_workers.setValue(4)
+e = win.engine
+win.c_fresh.setCurrentIndex(win.c_fresh.findData("short"))
+win.s_reload_ram.setValue(90)
+win.manager.ram_percent = lambda: 92.0
+win._start()
+waits = []
+
+
+def watch():
+    waits.extend(x[1] for x in e.log if "waits to start again" in x[1] and x[1] not in waits)
+    return e.state in ("done", "failed", "stopped")
+
+
+wait(watch, 180)
+check("a reloaded process waits to start again (RAM over Reload Nuke at)", bool(waits), [x[1] for x in e.log][-8:])
+check("its place is held down", win.manager.ram_cap is not None or e.state == "done", win.manager.ram_cap)
+check("done, all 80 frames", e.state == "done" and len(files(job)) == 80, (e.state, len(files(job))))
 win.close()
 finish()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.29 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.30 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.29"
+APP_VERSION = "0.99.30"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -72,8 +72,8 @@ JKR_LINE = re.compile(r"JKR (BOOT|READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM)\b 
 SLOW_START = 15  # seconds of Nuke starting before the script opens that are worth a warning
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
-DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
-                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90, "kill_ram": 98, "kill_vram": 98,
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True,
+                    "vram_guard": True, "reload_ram": 95, "reload_vram": 95, "kill_ram": 98, "kill_vram": 98,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
@@ -87,7 +87,7 @@ SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked 
 SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
 SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
-FRESH_HOLD = 30  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
+FRESH_HOLD = 10  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
 # A card so full the Nuke processes stall: from this VRAM % on (or the limit, if lower) JKrender looks for it, also under
 # the limit. Stalled = every process rendering a frame has used less than STALL_CPU of a core for STALL_CPU_SECS and 2 x the
@@ -97,6 +97,7 @@ STALL_VRAM = 90.0
 # after its chunk, if it grew to LEAK_GROWTH x what it took after its first chunk (a leak; a script that simply needs it
 # would only grow back). One at a time, as Reload Nuke.
 WAIT_RELOAD = 15
+RELOAD_SETTLE = 3  # s after a reload closed before its memory readings tell whether the fresh Nuke fits
 LEAK_GROWTH = 1.3
 STALL_CPU = 0.1
 STALL_CPU_SECS = 30
@@ -182,6 +183,10 @@ def read_settings():
         pass
     settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
     settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
+    if "ram_limit" in settings or "vram_limit" in settings:  # 0.99.30: no Memory Limit; Reload Nuke at took its place
+        settings.pop("ram_limit", None)
+        settings.pop("vram_limit", None)
+        settings["reload_ram"] = settings["reload_vram"] = 95
     return settings
 
 
@@ -360,8 +365,10 @@ def clear_open_nukes():
 
 
 def pct_limit(settings, name):
-    """The RAM or VRAM limit in %, as set."""
-    return float(settings.get("ram_limit", 95) if name == "RAM" else settings.get("vram_limit", 95))
+    """The RAM or VRAM % JKrender keeps under: Reload Nuke at (Settings > Performance and Optimization), 95 % unless set.
+    Held FRESH_HOLD s over it, the process holding the most reloads after its chunk and starts again once it fits; a
+    place comes back only under it. (Until 0.99.29 a separate Memory Limit.)"""
+    return float(settings.get("reload_ram", 95) if name == "RAM" else settings.get("reload_vram", 95))
 
 
 def pct_kill(settings, name):
@@ -375,7 +382,7 @@ def pct_kill(settings, name):
 def pct_reload(settings, name):
     """From this RAM or VRAM % on (held FRESH_HOLD s), Reload Nuke "When memory is full" reloads: Settings > Performance and
     Optimization > Reload Nuke at. 90 % unless set."""
-    return float(settings.get("reload_ram", 90) if name == "RAM" else settings.get("reload_vram", 90))
+    return pct_limit(settings, name)
 
 
 def hidden():
@@ -1146,8 +1153,8 @@ class Worker:
         self.gpu = False  # started with --gpu
         self.leave = False  # Work on another render: this one hands its place over first
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
-        self.why_leaving = None  # "RAM limit" while it closes after its chunk because RAM is over the limit
-        self.closed_why = None  # why it closed, shown in State: "RAM limit", "VRAM limit", "GPU frozen", "reload", "by me"
+        self.why_leaving = None  # "RAM full" while it closes after its chunk because the RAM holds the places down
+        self.closed_why = None  # why it closed, shown in State: "RAM 98 %", "VRAM 98 %", "GPU frozen", "reload", "by me"
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -1914,7 +1921,32 @@ class RenderEngine:
             return True
         if m.free_slots() <= 0:
             return False
-        if self.restart_ids or self.hand_wids or any(self.workers[i].state == "gone" for i in getattr(self, "refresh_ids", []) if i in self.workers):
+        refresh = [i for i in getattr(self, "refresh_ids", []) if i in self.workers and self.workers[i].state == "gone"]
+        if refresh and not (self.restart_ids or self.hand_wids):
+            # A reload for memory: the fresh Nuke starts once the memory has room. Its readings lag a moment behind the
+            # close, so look RELOAD_SETTLE s after it; still over Reload Nuke at then, its place waits like one closed
+            # for memory and comes back when it fits.
+            seen = self.__dict__.setdefault("_refresh_gone", {})
+            now = time.time()
+            first = min(seen.setdefault(i, now) for i in refresh)
+            if now - first < RELOAD_SETTLE:
+                return False
+            over = m.memory_over()
+            if over:
+                for i in refresh:
+                    self.refresh_ids.remove(i)
+                    seen.pop(i, None)
+                    self.workers[i].closed_why = "reload"
+                m._fell()
+                for name in over:
+                    m._hold_down(name, m._mem_now()[name] or 0.0)
+                self.note("%s waits to start again: %s over Reload Nuke at" % (
+                    ", ".join(self.workers[i].name for i in refresh), " and ".join(over)), "warn")
+                return False
+            for i in refresh:
+                seen.pop(i, None)
+            return True
+        if self.restart_ids or self.hand_wids or refresh:
             return True  # a fresh Nuke takes the place and the memory the one before it just left
         if self.filling:
             # Render starts all its processes straight away, also ones it has a place for only later (the renders share
@@ -1942,13 +1974,13 @@ class RenderEngine:
             limit = vram or (m is not None and m.ram_cap is not None)
             if limit:
                 # one at a time, so State shows "closes (RAM limit)" on the one process that goes, not on several
-                if any(x.why_leaving in ("RAM limit", "VRAM limit") and (x.retire or x.handover) and x.state != "gone"
+                if any(x.why_leaving in ("RAM full", "VRAM full") and (x.retire or x.handover) and x.state != "gone"
                        for x in self.workers.values()):  # _live() leaves out the ones already closing
                     return
                 extra = 1
             for w in sorted(live, key=lambda w: (not w.leave, w.pinned, -w.spawned) if limit else
                             (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned, -w.spawned))[:extra]:
-                why = None if w.leave or not limit else ("VRAM limit" if vram else "RAM limit")
+                why = None if w.leave or not limit else ("VRAM full" if vram else "RAM full")
                 w.why_leaving = w.closed_why = why
                 if w.state == "busy":
                     w.retire = True
@@ -2677,7 +2709,7 @@ class RenderEngine:
         return {
             "report": 2, "jkrender": APP_VERSION, "nuke": job.get("nuke_version", ""),
             "machine": machine_info(),
-            "settings": {k: self.settings.get(k) for k in ("use_gpu", "ram_guard", "ram_limit", "vram_guard", "vram_limit",
+            "settings": {k: self.settings.get(k) for k in ("use_gpu", "reload_ram", "reload_vram", "kill_ram", "kill_vram",
                                                          "chunk_auto", "auto_chunk", "max_renders", "fresh_after_chunk")},
             "script": {"id": script_id(job.get("script")), "width": job.get("width"), "height": job.get("height"),
                        "movie": bool(self.movie), "nodes": node_classes(job.get("snapshot") or job.get("script"))},
@@ -2907,7 +2939,7 @@ class RenderManager:
             if first is not None:
                 return "%s has not rendered its first frame yet" % first.name
         if psutil and self.settings.get("ram_guard", True):
-            limit = float(self.settings.get("ram_limit", 95))
+            limit = pct_limit(self.settings, "RAM")
             pct = self.ram_percent()
             if self._more_fit(pct, limit) < 1:
                 return self._ram_target(pct, limit)
@@ -2927,7 +2959,7 @@ class RenderManager:
             real = float(self.vram[1]) / total * 100
             pct = real + growing
             others = self.vram_others()
-            limit = float(self.settings.get("vram_limit", 95))
+            limit = pct_limit(self.settings, "VRAM")
             # over the limit only when JKrender's processes are what fills the card (see _vram_guard),
             # never into the last few % where Windows starts moving VRAM into the RAM
             if pct + one >= 97.0 or (pct + one >= limit and (others is None or others + one < limit)):
@@ -2974,32 +3006,25 @@ class RenderManager:
         if not psutil or now - self._ram_checked < 2:
             return
         self._ram_checked = now
-        if not self.settings.get("ram_guard", True):
-            self.ram_cap = None
-            return
-        limit = float(self.settings.get("ram_limit", 95))
+        limit = pct_limit(self.settings, "RAM")
         pct = self.ram_percent()
         live = self.live_count()
         rendering = any(e.state == "rendering" for e in self.engines)
-        if pct >= limit and live > 1 and rendering:
-            # One process fewer at a time, and only once the last one has closed (busy ones finish their chunk).
-            cap = max(1, min(self.budget(), live) - 1)
-            if (self.ram_cap is None or (live <= self.ram_cap and cap < self.ram_cap)) and now >= self.started_by_hand:
-                self.ram_cap = cap
-                self._fell()
-                self._note_running("!! RAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
-                                   % (pct, limit, cap), "warn")
+        if pct >= limit and rendering:
+            # Over Reload Nuke at: Reload Nuke takes the process holding the most after its chunk (memory_short); it
+            # starts again once it fits. Nothing closes here unless the RAM reaches Kill at.
             self._ram_ok_since = None
-            if pct >= pct_kill(self.settings, "RAM") and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
-                # Nearly out of memory: one process closes now instead of after its chunk.
+            if pct >= pct_kill(self.settings, "RAM") and live > 1 and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
+                # Nearly out of memory: one process closes now, mid-frame, and its place waits until it fits.
                 running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
                 if running:
                     e, w = self._close_first(running)
-                    e.note("!! RAM %.0f %%: %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
-                    w.closed_why = "RAM limit"
+                    e.note("!! RAM %.0f %% (Kill at): %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
+                    w.closed_why = "RAM %.0f %%" % pct
                     e._kill(w, requeue=True, note="stopped")
                     self._fell()
                     self._last_kill = now
+                    self._hold_down("RAM", pct)
         elif self.ram_cap is not None and self._more_fit(pct, limit) > 0:
             # Only processes that fit under the limit; one more would just push RAM over again and one
             # process would be closed and another started, round and round.
@@ -3047,7 +3072,7 @@ class RenderManager:
             return
         used, total = float(self.vram[1]), float(self.vram[2] or 1)
         pct = used / total * 100
-        limit = float(self.settings.get("vram_limit", 95))
+        limit = pct_limit(self.settings, "VRAM")
         live = self.live_count()
 
         def vram_of(w):
@@ -3061,27 +3086,10 @@ class RenderManager:
         # (only a guess while the VRAM of other programs is unknown: ours also grow, frame after frame)
         no_help = others is None and self._vram_lowered_at is not None and live <= (self.vram_cap or live) \
             and pct > self._vram_lowered_at - one / 2
-        # from Reload Nuke at % on the processes reload after their chunk (Reload Nuke)
+        # Over Reload Nuke at: Reload Nuke takes the process holding the most VRAM after its chunk; it starts again
+        # once it fits. Nothing closes here unless the VRAM reaches Kill at (or the card stalls: _stall_check).
         if pct >= limit:
             self._vram_ok_since = None
-            theirs = others is not None and others + one >= limit
-            if theirs or no_help:
-                if now - self._vram_others_noted > 120:
-                    self._vram_others_noted = now
-                    if theirs:
-                        why = "other programs hold %.1f GB of it" % (self.vram_idle / 1024)
-                    else:
-                        why = "the last process closed for it freed almost none"
-                    self._note_running("VRAM %.0f %% (limit %.0f %%), but %s: closing more of JKrender's processes "
-                                       "would not help, so %d keep going" % (pct, limit, why, live), "warn")
-            elif live > 1:
-                cap = max(1, min(self.budget(), live) - 1)
-                if (self.vram_cap is None or (live <= self.vram_cap and cap < self.vram_cap)) and now >= self.started_by_hand:
-                    self.vram_cap = cap
-                    self._fell_vram()
-                    self._vram_lowered_at = pct
-                    self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
-                                       % (pct, limit, cap), "warn")
             if pct >= pct_kill(self.settings, "VRAM") and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
@@ -3090,11 +3098,13 @@ class RenderManager:
                 if len(running) > 1:
                     # as with the RAM: the last one started, it has the least work to lose. By hand last.
                     e, w = self._close_first(running)
-                    e.note("!! VRAM %.0f %%: %s (%.1f GB) closed now%s" % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
-                    w.closed_why = "VRAM limit"
+                    e.note("!! VRAM %.0f %% (Kill at): %s (%.1f GB) closed now%s"
+                           % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
+                    w.closed_why = "VRAM %.0f %%" % pct
                     e._kill(w, requeue=True, note="stopped")
                     self._fell_vram()
                     self._last_vram_kill = now
+                    self._hold_down("VRAM", pct)
         elif self.vram_cap is not None and not self._stall_check(now, pct, limit):
             more = self._more_fit_vram(pct, limit, one)
             if more > 0:
@@ -3114,6 +3124,25 @@ class RenderManager:
                 self._vram_ok_since = None
         if pct >= limit or self.vram_cap is None:
             self._stall_check(now, pct, limit)
+
+    def _hold_down(self, name, pct, live=None):
+        """A place closed for memory waits until it fits: the RAM or VRAM places go down to the processes still running.
+        They come back as the memory lets them (_more_fit, _more_fit_vram)."""
+        live = self.live_count() if live is None else live
+        cap = max(1, live)
+        if name == "RAM":
+            if self.ram_cap is None or cap < self.ram_cap:
+                self.ram_cap = cap
+                self._note_running("!! RAM %.0f %%: %d Nuke processes until there is room" % (pct, cap), "warn")
+        else:
+            if self.vram_cap is None or cap < self.vram_cap:
+                self.vram_cap = cap
+                self._vram_lowered_at = pct
+                self._note_running("!! VRAM %.0f %%: %d Nuke processes until there is room" % (pct, cap), "warn")
+
+    def memory_over(self):
+        """What is over Reload Nuke at now: ["RAM"], ["VRAM"], both or []."""
+        return [name for name, pct in self._mem_now().items() if pct is not None and pct >= pct_limit(self.settings, name)]
 
     def _stall_check(self, now, pct, limit):
         """A card so full the processes stall (also under the limit, from STALL_VRAM): the last one started closes at
@@ -3833,7 +3862,7 @@ class ScriptTest(QtWidgets.QDialog):
         if not psutil:
             return float(self.main.manager.ram * self.main.manager.total)
         total = psutil.virtual_memory().total / 1024.0 ** 3
-        return max(1.0, total * float(self.main.settings.get("ram_limit", 95)) / 100 - min(16.0, total * 0.2))
+        return max(1.0, total * pct_limit(self.main.settings, "RAM") / 100 - min(16.0, total * 0.2))
 
     @staticmethod
     def hardware():
@@ -5956,39 +5985,24 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):
             box.setRange(50, 98)
             box.setSuffix(" %")
-            box.setValue(int(self.settings.get(key, 90)))
-            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
-            lab = QtWidgets.QLabel(name)
-            lab.setStyleSheet("background: transparent;")
-            reload_parts += [lab, box]
-        row(perf, "Reload Nuke at", reload_parts,
-            "Reload Nuke When memory is full (Processes and Chunks): once the RAM or the VRAM has stayed at or over\n"
-            "this %% for %d s, the processes reload Nuke after their chunk, one at a time, and start small again.\n"
-            "Lower: they reload sooner (each costs one script load). Keep it under the limits above." % FRESH_HOLD)
-        note(perf, "Held %d s at this, the processes reload Nuke after their chunk, one at a time." % FRESH_HOLD)
-        self.s_limit, self.s_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
-        limit_parts = []
-        for name, box, key in (("RAM", self.s_limit, "ram_limit"), ("VRAM", self.s_vram, "vram_limit")):
-            box.setRange(50, 98)
-            box.setSuffix(" %")
             box.setValue(int(self.settings.get(key, 95)))
             box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
             lab = QtWidgets.QLabel(name)
             lab.setStyleSheet("background: transparent;")
-            limit_parts += [lab, box]
-        self.s_vram.setEnabled(self.c_gpu.isChecked())
-        self.c_gpu.toggled.connect(self.s_vram.setEnabled)
-        row(perf, "Memory Limit", limit_parts,
-            "Over the limit fewer Nuke processes run: the one started last closes after its chunk (now, if it is still\n"
-            "opening the script), one at a time, and places come back when one more fits under the limit.\n"
-            "Nearly full (Kill at), the one started last closes at once and its chunk goes back to the queue.\n"
-            "VRAM: with Use GPU, as every process uses the graphics card.")
-        note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
+            reload_parts += [lab, box]
+        self.s_reload_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_reload_vram.setEnabled)
+        row(perf, "Reload Nuke at", reload_parts,
+            "Once the RAM or the VRAM has stayed at or over this %% for %d s (Reload Nuke: When memory is full),\n"
+            "the process holding the most of it reloads Nuke after its chunk and starts small again, one process at a time.\n"
+            "It starts again as soon as it fits: at once when it had grown (a leak), or once there is room, so one\n"
+            "process fewer runs while the script needs that much. Places closed for memory come back only under this %%." % FRESH_HOLD)
+        note(perf, "Held %d s at this, the process holding the most reloads after its chunk; it starts again once it fits." % FRESH_HOLD)
         self.s_kill_ram, self.s_kill_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         kill_parts = []
-        for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_limit),
-                                                    ("VRAM", self.s_kill_vram, "kill_vram", 98, self.s_vram)):
-            box.setRange(limit_box.value(), 99)  # never under the Memory Limit
+        for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_reload_ram),
+                                                    ("VRAM", self.s_kill_vram, "kill_vram", 98, self.s_reload_vram)):
+            box.setRange(limit_box.value(), 99)  # never under Reload Nuke at
             box.setSuffix(" %")
             box.setValue(max(limit_box.value(), int(self.settings.get(key, default))))
             box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
@@ -6002,7 +6016,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row(perf, "Kill at", kill_parts,
             "Nearly out of memory: the process started last closes at once, mid-frame. Its half-written frame is deleted\n"
             "and its chunk goes back to the queue: a little work is lost, the memory is free at once.\n"
-            "Never under the Memory Limit, so closing after the chunk always comes first.\n"
+            "Never under Reload Nuke at, so the reload after the chunk always comes first.\n"
             "Lower it if the PC freezes before (Windows and the graphics driver need some memory left).")
         note(perf, "Nearly full, the process started last closes at once, mid-frame.")
 
@@ -6127,8 +6141,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.update(DEFAULT_SETTINGS)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
-                           (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
-                           (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90),
+                           (self.s_max, MAX_RENDERS), (self.s_days, 15),
+                           (self.s_reload_ram, 95), (self.s_reload_vram, 95),
                            (self.s_kill_ram, 98), (self.s_kill_vram, 98)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
@@ -7227,13 +7241,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return "next try in %d s: a process closed for memory a moment ago" % math.ceil(wait)
         if m.live_count() >= m.budget():
             if m.vram_bound() and m.vram and m.vram[2]:
-                pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95))
+                pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, pct_limit(m.settings, "VRAM")
                 if m._vram_ok_since is not None:
                     return "VRAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
                 growing, starting = m.vram_starting()
                 return m._vram_target(pct, limit, m.vram_one() or 10.0, growing, starting)
             if m.ram_cap is not None:
-                pct, limit = m.ram_percent(), float(m.settings.get("ram_limit", 95))
+                pct, limit = m.ram_percent(), pct_limit(m.settings, "RAM")
                 if m._ram_ok_since is not None:
                     return "RAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
                 return m._ram_target(pct, limit)

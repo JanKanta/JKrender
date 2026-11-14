@@ -5,7 +5,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
 
 ![JKrender with four renders: three rendering side by side and one done, the frame preview, the timeline of every Nuke process and the system monitor](docs/screenshot.png)
 
-**Version 0.99.29** · Nuke 16 · Windows · free
+**Version 0.99.30** · Nuke 16 · Windows · free
 
 📘 Manual, 19 pages: [English](docs/JKrender_manual_en.pdf) · [Čeština](docs/JKrender_navod.pdf) · [Deutsch](docs/JKrender_manual_de.pdf) · [Español](docs/JKrender_manual_es.pdf) · [Polski](docs/JKrender_manual_pl.pdf) · [Русский](docs/JKrender_manual_ru.pdf)
 
@@ -14,7 +14,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
 - ⚡ **Faster than one Nuke.** Several Nuke processes render side by side, each opening the script only once. A heavy 4K comp rendered **1.9–2.6× faster** than one Nuke with all the threads, on the same PC.
 - 🧪 **Finds the best setup for your script.** *Test this script* tries processes × threads × cache on frames from the whole shot and tells you the fastest, and how much time each setup would cost on the whole shot.
 - ✅ **Every frame checked.** Missing, empty or cut-off files, black or one-colour frames, NaN and inf, duplicated frames, a wrong size or bit depth. A red or green card tells you at a glance.
-- 🛡️ **Never runs the PC out of memory.** RAM and VRAM limits start fewer processes when memory is short, and bring them back when it is free.
+- 🛡️ **Never runs the PC out of memory.** Over 95 % RAM or VRAM the biggest process reloads Nuke after its chunk and starts again once it fits; nearly full, one closes at once.
 
 ## What it does
 

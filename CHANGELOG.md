@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.99.30 — 2026-11-14
+
+- **No Memory Limit any more.** One rule takes its place: once the RAM or VRAM has stayed at or over **Reload Nuke at (95 %) for 10 s**, the process holding the most of it reloads Nuke after its chunk. The fresh Nuke starts as soon as it fits: at once when the old one had grown, or once there is room, so one process fewer runs while the script needs that much (State: wait: RAM 96 → 88 %). Over Reload Nuke at nothing else closes; places closed for memory come back only under it.
+- **Kill at stays** (98 %, never under Reload Nuke at): the process started last closes at once and its place waits until it fits. State says **closed (RAM 98 %)** / **closed (VRAM 98 %)**, no more "RAM limit".
+- Settings › Performance and Optimization: Use GPU, Reload Nuke, Reload Nuke at (95 %), Kill at (98 %). Settings from before move Reload Nuke at to 95 %.
+- `test_memory`, `test_settings` and `test_fresh_nuke` check it (0.99.29 fails them).
+
 ## 0.99.29 — 2026-11-14
 
 - **busy → reload (RAM 91 %)** shows on one process only, and that is the one that reloads: the one holding the most of what is short (the most VRAM when the VRAM is short, else the most RAM). Before, every busy process showed it and whichever finished its chunk first went.
