@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.46 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.47 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.46"
+APP_VERSION = "0.99.47"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1563,11 +1563,11 @@ class RenderEngine:
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → move to %s" % (state, getattr(w.leave_to, "write_names", "") or "render %d" % w.leave_to.number)
         fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
-        when = "after this frame " if self.settings.get("reload_after", "frame") == "frame" and not self.movie else ""
+        # when it goes (after the frame or the chunk) is in Settings > Reload after; the Log and the chunk's tooltip say it
         if not fresh and state == "busy" and not (w.retire or w.handover or w.leave) and self._wait_due(w, peek=True):
-            return "busy → reload %s(1.3 rule)" % when
+            return "busy → reload (1.3 rule)"
         if fresh:
-            return "busy → reload" if fresh == "always" else "busy → reload %s(%s)" % (when, fresh)
+            return "busy → reload" if fresh == "always" else "busy → reload (%s)" % fresh
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
             if w.why_leaving == "by me":
                 return "%s → closes by me" % state

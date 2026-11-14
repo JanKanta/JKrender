@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.47 — 2026-11-14
+
+- State says a reload without when: **busy → reload (VRAM over 95 %)**. Settings › Reload after decides when it goes; the Log and the chunk's tooltip say it.
+
 ## 0.99.46 — 2026-11-14
 
 - A reload for memory (Reload Nuke at, the 1.3 rule) comes right after the frame the process just finished, not after its whole chunk: the frame is on disk, nothing is lost, and the rest of the chunk goes back to the queue for the others. With chunks of 7-8 frames of 13 s, the reload came up to 1.5 minutes after State said it; now within a frame. State: **busy → reload after this frame (VRAM over 95 %)**. After every chunk stays after the chunk.

@@ -64,7 +64,7 @@ for mode, ram, want, procs in (("short", 40.0, "none", 2), ("short", 91.0, "some
         check("State never says reload", not any("reload" in s for s in seen), sorted(seen))
     else:
         check("fresh Nukes after chunks", len(fresh) >= (3 if mode == "always" else 1), len(fresh))
-        why = "busy → reload" if mode == "always" else "busy → reload after this frame (RAM over 90 %)"
+        why = "busy → reload" if mode == "always" else "busy → reload (RAM over 90 %)"
         check("State says it ahead: '%s'" % why, why in seen, sorted(seen))
         check("the timeline shows the reload", "again: reload" in loads, loads)
         tips = [jk.Gantt._chunk_tip(e, w, s[1], s[2], s[3], s[4], w.name) for w in e.workers.values() for s in w.segments
@@ -145,7 +145,6 @@ wait(going, 180)
 check("done, 48 files", e.state == "done" and len(files(job)) == 48, (e.state, len(files(job))))
 check("reloads after the chunk, none after a frame", bool(log_lines(e, "reloads after its chunk")) and not log_lines(e, "reloads after frame"),
       (log_lines(e, "reloads after")[:2]))
-check("State: busy → reload (RAM over 90 %), no 'after this frame'", "busy → reload (RAM over 90 %)" in seen
-      and not any("after this frame" in x for x in seen), sorted(x for x in seen if "reload" in x))
+check("State: busy → reload (RAM over 90 %)", "busy → reload (RAM over 90 %)" in seen, sorted(x for x in seen if "reload" in x))
 win.close()
 finish()
