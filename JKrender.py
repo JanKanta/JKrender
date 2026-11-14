@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.53 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.54 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.53"
+APP_VERSION = "0.99.54"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2070,6 +2070,31 @@ class RenderEngine:
             return ""  # only the one picked reloads, and only it shows "busy → reload" in State
         return short
 
+    def _leave_after_frame(self, w, f):
+        """Reload after: Frame. A process leaving its render (its place goes to another render, Work on, closing because the
+        memory holds the places down) goes right after the frame it just finished and wrote, not after its whole chunk; the
+        rest of the chunk goes back to the queue. Close after this chunk (by me) still waits for the chunk. True when it went."""
+        c = w.chunk
+        if (c is None or not (w.retire or w.handover or w.leave) or w.user_leaving or self.movie
+                or self.settings.get("reload_after", "frame") != "frame"):
+            return False
+        if not any(x != f and self.frames.get(x) is not None and self.frames[x].state not in ("done", "skipped")
+                   for x in c.frames):
+            return False  # its last frame: the chunk's end handles it
+        if w.leave and getattr(w, "leave_to", None) is not None:
+            why = "goes on to %s" % (w.leave_to.write_names or "render %d" % w.leave_to.number)
+        elif w.why_leaving:
+            why = "closes (%s)" % w.why_leaving
+        else:
+            why = "its place goes to another render" if self.manager and len(self.manager.engines) > 1 else "not needed"
+        self.note("%s %s after frame %d, the rest of %s goes back to the queue" % (w.name, why, f, c.name))
+        info = w.chunk_info()
+        self._kill(w, requeue=True, note="retired")
+        if info is not None:
+            info["end"] = "stopped after frame %d: %s" % (f, why)
+            info["after"] = why
+        return True
+
     def _reload_after_frame(self, w, f):
         """A reload for memory (Reload Nuke at, the 1.3 rule) does not wait for the end of the chunk: the process goes right
         after the frame it just finished and wrote, so no work is lost, and the rest of its chunk goes back to the queue for
@@ -2280,7 +2305,8 @@ class RenderEngine:
                     w.frame, w.frame_started = nxt, now
                     self.frames[nxt].state = "rendering"
                     self.frames[nxt].worker = w.name
-            self._reload_after_frame(w, f)
+            if not self._leave_after_frame(w, f):
+                self._reload_after_frame(w, f)
         elif kind == "CHUNK":
             c = w.chunk
             if c is not None:
@@ -6269,7 +6295,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "for the others. Nothing is lost, and the memory is free within a frame.\n"
             "Chunk: once its whole chunk is done; with long chunks that can take minutes, the frames of a chunk stay together\n"
             "in one process (a node that reads the frames around it finds them in its cache).\n"
-            "After every chunk is always after the chunk.")
+            "A process handing its place to another render, or closing because the memory holds the places down,\n"
+            "goes the same way. After every chunk and Close after this chunk are always after the chunk.")
         note(perf, "Frame: right after the frame it is on, the rest of its chunk goes to the others; nothing is lost. "
                    "Chunk: once its chunk is done, the chunk's frames stay in one process.")
         self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()

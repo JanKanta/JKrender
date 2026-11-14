@@ -124,4 +124,31 @@ keep = (mover.state, mover.leave, getattr(mover, "leave_to", None), mover.retire
 mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = "busy", True, types.SimpleNamespace(number=2, name="sh020", write_names="RENDER_EXR.Write3"), False, False, False
 check("State: busy → move to RENDER_EXR.Write3, the Write of the render it goes to", e.worker_state(mover) == "busy → move to RENDER_EXR.Write3", e.worker_state(mover))
 mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = keep
+say("Reload after: Frame: a process handing its place to another render goes after its frame, not its chunk")
+for after in ("frame", "chunk"):
+    win.c_reload_after.setCurrentIndex(win.c_reload_after.findData(after))
+    win.manager.set_budget(total=4)  # the parts above took places away: 4, all of them for render A
+    ja = make_job("hand_a_" + after, 1001, 1072, env={"FAKE_SECS": "0.5"})
+    jb = make_job("hand_b_" + after, 1001, 1024, env={"FAKE_SECS": "0.5"})
+    win.add_job(ja, auto=False)
+    a = win.manager.engines[-1]
+    win.manager.request_start(a)
+    wait(lambda: sum(1 for w in a.workers.values() if w.state == "busy") >= 4, 60)
+    pump(0.8)  # each is a frame or two into its chunk of 6
+    win.add_job(jb, auto=False)
+    b = win.manager.engines[-1]
+    win.manager.request_start(b)
+    t0 = time.time()
+    wait(lambda: any(w.state in ("loading", "idle", "busy") for w in b.workers.values()), 30)
+    took = time.time() - t0
+    mid = log_lines(a, "after frame")
+    if after == "frame":
+        check("Frame: it goes after its frame ('... after frame N, the rest of C.. goes back')", bool(mid) and "goes back to the queue" in mid[0], mid[:1])
+        check("Frame: render B gets a process within about a frame (%.1f s)" % took, took < 2.5, took)
+    else:
+        check("Chunk: none goes after a frame, they finish their chunk", not mid, mid[:1])
+    for x in (a, b):
+        x.stop("test")
+    wait(lambda: all(x.state in ("stopped", "done") for x in (a, b)), 30)
+    pump(1.0)
 finish()

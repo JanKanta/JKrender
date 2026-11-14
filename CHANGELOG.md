@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.54 — 2026-11-14
+
+- With Reload after: Frame, a process handing its place to another render (a render starting beside it, Work on) or closing because the memory holds the places down goes right after the frame it just finished, not after its whole chunk; the rest of the chunk goes back to the queue. W04 took a minute and 7 frames to hand its place over. Close after this chunk still waits for the chunk.
+- `test_process_menu` checks it (0.99.53 fails it).
+
 ## 0.99.53 — 2026-11-14
 
 - With only movies open, System lists one place a movie: 3 movie Writes show 3 rows, not the empty rest of Processes. With an image sequence open too, all places as before.
