@@ -109,7 +109,7 @@ jk.SETTINGS_FILE.write_text(json.dumps(raw), encoding="utf-8")
 old = jk.read_settings()
 check("settings from before 0.99.30: Memory Limit dropped, Reload Nuke at 95 %", "ram_limit" not in old and "vram_limit" not in old
       and (old["reload_ram"], old["reload_vram"]) == (95, 95), old)
-say("System tiles: CPU, GPU, RAM, VRAM, then disk and network; RAM says how much of it is Nuke's cache")
+say("System tiles: CPU, RAM, GPU, VRAM, then disk and network; RAM says how much of it is Nuke's cache")
 from PySide6 import QtWidgets as _QW
 row = win.m_cpu.parentWidget().layout() if win.m_cpu.parentWidget().layout() and win.m_cpu.parentWidget().layout().indexOf(win.m_cpu) >= 0 else None
 titles = []
@@ -118,7 +118,7 @@ for child in win.m_cpu.parentWidget().findChildren(_QW.QHBoxLayout):
     if child.indexOf(win.m_cpu) >= 0:
         lay = child
 titles = [lay.itemAt(i).widget().title.text() for i in range(lay.count()) if lay.itemAt(i).widget() is not None]
-check("tiles in order", titles == ["CPU", "GPU", "RAM", "VRAM", "Disk write", "Disk read", "Network"], titles)
+check("tiles in order", titles == ["CPU", "RAM", "GPU", "VRAM", "Disk write", "Disk read", "Network"], titles)
 check("no Nuke RAM tile", not hasattr(win, "m_nuke"))
 win._update_system()
 check("RAM: used GB – cache N GB", " GB – cache " in win.m_ram.sub.text(), win.m_ram.sub.text())

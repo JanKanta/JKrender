@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.38 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.39 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.38"
+APP_VERSION = "0.99.39"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6548,7 +6548,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.m_dw = Tile("Disk write")
         self.m_dr = Tile("Disk read")
         self.m_net = Tile("Network")
-        for t in (self.m_cpu, self.m_gpu, self.m_ram, self.m_vram, self.m_dw, self.m_dr, self.m_net):
+        for t in (self.m_cpu, self.m_ram, self.m_gpu, self.m_vram, self.m_dw, self.m_dr, self.m_net):
             tiles.addWidget(t, 1)  # all the same width; a long line wraps instead of being cut
         lay.addLayout(tiles)
         graphs = QtWidgets.QHBoxLayout()

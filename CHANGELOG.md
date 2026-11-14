@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.39 — 2026-11-14
+
+- System tiles: **CPU, RAM, GPU, VRAM**, then Disk write, Disk read, Network.
+
 ## 0.99.38 — 2026-11-14
 
 - The System tiles are all the same width again; a long line (RAM with the Nuke cache, CPU threads) goes on in a second line instead of being cut.
