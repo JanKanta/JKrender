@@ -1,0 +1,14 @@
+{
+  "_help": "Fill what you have; empty ones do not show. The Donation tab reads this when JKrender opens. QR images: PNG files next to this one, named in the *_qr fields.",
+  "intro": "JKrender is free. If it saves you time on your renders, you can support its work here. Thank you.",
+  "kofi": "",
+  "kofi_qr": "",
+  "paypal": "",
+  "paypal_qr": "",
+  "revolut": "",
+  "revolut_qr": "",
+  "bank_name": "",
+  "bank_iban": "",
+  "bank_note": "",
+  "bank_qr": ""
+}

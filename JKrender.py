@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.51 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.52 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -13,6 +13,7 @@ import array
 import collections
 import concurrent.futures
 import hashlib
+import html as _html
 import copy
 import datetime
 import json
@@ -52,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.51"
+APP_VERSION = "0.99.52"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -60,6 +61,13 @@ TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after eac
 TEST_RESULTS = HOME_DIR / "test_results"  # and its tables, kept
 QUEUE_FILE = HOME_DIR / "queue.json"  # the cards while the window is open; still there on opening means it did not close properly
 WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
+DONATION_FILE = Path(__file__).resolve().with_name("donation.json")  # what the Donation tab shows; empty ones do not
+AUTHOR = {"name": "Jan Kanta", "linkedin": "https://www.linkedin.com/in/jan-kanta-4a10b8133/",
+          "github": "https://github.com/JanKanta/JKrender"}
+
+
+def html_escape(v):
+    return _html.escape(str(v))
 
 # Movie containers are one file for the whole range, so they render in one piece on one worker.
 MOVIE_EXTS = {".mov", ".mp4", ".m4v", ".mxf", ".avi", ".mkv", ".webm", ".gif"}
@@ -5949,6 +5957,8 @@ class MainWindow(QtWidgets.QMainWindow):
         settings_page = self._settings_tab()  # builds the Job tab too
         self.sub_tabs.addTab(self._job_scroll, "Job")
         self.sub_tabs.addTab(settings_page, "Settings")
+        self.sub_tabs.addTab(self._donation_tab(), "Donation")
+        self.sub_tabs.addTab(self._author_tab(), "Author")
         split.addWidget(self.sub_tabs)
         split.setSizes([464, 576])
         rlay.addWidget(split, 1)
@@ -5972,6 +5982,94 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pages.setCurrentIndex(index)
         if self._details_shown():
             self._update_details()
+
+    @staticmethod
+    def _page(html_parts):
+        """A plain scrolling page of text and links (Donation, Author)."""
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(14)
+        for part in html_parts:
+            if isinstance(part, QtWidgets.QWidget):
+                lay.addWidget(part)
+                continue
+            lab = QtWidgets.QLabel(part)
+            lab.setWordWrap(True)
+            lab.setTextFormat(QtCore.Qt.RichText)
+            lab.setOpenExternalLinks(True)
+            lab.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)
+            lay.addWidget(lab)
+        lay.addStretch(1)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(w)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        return scroll
+
+    @staticmethod
+    def donation_info():
+        """donation.json next to JKrender.py, {} when it is not there or not readable."""
+        try:
+            data = json.loads(DONATION_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _donation_tab(self):
+        """Donation: what donation.json holds (Ko-fi, PayPal, Revolut, a bank transfer), each with its QR code when there is
+        one; the ones left empty do not show, and with none filled in it says they come soon."""
+        d = self.donation_info()
+        head = '<span style="font-size: 13pt; font-weight: 600; color: %s;">Support JKrender</span>' % C["accent"]
+        parts = [head, html_escape(d.get("intro") or "JKrender is free. If it saves you time on your renders, you can support its work here.")]
+        shown = 0
+        for key, title in (("kofi", "Ko-fi (card, from anywhere)"), ("paypal", "PayPal"), ("revolut", "Revolut")):
+            link = (d.get(key) or "").strip()
+            if not link:
+                continue
+            url = link if link.startswith("http") else "https://" + link
+            parts.append('<b>%s</b><br><a href="%s" style="color: %s;">%s</a>' % (title, html_escape(url), C["accent"], html_escape(link)))
+            parts += self._qr_widget(d.get(key + "_qr"))
+            shown += 1
+        if (d.get("bank_iban") or "").strip():
+            lines = ["<b>Bank transfer</b>", "IBAN: %s" % html_escape(d["bank_iban"].strip())]
+            if (d.get("bank_name") or "").strip():
+                lines.append("To: %s" % html_escape(d["bank_name"].strip()))
+            if (d.get("bank_note") or "").strip():
+                lines.append(html_escape(d["bank_note"].strip()))
+            parts.append("<br>".join(lines))
+            parts += self._qr_widget(d.get("bank_qr"))
+            shown += 1
+        if not shown:
+            parts.append('<span style="color: %s;">Donation links are coming soon.</span>' % C["dim"])
+        self._donation_count = shown
+        return self._page(parts)
+
+    @staticmethod
+    def _qr_widget(name):
+        """The QR code image named in donation.json (a PNG next to it), as a widget; [] when there is none."""
+        name = (name or "").strip()
+        if not name:
+            return []
+        pix = QtGui.QPixmap(str(DONATION_FILE.with_name(name)))
+        if pix.isNull():
+            return []
+        lab = QtWidgets.QLabel()
+        lab.setPixmap(pix.scaled(180, 180, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        return [lab]
+
+    def _author_tab(self):
+        """Author: who made JKrender and where to find him."""
+        a = AUTHOR
+        head = '<span style="font-size: 13pt; font-weight: 600; color: %s;">%s</span>' % (C["accent"], html_escape(a["name"]))
+        link = '<a href="%s" style="color: %s;">%s</a>'
+        return self._page([
+            head,
+            "Author of JKrender %s." % APP_VERSION,
+            "<b>LinkedIn</b><br>" + link % (a["linkedin"], C["accent"], a["linkedin"]),
+            "<b>JKrender on GitHub</b><br>" + link % (a["github"], C["accent"], a["github"]) +
+            "<br>The manuals, what changed in each version, and where to report a bug.",
+        ])
 
     def _settings_tab(self):
         """Settings: General, Performance and Optimization. Builds the Job tab too (Job, Processes and Chunks): self._job_scroll.

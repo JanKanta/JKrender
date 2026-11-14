@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.52 — 2026-11-14
+
+- Two tabs after Settings: **Donation** and **Author**. Donation shows what `donation.json` next to JKrender.py holds (Ko-fi, PayPal, Revolut, a bank transfer, each with its QR code as a PNG next to it); the ones left empty do not show, and with none filled in it says the links come soon. Author: Jan Kanta, LinkedIn, and JKrender on GitHub.
+- `test_settings` checks it (0.99.51 fails it).
+
 ## 0.99.51 — 2026-11-14
 
 - The processes table in System: **CPU** (was CPU used), and **GPU** and **VRAM** in two columns (GPU % and the GB of VRAM the process holds). Column orders saved before take the new names.

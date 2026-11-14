@@ -97,7 +97,20 @@ check("no Memory Limit fields", not hasattr(win, "s_limit") and not hasattr(win,
 check("Reload Nuke at: RAM and VRAM side by side", win.s_reload_ram.parentWidget() is win.s_reload_vram.parentWidget())
 check("Kill at: RAM 98 %, VRAM 98 %", (win.s_kill_ram.value(), win.s_kill_vram.value()) == (98, 98))
 tabs = [win.sub_tabs.tabText(i) for i in range(win.sub_tabs.count())]
-check("a Job tab before Settings", tabs == ["System", "Job", "Settings"], tabs)
+check("tabs: System, Job, Settings, Donation, Author", tabs == ["System", "Job", "Settings", "Donation", "Author"], tabs)
+check("Donation with nothing filled in: coming soon", win._donation_count == 0)
+import tempfile, pathlib
+tmp = pathlib.Path(tempfile.mkdtemp()) / "donation.json"
+tmp.write_text(json.dumps({"kofi": "ko-fi.com/example", "bank_iban": "CZ00 0000 0000 0000 0000 0000"}), encoding="utf-8")
+keep_file, jk.DONATION_FILE = jk.DONATION_FILE, tmp
+page = win._donation_tab()
+check("Ko-fi and a bank transfer filled in: both show", win._donation_count == 2, win._donation_count)
+texts = " ".join(l.text() for l in page.widget().findChildren(QtWidgets.QLabel))
+check("with the Ko-fi link", "https://ko-fi.com/example" in texts, texts[:200])
+jk.DONATION_FILE = keep_file
+author = " ".join(l.text() for l in win.sub_tabs.widget(tabs.index("Author")).widget().findChildren(QtWidgets.QLabel))
+check("Author: the name, LinkedIn and GitHub", "Jan Kanta" in author and "linkedin.com/in/jan-kanta" in author
+      and "github.com/JanKanta/JKrender" in author, author[:200])
 job_page = win.sub_tabs.widget(tabs.index("Job"))
 check("Processes and Chunks are on the Job tab", job_page.isAncestorOf(win.s_workers) and job_page.isAncestorOf(win.s_chunk))
 check("Reload Nuke at is on Settings", win.sub_tabs.widget(tabs.index("Settings")).isAncestorOf(win.s_reload_ram))
