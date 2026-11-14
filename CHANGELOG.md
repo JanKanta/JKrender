@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.13 — 2026-11-14
+
+- Checked: All frames again writes every frame anew. JKrender sends every frame of the range to Nuke, whether all, some or none were on disk, after a Stop, or for a new render opened over an earlier one's frames; every file then has a write time newer than the click. The real Nuke also replaces a frame another program holds open (it only leaves its temp file next to it). The last renders of a heavy comp's precomp, EXR and movie Writes had no file older than their start. Frames that look old are most likely the Read in Nuke showing what it cached (Reload the Read).
+- `test_rewrite` checks the write time of every file after All frames again. JKrender itself is unchanged.
+
 ## 0.99.12 — 2026-11-11
 
 - A graphics card so full that the Nuke processes stall is found under the VRAM limit too, from 90 %. On a heavy comp, 4 x 8 sat at 94.8 % of 24 GB (limit 95 %) for 17 minutes: Windows lent the card shared memory, the three Nukes waited without using the CPU and no frame finished. JKrender only looked for that over the limit.
