@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.44 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.45 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.44"
+APP_VERSION = "0.99.45"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1561,7 +1561,7 @@ class RenderEngine:
         state = "paused" if w.user_paused else w.state
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
-            return "%s → move to render %d" % (state, w.leave_to.number)
+            return "%s → move to %s" % (state, getattr(w.leave_to, "write_names", "") or "render %d" % w.leave_to.number)
         fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
         if not fresh and state == "busy" and not (w.retire or w.handover or w.leave) and self._wait_due(w, peek=True):
             return "busy → reload (1.3 rule)"

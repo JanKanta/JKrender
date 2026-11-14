@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.45 — 2026-11-14
+
+- A process going to another render after its chunk shows that render's Write: **busy → move to RENDER_EXR.Write3** (was busy → move to render 2).
+- `test_process_menu` checks it (0.99.44 fails it).
+
 ## 0.99.44 — 2026-11-14
 
 - GPU frozen is found sooner. Without CPU: every process rendering a frame but one (at least two) is enough; one still working, opening the script again say, no longer hides a card the rest wait for. No frame: 2.5 x the usual frame time, at least 45 s (was 4 x, at least 60 s). A freeze that took 91 s to find would take about 45-57 s.
