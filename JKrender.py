@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.52 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.53 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.52"
+APP_VERSION = "0.99.53"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -7449,7 +7449,9 @@ class MainWindow(QtWidgets.QMainWindow):
         rows = [(wid, ews[-1]) for wid, ews in m.process_rows(shown)]
         # every place of Processes, also the ones no process has taken yet, with why not
         taken = {wid for wid, _ in rows}
-        empty = [(wid, (None, wid)) for wid in range(1, m.total + 1) if wid not in taken]
+        # only movies open: one place each, so 3 movies show 3 rows, not the empty rest of Processes
+        places = m.total if any(not x.movie for x in m.engines) else min(m.total, sum(1 for x in m.engines if x.movie))
+        empty = [(wid, (None, wid)) for wid in range(1, places + 1) if wid not in taken]
         rows = [r for _, r in sorted(rows + empty, key=lambda r: r[0])]
         t.setRowCount(len(rows))
         self._worker_rows = rows

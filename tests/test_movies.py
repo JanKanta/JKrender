@@ -10,6 +10,15 @@ for j in movies[1:]:
 m = win.manager
 mov = [e for e in m.engines if e.movie]
 check("three movies", len(mov) == 3, [e.name for e in m.engines])
+m.set_budget(total=8)
+win._update_system()
+check("only movies open, Processes 8: System lists 3 places, one a movie, not 8", win.worker_table.rowCount() == 3,
+      win.worker_table.rowCount())
+win.add_job(make_job("seq1", 1001, 1010), auto=False)
+win._update_system()
+check("an image sequence opened too: all 8 places", win.worker_table.rowCount() == 8, win.worker_table.rowCount())
+win._close_card(m.engines[-1])
+m.set_budget(total=2)
 
 say("Render all: one process a movie with every thread, within Processes 2")
 for e in mov:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.53 — 2026-11-14
+
+- With only movies open, System lists one place a movie: 3 movie Writes show 3 rows, not the empty rest of Processes. With an image sequence open too, all places as before.
+- `test_movies` checks it (0.99.52 fails it).
+
 ## 0.99.52 — 2026-11-14
 
 - Two tabs after Settings: **Donation** and **Author**. Donation shows what `donation.json` next to JKrender.py holds (Ko-fi, PayPal, Revolut, a bank transfer, each with its QR code as a PNG next to it); the ones left empty do not show, and with none filled in it says the links come soon. Author: Jan Kanta, LinkedIn, and JKrender on GitHub.
