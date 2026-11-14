@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.16 — 2026-11-14
+
+- A place waiting to come back because the RAM or the VRAM is full: after 15 s the process holding the most of it (the most VRAM when the VRAM holds the places down, the most RAM when the RAM does) reloads Nuke after its chunk, so it starts small again and makes room. Only if it grew to 1.3 x what it took after its first chunk: a leak. A script that simply needs that much would only grow back, so then nothing reloads. One at a time, no frame lost; the next, if a place still waits, 15 s after this one is back. The Log says which and why.
+- `test_memory` checks it (0.99.15 fails it).
+
 ## 0.99.15 — 2026-11-14
 
 - A Nuke that crashed no longer turns the card red, neither while it renders nor after: its half-written frame is deleted and its chunk renders again, so nothing is wrong with the render. The tooltip says Nuke crashed (and, once done, that every frame is on disk and passes the check). The card is red only for real errors: the render failed, Nuke did not render a frame, a broken frame on disk, an error Nuke reported.

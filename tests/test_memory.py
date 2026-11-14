@@ -1,6 +1,7 @@
 """The RAM and VRAM guards with made-up readings: closing at the limit, coming back when there is room, the full card,
 a card so full no frame finishes, Fresh Nuke when memory is short, and that State says what the decision is."""
 import time
+import types
 from common import *
 
 jk, app = start(qt=False)
@@ -160,6 +161,47 @@ m._vram_checked = 0
 m._cpu_idle_since = time.time() - 40
 m._vram_guard()
 check("not a second one within 30 s", e.killed == [], e.killed)
+
+say("A place waits 15 s for memory: the process holding the most of it reloads after its chunk, if it grew (a leak)")
+GB = 1024 ** 3
+
+
+def waiting(name, secs, rss=(20.0, 30.0, 22.0, 21.0), vram=(4.0, 5.0, 7.0, 4.5)):
+    m, e, ws = manager()
+    e.chunks = [types.SimpleNamespace(state="queued")]
+    for w, r, v in zip(ws.values(), rss, vram):
+        w.rss, w.rss_base, w.vram_base, w.state = r, 20.0, 4000.0, "busy"
+    m.gpu_mem = {w.proc.pid: (10, v * GB) for w, v in zip(ws.values(), vram)}
+    m.refreshing = lambda: ""
+    if name:
+        m._wait_since[name] = time.time() - secs
+    return m, e, ws
+
+
+m, e, ws = waiting("RAM", 20)
+check("RAM: W01 does not reload, W02 holds the most", m.wait_reload(ws[1]) == "", m.wait_reload(ws[1]))
+why = m.wait_reload(ws[2])
+check("RAM, 20 s waiting: W02 reloads, 30 GB up from 20", "RAM" in why and "W02" in why and "30.0 GB" in why, why)
+check("then not again at once", m.wait_reload(ws[2]) == "")
+m, e, ws = waiting("RAM", 10)
+check("RAM, only 10 s waiting: none", m.wait_reload(ws[2]) == "")
+m, e, ws = waiting("RAM", 20, rss=(20.0, 23.0, 22.0, 21.0))
+check("RAM: the biggest grew only from 20 to 23 GB (no leak): none", m.wait_reload(ws[2]) == "")
+m, e, ws = waiting("VRAM", 20)
+check("VRAM: not W02 (the most RAM)", m.wait_reload(ws[2]) == "")
+why = m.wait_reload(ws[3])
+check("VRAM: W03 holds the most VRAM, 7 GB up from 3.9: it reloads", "VRAM" in why and "W03" in why, why)
+m, e, ws = waiting("VRAM", 20)
+m.refreshing = lambda: "W01"
+check("one reloading already: none (one at a time)", m.wait_reload(ws[3]) == "")
+m, e, ws = waiting(None, 0)
+m.total, m.ram_cap = 4, 3
+ws[4].state = "gone"
+m._wait_update()
+check("a place held down by the RAM limit: the wait starts", "RAM" in m._wait_since, m._wait_since)
+m.ram_cap = None
+m._wait_update()
+check("all places back: the wait is over", "RAM" not in m._wait_since, m._wait_since)
 
 say("Fresh Nuke when memory is short: only after 30 s near the limit, never because a process waits")
 jk.FRESH_HOLD = 0.5

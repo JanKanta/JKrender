@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.15 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.16 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.15"
+APP_VERSION = "0.99.16"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -93,6 +93,11 @@ RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that
 # the limit. Stalled = every process rendering a frame has used less than STALL_CPU of a core for STALL_CPU_SECS and 2 x the
 # usual frame time (they wait for the card), or no frame finished for 4 x the usual frame time (at least a minute).
 STALL_VRAM = 90.0
+# A place waiting WAIT_RELOAD s to come back because the RAM (or VRAM) is full: the process holding the most of it reloads
+# after its chunk, if it grew to LEAK_GROWTH x what it took after its first chunk (a leak; a script that simply needs it
+# would only grow back). One at a time, as Reload Nuke.
+WAIT_RELOAD = 15
+LEAK_GROWTH = 1.3
 STALL_CPU = 0.1
 STALL_CPU_SECS = 30
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
@@ -1953,6 +1958,14 @@ class RenderEngine:
             return ""  # one at a time: the others go on with their next chunk meanwhile
         return m.memory_short()
 
+    def _wait_due(self, w):
+        """A place of the renders waits for memory and w, its chunk done, is the one to reload for it (see wait_reload)."""
+        m = self.manager
+        self._wait_why = ""
+        if m is not None and not self.movie and any(c.state == "queued" and self.in_scope(c) for c in self.chunks):
+            self._wait_why = m.wait_reload(w)
+        return self._wait_why
+
     def _quit(self, w, why):
         w.retire = True
         if w.state == "loading":
@@ -2146,6 +2159,10 @@ class RenderEngine:
             if w.retire or w.handover:
                 self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
                            else "not needed")
+            elif self._wait_due(w):
+                w.closed_why = "reload"
+                self.refresh_ids.append(w.id)
+                self._quit(w, "reloads after its chunk: %s" % self._wait_why)
             elif self._fresh_due():
                 fresh = self._fresh_due()
                 w.closed_why = "reload"
@@ -2700,6 +2717,7 @@ class RenderManager:
         self.paused_at = None
         self.ram_cap = None  # RAM guard's lower process count while memory is short
         self._short_since = {}  # "RAM" / "VRAM": since when it has been within 5 % of its limit (Fresh Nuke after every chunk)
+        self._wait_since = {}  # "RAM" / "VRAM": since when a place has waited to come back for it
         self._ram_checked = 0.0
         self._ram_ok_since = None
         self._last_kill = 0.0
@@ -3196,6 +3214,47 @@ class RenderManager:
             else:
                 self._short_since.setdefault(name, now)
 
+    def _wait_update(self):
+        """Since when a place has waited to come back because the RAM or the VRAM holds the processes down."""
+        now = time.time()
+        rendering = any(e.state == "rendering" and any(c.state == "queued" for c in e.chunks) for e in self.engines)
+        for name, cap in (("RAM", self.ram_cap), ("VRAM", self.vram_cap)):
+            if rendering and cap is not None and cap < self.total and self.live_count() <= cap:
+                self._wait_since.setdefault(name, now)
+            else:
+                self._wait_since.pop(name, None)
+
+    def _held(self, w, name):
+        """GB of RAM or VRAM process w holds now, and after its first chunk (None before that)."""
+        if name == "RAM":
+            return w.rss, w.rss_base
+        now = self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 3 if w.gpu else 0.0
+        return now, (w.vram_base / 1024 if w.vram_base else None)
+
+    def wait_reload(self, w):
+        """Why process w, its chunk done, reloads for a place waiting WAIT_RELOAD s for memory; else "". Only the one holding
+        the most of what is short (VRAM: the most VRAM; RAM: the most RAM), and only if it grew LEAK_GROWTH x since its first
+        chunk. One at a time."""
+        now = time.time()
+        if self.refreshing():
+            return ""
+        for name in ("VRAM", "RAM"):
+            since = self._wait_since.get(name)
+            if since is None or now - since < WAIT_RELOAD:
+                continue
+            running = [x for e in self.engines if not e.movie for x in e.workers.values()
+                       if x.state in ("idle", "busy") and not x.retire and (name == "RAM" or x.gpu)]
+            if not running:
+                continue
+            top = max(running, key=lambda x: self._held(x, name)[0])
+            held, base = self._held(top, name)
+            if top is not w or not base or held < base * LEAK_GROWTH:
+                continue
+            self._wait_since[name] = now  # the next one, if a place still waits, 15 s after this one is back
+            return "a place waits %.0f s for %s; %s holds the most, %.1f GB, up from %.1f GB" % (
+                now - since, name, w.name, held, base)
+        return ""
+
     def _mem_now(self):
         ram = self.ram_percent() if psutil and self.settings.get("ram_guard", True) else None
         vram = None
@@ -3277,6 +3336,7 @@ class RenderManager:
         self._ram_guard()
         self._vram_guard()
         self._short_update()
+        self._wait_update()
         changed = self._start_next() or changed
         self._admit()
         self._allocate()

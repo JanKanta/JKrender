@@ -16,7 +16,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 |---|---|
 | `test_disk_checks` | a render opening with frames whole, missing, cut off, empty; Check frames says the same; frames checked when a render ends, then the pixels; Stop |
 | `test_render_again` | Render again on one and on several renders, finished or stopped: Only missing, All frames again, Cancel |
-| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, processes stalled on a full card just under the limit, Reload Nuke after 30 s, the State text |
+| `test_memory` | the RAM and VRAM limits: closing, coming back, a full card, a card so full no frame finishes, processes stalled on a full card just under the limit, the biggest process reloading for a place that waits 15 s, Reload Nuke after 30 s, the State text |
 | `test_fresh_nuke` | Reload Nuke: Never, When memory is full, After every chunk; same places, State, timeline |
 | `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
