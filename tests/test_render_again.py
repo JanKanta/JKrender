@@ -84,4 +84,18 @@ wait(lambda: e4.state == "done", 90)
 skipped = sorted(f for f, fr in e4.frames.items() if fr.state == "skipped")
 check("the frames from before Stop show as on disk, skipped", skipped == before, (skipped, before))
 check("all 12 on disk", len(files(job4)) == 12, len(files(job4)))
+
+say("Card numbers by place: a card closed leaves no gap")
+
+
+def numbers():
+    return [(e.number, win.cards[e].badge.text()) for e in win.manager.engines]
+
+
+check("four cards: 1 2 3 4", numbers() == [(1, "1"), (2, "2"), (3, "3"), (4, "4")], numbers())
+win._close_card(es[1])
+win._close_card(es[2])
+check("two closed: 1 2, not 1 4", numbers() == [(1, "1"), (2, "2")], numbers())
+win.add_job(make_job("sh050", 1001, 1003), auto=False)
+check("one added: 3, not 5", numbers()[-1] == (3, "3"), numbers())
 finish()

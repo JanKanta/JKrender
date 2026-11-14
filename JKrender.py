@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.19 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.20 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.19"
+APP_VERSION = "0.99.20"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2718,7 +2718,6 @@ class RenderManager:
         self.total = int(settings.get("processes") or plan["workers"])
         self.threads = int(settings.get("threads") or plan["threads"])
         self.ram = int(settings.get("ram") or plan["ram"])
-        self.next_number = 1
         self.pauses = []  # times when every render was paused: the timeline leaves them out
         self.paused_at = None
         self.ram_cap = None  # RAM guard's lower process count while memory is short
@@ -2751,8 +2750,7 @@ class RenderManager:
         e.manager = self
         if not e.movie:
             e.set_chunk_size(e.preferred_chunk())
-        e.number = self.next_number
-        self.next_number += 1
+        e.number = len(self.engines) + 1  # its place among the cards: 1, 2, 3 (renumber keeps it so)
         e.threads, e.ram = self.threads, self.ram
         e.workers_target = 0
         e.scan_disk()  # frames the Write already rendered show as done straight away
@@ -2766,6 +2764,13 @@ class RenderManager:
         e.shutdown()
         if e in self.engines:
             self.engines.remove(e)
+        self.renumber()
+
+    def renumber(self):
+        """Card numbers by place, 1, 2, 3 ...: a card closed leaves no gap (1, 2, 3, not 1, 5, 6). The order stays the order
+        they were added in, oldest first."""
+        for i, x in enumerate(self.engines, 1):
+            x.number = i
 
     def running(self):
         return [e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
@@ -4663,6 +4668,8 @@ class RenderCard(QtWidgets.QFrame):
 
     def refresh(self, selected, closable):
         e = self.engine
+        if self.badge.text() != str(e.number):
+            self.badge.setText(str(e.number))
         c = e.counts()
         total = max(1, len(e.frames))
         finished = c["done"] + c["skipped"] + c["bad"]

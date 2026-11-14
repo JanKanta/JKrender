@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.20 — 2026-11-14
+
+- Card numbers go by place: 1, 2, 3. Closing a card renumbers the rest, and a new one takes the next number, so it is never 1, 5, 6. The order stays the order they were added in.
+- `test_render_again` checks it (0.99.19 fails it).
+
 ## 0.99.19 — 2026-11-14
 
 - **Reload Nuke at** in Settings › Performance and Optimization: two fields side by side, RAM and VRAM, 90 % each by default. Once the RAM or VRAM stays at or over it for 30 s, Reload Nuke (When memory is full) reloads the processes after their chunk, one at a time. Before, it was always 5 % under the limit. Reset puts them back to 90 %.
