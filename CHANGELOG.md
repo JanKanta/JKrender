@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.22 — 2026-11-14
+
+- Performance and Optimization in a new order: Use GPU, Reload Nuke, Reload Nuke at, Memory Limit (under Reload Nuke at). Nothing else changed.
+
 ## 0.99.21 — 2026-11-14
 
 - Settings › Performance and Optimization holds all the memory settings: **Memory Limit** (RAM and VRAM side by side in one row, 95 % each), **Reload Nuke** (the menu, moved here from Processes and Chunks) and **Reload Nuke at** (RAM and VRAM, 90 % each).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.21 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.22 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.21"
+APP_VERSION = "0.99.22"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -5917,24 +5917,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
             "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
         note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card. Each process takes its own VRAM.")
-        self.s_limit, self.s_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
-        limit_parts = []
-        for name, box, key in (("RAM", self.s_limit, "ram_limit"), ("VRAM", self.s_vram, "vram_limit")):
-            box.setRange(50, 98)
-            box.setSuffix(" %")
-            box.setValue(int(self.settings.get(key, 95)))
-            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
-            lab = QtWidgets.QLabel(name)
-            lab.setStyleSheet("background: transparent;")
-            limit_parts += [lab, box]
-        self.s_vram.setEnabled(self.c_gpu.isChecked())
-        self.c_gpu.toggled.connect(self.s_vram.setEnabled)
-        row(perf, "Memory Limit", limit_parts,
-            "Over the limit fewer Nuke processes run: the one started last closes after its chunk (now, if it is still\n"
-            "opening the script), one at a time, and places come back when one more fits under the limit.\n"
-            "Nearly full, the one started last closes at once: RAM from 98 %, VRAM from 97 %, as its chunk goes back to the queue.\n"
-            "VRAM: with Use GPU, as every process uses the graphics card.")
-        note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
         self.c_fresh = QtWidgets.QComboBox()
         for key, text in FRESH_MODES:
             self.c_fresh.addItem(text, key)
@@ -5963,6 +5945,24 @@ class MainWindow(QtWidgets.QMainWindow):
             "this %% for %d s, the processes reload Nuke after their chunk, one at a time, and start small again.\n"
             "Lower: they reload sooner (each costs one script load). Keep it under the limits above." % FRESH_HOLD)
         note(perf, "Held %d s at this, the processes reload Nuke after their chunk, one at a time." % FRESH_HOLD)
+        self.s_limit, self.s_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        limit_parts = []
+        for name, box, key in (("RAM", self.s_limit, "ram_limit"), ("VRAM", self.s_vram, "vram_limit")):
+            box.setRange(50, 98)
+            box.setSuffix(" %")
+            box.setValue(int(self.settings.get(key, 95)))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            limit_parts += [lab, box]
+        self.s_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_vram.setEnabled)
+        row(perf, "Memory Limit", limit_parts,
+            "Over the limit fewer Nuke processes run: the one started last closes after its chunk (now, if it is still\n"
+            "opening the script), one at a time, and places come back when one more fits under the limit.\n"
+            "Nearly full, the one started last closes at once: RAM from 98 %, VRAM from 97 %, as its chunk goes back to the queue.\n"
+            "VRAM: with Use GPU, as every process uses the graphics card.")
+        note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
 
         cards.remove(jobs)
         cards.remove(perf)
