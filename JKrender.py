@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.20 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.21 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.20"
+APP_VERSION = "0.99.21"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -180,6 +180,7 @@ def read_settings():
         settings.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
     except Exception:
         pass
+    settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
     return settings
 
 
@@ -5916,37 +5917,37 @@ class MainWindow(QtWidgets.QMainWindow):
             "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
             "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
         note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card. Each process takes its own VRAM.")
-        self.c_vram = toggle("vram_guard", True, lambda v: (self._save_setting("vram_guard", v),
-                                                             self.s_vram.setEnabled(v and self.c_gpu.isChecked())))
-        self.s_vram = QtWidgets.QSpinBox()
-        self.s_vram.setRange(50, 98)
-        self.s_vram.setSuffix(" %")
-        self.s_vram.setValue(int(self.settings.get("vram_limit", 95)))
-        self.s_vram.valueChanged.connect(lambda v: self._save_setting("vram_limit", v))
-        self.s_vram.setEnabled(self.c_vram.isChecked() and self.c_gpu.isChecked())
-        self.c_vram.setEnabled(self.c_gpu.isChecked())
-        self.c_gpu.toggled.connect(lambda v: (self.c_vram.setEnabled(v), self.s_vram.setEnabled(v and self.c_vram.isChecked())))
-        row(perf, "VRAM limit", [self.c_vram, self.s_vram],
-            "Every Nuke process uses the GPU. With room on the card nothing reloads. Close to the limit\n"
-            "the process that grew the most reloads after its chunk (Reload Nuke).\n"
-            "Over the limit, fewer processes, like the RAM limit: the last one started closes first (after its chunk,\n"
-            "or now if it is still opening the script), one at a time; places come back when one more fits.\n"
-            "About to spill into the RAM (97 %), the last one started closes at once.\n"
-            "Off: every process uses the GPU; a full card makes them all wait (GPU at 100 %, CPU idle).")
+        self.s_limit, self.s_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        limit_parts = []
+        for name, box, key in (("RAM", self.s_limit, "ram_limit"), ("VRAM", self.s_vram, "vram_limit")):
+            box.setRange(50, 98)
+            box.setSuffix(" %")
+            box.setValue(int(self.settings.get(key, 95)))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            limit_parts += [lab, box]
+        self.s_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_vram.setEnabled)
+        row(perf, "Memory Limit", limit_parts,
+            "Over the limit fewer Nuke processes run: the one started last closes after its chunk (now, if it is still\n"
+            "opening the script), one at a time, and places come back when one more fits under the limit.\n"
+            "Nearly full, the one started last closes at once: RAM from 98 %, VRAM from 97 %, as its chunk goes back to the queue.\n"
+            "VRAM: with Use GPU, as every process uses the graphics card.")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
-        self.c_guard = toggle("ram_guard", True, self._guard_changed)
-        self.s_limit = QtWidgets.QSpinBox()
-        self.s_limit.setRange(50, 98)
-        self.s_limit.setSuffix(" %")
-        self.s_limit.setValue(int(self.settings.get("ram_limit", 95)))
-        self.s_limit.valueChanged.connect(lambda v: self._save_setting("ram_limit", v))
-        self.s_limit.setEnabled(self.c_guard.isChecked())
-        row(perf, "RAM limit", [self.c_guard, self.s_limit],
-            "When RAM goes over the limit, fewer Nuke processes run:\n"
-            "the one started last closes first, so the least work is lost (close to full at once,\n"
-            "otherwise after its chunk). They come back when they fit again.\n"
-            "Off: nothing watches RAM; Windows starts swapping when it runs out.")
-        note(perf, "Over the limit the process started last closes first, and comes back when RAM allows.")
+        self.c_fresh = QtWidgets.QComboBox()
+        for key, text in FRESH_MODES:
+            self.c_fresh.addItem(text, key)
+        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(self.settings.get("fresh_after_chunk", "short"))))
+        self.c_fresh.currentIndexChanged.connect(lambda i: self._save_setting("fresh_after_chunk", self.c_fresh.itemData(i)))
+        row(perf, "Reload Nuke", [self.c_fresh],
+            "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
+            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: a reload leaves room for more processes.\n"
+            "Each costs one script load.\n\n"
+            "Never: a process renders chunk after chunk.\n"
+            "When memory is full: only once the RAM or VRAM has stayed\n"
+            "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
+            "After every chunk: always. Test this script can tell whether it pays for a script.")
         self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         reload_parts = []
         for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):
@@ -6018,19 +6019,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "so every Nuke process finishes at about the same time.\n"
             "Off: every chunk keeps the size set under Chunk.")
         note(procs, "Every process finishes at about the same time.")
-        self.c_fresh = QtWidgets.QComboBox()
-        for key, text in FRESH_MODES:
-            self.c_fresh.addItem(text, key)
-        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(self.settings.get("fresh_after_chunk", "short"))))
-        self.c_fresh.currentIndexChanged.connect(lambda i: self._save_setting("fresh_after_chunk", self.c_fresh.itemData(i)))
-        row(procs, "Reload Nuke", [self.c_fresh],
-            "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
-            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: a reload leaves room for more processes.\n"
-            "Each costs one script load.\n\n"
-            "Never: a process renders chunk after chunk.\n"
-            "When memory is full: only once the RAM or VRAM has stayed\n"
-            "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
-            "After every chunk: always. Test this script can tell whether it pays for a script.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
         scroll = ReflowScroll(w, outer, cards)
         scroll.reflow(10000)
@@ -6103,7 +6091,7 @@ class MainWindow(QtWidgets.QMainWindow):
                            (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
-                        (self.c_gpu, True), (self.c_guard, True), (self.c_vram, True), (self.c_chunk_auto, True),
+                        (self.c_gpu, True), (self.c_chunk_auto, True),
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
         self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(DEFAULT_SETTINGS["fresh_after_chunk"])))
@@ -6113,10 +6101,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings.pop("system_order", None)
         write_settings(self.settings)
         self.engine.note("Settings reset to defaults", "ok")
-
-    def _guard_changed(self, on):
-        self._save_setting("ram_guard", on)
-        self.s_limit.setEnabled(on)
 
     def _dim_changed(self, on):
         self._save_setting("dim_others", on)

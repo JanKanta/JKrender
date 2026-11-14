@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.21 — 2026-11-14
+
+- Settings › Performance and Optimization holds all the memory settings: **Memory Limit** (RAM and VRAM side by side in one row, 95 % each), **Reload Nuke** (the menu, moved here from Processes and Chunks) and **Reload Nuke at** (RAM and VRAM, 90 % each).
+- The RAM and VRAM limits have no on/off switch any more: they are always on. Settings that had one switched off read it as on. The VRAM field is greyed out with Use GPU off.
+- `test_settings` checks it (0.99.20 fails it).
+
 ## 0.99.20 — 2026-11-14
 
 - Card numbers go by place: 1, 2, 3. Closing a card renumbers the rest, and a new one takes the next number, so it is never 1, 5, 6. The order stays the order they were added in.

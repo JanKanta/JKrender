@@ -83,4 +83,13 @@ check("VRAM limit back to 95", s["vram_limit"] == 95 and win.s_vram.value() == 9
 check("Reload Nuke at back to RAM 90 %, VRAM 90 %", s["reload_ram"] == 90 and s["reload_vram"] == 90
       and win.s_reload_ram.value() == 90 and win.s_reload_vram.value() == 90, (s.get("reload_ram"), s.get("reload_vram")))
 check("what JKrender learned of scripts is kept", s.get("script_ram") == {"sh010": 7.5}, s.get("script_ram"))
+
+say("Memory Limit: RAM and VRAM in one row, always on")
+check("no on/off switches any more", not hasattr(win, "c_guard") and not hasattr(win, "c_vram"))
+raw = json.loads(jk.SETTINGS_FILE.read_text(encoding="utf-8"))
+raw.update({"ram_guard": False, "vram_guard": False})
+jk.SETTINGS_FILE.write_text(json.dumps(raw), encoding="utf-8")
+back = jk.read_settings()
+check("a guard switched off in older settings is on again", back["ram_guard"] and back["vram_guard"], back)
+check("the row shows RAM and VRAM side by side", win.s_limit.parentWidget() is win.s_vram.parentWidget())
 finish()
