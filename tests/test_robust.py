@@ -45,6 +45,11 @@ win.add_job(job, auto=False)
 e1 = win.manager.engines[-1]
 win.select(e1)
 win._start()
+wait(lambda: e1.crashes >= 1 or e1.state in ("done", "failed", "stopped"), 150)
+running = e1.state == "rendering"
+win._refresh_cards()
+check("right after the crash, still rendering: the card is not red", running and jk.C["failed"] not in win.cards[e1].styleSheet()
+      and "crashed 1 time" in win.cards[e1].toolTip(), (e1.state, win.cards[e1].toolTip()))
 wait(lambda: e1.state in ("done", "failed", "stopped"), 150)
 check("done", e1.state == "done", e1.state)
 check("all 12 on disk", len(files(job)) == 12, len(files(job)))
@@ -63,8 +68,8 @@ some = e1.frames[min(e1.frames)]
 keep = some.checks
 some.checks = {}  # as with Check frames when a render ends off: nothing says the files are whole
 win._refresh_cards()
-check("a frame not checked: red, Nuke crashed", jk.C["failed"] in card.styleSheet() and "crashed" in card.toolTip(),
-      (card.styleSheet(), card.toolTip()))
+check("a frame not checked after the crash: not red, the tooltip says Nuke crashed",
+      jk.C["failed"] not in card.styleSheet() and "crashed 1 time" in card.toolTip(), (card.styleSheet(), card.toolTip()))
 some.checks = keep
 some.state = "bad"
 win._refresh_cards()

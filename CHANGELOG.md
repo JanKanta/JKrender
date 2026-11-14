@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.15 — 2026-11-14
+
+- A Nuke that crashed no longer turns the card red, neither while it renders nor after: its half-written frame is deleted and its chunk renders again, so nothing is wrong with the render. The tooltip says Nuke crashed (and, once done, that every frame is on disk and passes the check). The card is red only for real errors: the render failed, Nuke did not render a frame, a broken frame on disk, an error Nuke reported.
+- `test_robust` checks the card right after the crash and after the render (0.99.14 fails it).
+
 ## 0.99.14 — 2026-11-14
 
 - **Delete all** in Output, next to Delete: with more than one render picked (Shift+click) and more than one of them with frames on disk (or its movie), it deletes everything rendered of them after one question, which lists each render with its file count and size. Each is then ready to render again. A render still running is left out. Delete itself still acts on the render shown.

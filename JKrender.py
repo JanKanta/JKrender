@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.14 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.15 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.14"
+APP_VERSION = "0.99.15"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2542,7 +2542,8 @@ class RenderEngine:
 
     def errors(self):
         """What went wrong in this render, in a few words each; empty when nothing did. A process closed for RAM or VRAM
-        is not one: its chunk renders again."""
+        is not one: its chunk renders again. Nor is a Nuke that crashed: its half-written frame is deleted and its chunk
+        renders again; the card's tooltip says so (recovered)."""
         c = self.counts()
         out = []
         if self.state == "failed":
@@ -2554,8 +2555,6 @@ class RenderEngine:
         nuke_errors = sum(1 for x in self.log if x[0] == "" and " failed on W" in x[1])
         if nuke_errors and not c["failed"]:
             out.append("Nuke reported %d error(s), see the Log" % nuke_errors)
-        if self.crashes and not self.verified():
-            out.append("Nuke crashed %d time(s)" % self.crashes)
         return out
 
     def verified(self):
@@ -2569,10 +2568,12 @@ class RenderEngine:
         return (bool(frames) and self.pending_checks <= 0 and all(fr.state != "bad" and fr.checks for fr in frames))
 
     def recovered(self):
-        """For the card's tooltip: crashes JKrender made good, the render being whole and checked."""
+        """For the card's tooltip: the crashes JKrender made good. They never turn the card red."""
         if self.crashes and self.verified():
             return ("Nuke crashed %d time(s); the chunk rendered again and every frame is on disk and passes the check"
                     % self.crashes)
+        if self.crashes:
+            return "Nuke crashed %d time(s); its chunk went back to the queue and renders again" % self.crashes
         return ""
 
     def rate(self):

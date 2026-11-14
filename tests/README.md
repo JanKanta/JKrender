@@ -22,7 +22,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
 | `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the Write column in System |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
-| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a green card after a crash once every frame is checked, red with a broken or unchecked frame |
+| `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a crash never turns the card red (also while it renders), red with a broken frame |
 | `test_ffmpeg_fetch` | ffmpeg fetched on the first start from a release served locally: the newest LGPL build, only the programs and DLLs kept, nothing left on a wrong SHA-256, asked once together with numpy, the PC's own ffmpeg first |
 | `test_rewrite` | All frames again writes every file anew (its write time is newer than the click): all frames on disk, some, a stopped render, a new render opened over an earlier one's frames |
 | `test_delete_all` | Delete all: only with more than one picked render that has frames, one question, every picked render's frames gone and ready again, a running render left out |
