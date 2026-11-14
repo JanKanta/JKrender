@@ -53,7 +53,7 @@ for mode, ram, want, procs in (("short", 40.0, "none", 2), ("short", 91.0, "some
         return e.state in ("done", "failed", "stopped")
 
     wait(going, 180)
-    fresh = log_lines(e, "reloads after its chunk")
+    fresh = log_lines(e, "reloads after")
     loads = {seg[1] for w in e.workers.values() for seg in w.segments if seg[0] == "load"}
     frames = 24 if procs == 2 else 48
     check("done, %d files" % frames, e.state == "done" and len(files(job)) == frames, (e.state, len(files(job))))
@@ -64,13 +64,18 @@ for mode, ram, want, procs in (("short", 40.0, "none", 2), ("short", 91.0, "some
         check("State never says reload", not any("reload" in s for s in seen), sorted(seen))
     else:
         check("fresh Nukes after chunks", len(fresh) >= (3 if mode == "always" else 1), len(fresh))
-        why = "busy → reload" if mode == "always" else "busy → reload (RAM over 90 %)"
+        why = "busy → reload" if mode == "always" else "busy → reload after this frame (RAM over 90 %)"
         check("State says it ahead: '%s'" % why, why in seen, sorted(seen))
         check("the timeline shows the reload", "again: reload" in loads, loads)
         tips = [jk.Gantt._chunk_tip(e, w, s[1], s[2], s[3], s[4], w.name) for w in e.workers.values() for s in w.segments
                 if s[0] == "chunk" and s[3]]
-        check("the chunk before a reload says so: 'then: closed: reloads after its chunk'",
-              any("then: closed: reloads after its chunk" in t for t in tips), [t for t in tips if "then: closed" in t][:1] or tips[:1])
+        want = "then: closed: reloads after its chunk" if mode == "always" else "for a reload"
+        check("the chunk of a reload says so: '%s'" % want, any(want in t for t in tips),
+              [t for t in tips if "reload" in t][:1] or tips[:1])
+        if mode == "short":
+            mid = log_lines(e, "reloads after frame")
+            check("when memory is full the reload comes after a frame, not after the chunk: '%s'" % (mid[:1] or ["?"])[0][:70],
+                  bool(mid) and "goes back to the queue" in mid[0], mid[:1])
         check("never for the last chunks", not any("no chunks" in x for x in fresh))
         if mode == "short":
             check("one at a time: never two fresh Nukes at once", most["n"] <= 1, most["n"])
@@ -116,5 +121,31 @@ wait(watch, 180)
 check("a reloaded process waits to start again (RAM over Reload Nuke at)", bool(waits), [x[1] for x in e.log][-8:])
 check("its place is held down", win.manager.ram_cap is not None or e.state == "done", win.manager.ram_cap)
 check("done, all 80 frames", e.state == "done" and len(files(job)) == 80, (e.state, len(files(job))))
+win.close()
+say("Reload after: The chunk (Settings): a reload for memory waits for the end of the chunk")
+job = make_job("reload_chunk", 1001, 1048, env={"FAKE_LOAD_SECS": "2", "FAKE_SECS": "0.8"})
+win = jk.MainWindow(job)
+win.s_workers.setValue(4)
+e = win.engine
+win.c_fresh.setCurrentIndex(win.c_fresh.findData("short"))
+win.c_reload_after.setCurrentIndex(win.c_reload_after.findData("chunk"))
+win.s_reload_ram.setValue(90)
+check("setting saved", win.settings.get("reload_after") == "chunk", win.settings.get("reload_after"))
+win.manager.ram_percent = lambda e=e: 80.0 if any(w.state in ("quitting", "gone", "loading") for w in e.workers.values()) else 91.0
+win._start()
+seen = set()
+
+
+def going():
+    seen.update(e.worker_state(w) for w in e.workers.values())
+    return e.state in ("done", "failed", "stopped")
+
+
+wait(going, 180)
+check("done, 48 files", e.state == "done" and len(files(job)) == 48, (e.state, len(files(job))))
+check("reloads after the chunk, none after a frame", bool(log_lines(e, "reloads after its chunk")) and not log_lines(e, "reloads after frame"),
+      (log_lines(e, "reloads after")[:2]))
+check("State: busy → reload (RAM over 90 %), no 'after this frame'", "busy → reload (RAM over 90 %)" in seen
+      and not any("after this frame" in x for x in seen), sorted(x for x in seen if "reload" in x))
 win.close()
 finish()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.45 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.46 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.45"
+APP_VERSION = "0.99.46"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -73,7 +73,7 @@ SLOW_START = 15  # seconds of Nuke starting before the script opens that are wor
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True,
-                    "vram_guard": True, "reload_ram": 95, "reload_vram": 95, "kill_ram": 98, "kill_vram": 98,
+                    "vram_guard": True, "reload_ram": 95, "reload_vram": 95, "reload_after": "frame", "kill_ram": 98, "kill_vram": 98,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
@@ -1563,10 +1563,11 @@ class RenderEngine:
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → move to %s" % (state, getattr(w.leave_to, "write_names", "") or "render %d" % w.leave_to.number)
         fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
+        when = "after this frame " if self.settings.get("reload_after", "frame") == "frame" and not self.movie else ""
         if not fresh and state == "busy" and not (w.retire or w.handover or w.leave) and self._wait_due(w, peek=True):
-            return "busy → reload (1.3 rule)"
+            return "busy → reload %s(1.3 rule)" % when
         if fresh:
-            return "busy → reload" if fresh == "always" else "busy → reload (%s)" % fresh
+            return "busy → reload" if fresh == "always" else "busy → reload %s(%s)" % (when, fresh)
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
             if w.why_leaving == "by me":
                 return "%s → closes by me" % state
@@ -2047,6 +2048,34 @@ class RenderEngine:
             return ""  # only the one picked reloads, and only it shows "busy → reload" in State
         return short
 
+    def _reload_after_frame(self, w, f):
+        """A reload for memory (Reload Nuke at, the 1.3 rule) does not wait for the end of the chunk: the process goes right
+        after the frame it just finished and wrote, so no work is lost, and the rest of its chunk goes back to the queue for
+        the others. Its last frame of the chunk: the chunk's end handles it. After every chunk stays after the chunk."""
+        c = w.chunk
+        if c is None or w.retire or w.handover or w.leave or self.movie or self.settings.get("reload_after", "frame") != "frame":
+            return
+        if not any(x != f and self.frames.get(x) is not None and self.frames[x].state not in ("done", "skipped")
+                   for x in c.frames):
+            return
+        fresh = self._fresh_due(w) if self.settings.get("fresh_after_chunk", "short") == "short" else ""
+        why = fresh or self._wait_due(w)
+        if not why:
+            return
+        rule = fresh or "1.3 rule"
+        m = self.manager
+        vram_now = m.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 if m is not None and w.gpu else 0.0
+        w.closed_why = "reload"
+        w.reload_rule = rule
+        self.refresh_ids.append(w.id)
+        self.note("%s reloads after frame %d (%s), the rest of %s goes back to the queue; it took %.1f GB RAM%s" % (
+            w.name, f, why if not fresh else fresh, c.name, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
+        info = w.chunk_info()
+        self._kill(w, requeue=True, note="reload")
+        if info is not None:
+            info["end"] = "stopped after frame %d for a reload (%s)" % (f, rule)
+            info["after"] = "reload after this frame"
+
     def _wait_due(self, w, peek=False):
         """A place of the renders waits for memory and w, its chunk done, is the one to reload for it (the 1.3 rule, see
         wait_reload). peek: for State, nothing changes."""
@@ -2229,6 +2258,7 @@ class RenderEngine:
                     w.frame, w.frame_started = nxt, now
                     self.frames[nxt].state = "rendering"
                     self.frames[nxt].worker = w.name
+            self._reload_after_frame(w, f)
         elif kind == "CHUNK":
             c = w.chunk
             if c is not None:
@@ -6070,6 +6100,19 @@ class MainWindow(QtWidgets.QMainWindow):
             "When memory is full: only once the RAM or VRAM has stayed\n"
             "at Reload Nuke at (Performance and Optimization) for %d s (one reading is not enough), one process at a time.\n" % FRESH_HOLD +
             "After every chunk: always. Test this script can tell whether it pays for a script.")
+        self.c_reload_after = QtWidgets.QComboBox()
+        for key, text in (("frame", "The frame"), ("chunk", "The chunk")):
+            self.c_reload_after.addItem(text, key)
+        self.c_reload_after.setCurrentIndex(max(0, self.c_reload_after.findData(self.settings.get("reload_after", "frame"))))
+        self.c_reload_after.currentIndexChanged.connect(
+            lambda i: self._save_setting("reload_after", self.c_reload_after.itemData(i)))
+        row(perf, "Reload after", [self.c_reload_after],
+            "When a reload for memory (When memory is full, the 1.3 rule) happens.\n"
+            "The frame: right after the frame the process just finished and wrote; the rest of its chunk goes back to the queue\n"
+            "for the others. Nothing is lost, and the memory is free within a frame.\n"
+            "The chunk: once its whole chunk is done; with long chunks that can take minutes, the frames of a chunk stay together\n"
+            "in one process (a node that reads the frames around it finds them in its cache).\n"
+            "After every chunk is always after the chunk.")
         self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         reload_parts = []
         for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):
@@ -6240,6 +6283,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         (self.r_chunk_auto, True)):
             box.setChecked(on)
         self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(DEFAULT_SETTINGS["fresh_after_chunk"])))
+        self.c_reload_after.setCurrentIndex(max(0, self.c_reload_after.findData(DEFAULT_SETTINGS["reload_after"])))
         self._apply_chunks()
         self._reset_headers()
         self.settings.pop("system_hidden", None)

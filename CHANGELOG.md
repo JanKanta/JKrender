@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.99.46 — 2026-11-14
+
+- A reload for memory (Reload Nuke at, the 1.3 rule) comes right after the frame the process just finished, not after its whole chunk: the frame is on disk, nothing is lost, and the rest of the chunk goes back to the queue for the others. With chunks of 7-8 frames of 13 s, the reload came up to 1.5 minutes after State said it; now within a frame. State: **busy → reload after this frame (VRAM over 95 %)**. After every chunk stays after the chunk.
+- The chunk's tooltip in Workers: "ended: stopped after frame 1035 for a reload (VRAM over 95 %)".
+- **Reload after** in Settings › Performance and Optimization, under Reload Nuke: **The frame** (as above, the default) or **The chunk** (as before: the frames of a chunk stay together in one process, for nodes that read the frames around them).
+- `test_fresh_nuke` checks it (0.99.45 fails it).
+
 ## 0.99.45 — 2026-11-14
 
 - A process going to another render after its chunk shows that render's Write: **busy → move to RENDER_EXR.Write3** (was busy → move to render 2).
