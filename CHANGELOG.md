@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.18 — 2026-11-14
+
+- After a process closes for RAM or VRAM, the next try to bring a place back is always 5 s later. The wait no longer grows to 30, 60 and 150 s when it happens again within 10 minutes. A place still comes back only once the memory has room and stays free for 5 s.
+- `test_memory` checks it (0.99.17 fails it).
+
 ## 0.99.17 — 2026-11-14
 
 - Delete all (0.99.14) is gone again: Output has only Delete, for the render shown. `test_delete_all` removed.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.17 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.18 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.17"
+APP_VERSION = "0.99.18"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2826,15 +2826,11 @@ class RenderManager:
                 e.note("!! %d processes closed for VRAM within 5 minutes. %s" % (recent, e.notice[0]), "warn")
 
     def fall_wait(self):
-        """Seconds until a process may come back after one closed for memory: RETURN_CHECK, then 30, 60 and 150 as it happens
-        again within 10 minutes, so a script that does not fit does not go round and round. Processes closing one
-        after another within a minute are one overload, not several."""
-        now = time.time()
-        recent = [t for t in self.falls if now - t < 600]
-        if not recent:
+        """Seconds until a process may come back after one closed for memory: RETURN_CHECK after the last close, always the
+        same, however often it happens (the wait no longer grows: a place came back far too late)."""
+        if not self.falls:
             return 0.0
-        times = 1 + sum(1 for a, b in zip(recent, recent[1:]) if b - a >= 60)
-        return max(0.0, recent[-1] + (RETURN_CHECK, 30, 60, 150)[min(times, 4) - 1] - now)
+        return max(0.0, self.falls[-1] + RETURN_CHECK - time.time())
 
     def _vram_idle_update(self):
         """VRAM in use while no Nuke process of JKrender runs: Windows, other programs. The rest is ours, including
@@ -7175,7 +7171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         m = self.manager
         wait = m.fall_wait() if m.settings.get("ram_guard", True) or m.settings.get("vram_guard", True) else 0
         if wait:
-            return "next try in %d s: a process closed for memory a moment ago, and the wait grows when it happens again" % math.ceil(wait)
+            return "next try in %d s: a process closed for memory a moment ago" % math.ceil(wait)
         if m.live_count() >= m.budget():
             if m.vram_bound() and m.vram and m.vram[2]:
                 pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, float(m.settings.get("vram_limit", 95))

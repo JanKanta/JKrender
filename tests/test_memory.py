@@ -203,6 +203,18 @@ m.ram_cap = None
 m._wait_update()
 check("all places back: the wait is over", "RAM" not in m._wait_since, m._wait_since)
 
+say("After a close for memory the wait is RETURN_CHECK every time, it does not grow")
+m, e, ws = manager()
+t = time.time()
+m.falls.clear()
+for back in (500, 300, 120, 0.1):
+    m.falls.append(t - back)
+w = m.fall_wait()
+check("the fourth close in 10 minutes: still RETURN_CHECK, not 150 s", 0 < w <= jk.RETURN_CHECK, w)
+m.falls.clear()
+m.falls.append(t - jk.RETURN_CHECK - 1)
+check("and none once it is over", m.fall_wait() == 0.0, m.fall_wait())
+
 say("Fresh Nuke when memory is short: only after 30 s near the limit, never because a process waits")
 jk.FRESH_HOLD = 0.5
 m, e, ws = manager()
