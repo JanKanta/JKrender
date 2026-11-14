@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.23 — 2026-11-14
+
+- **Kill at** in Performance and Optimization, under Memory Limit: RAM 98 % and VRAM 97 % by default, as before when they were fixed. From there the process started last closes at once, mid-frame; its half-written frame is deleted and its chunk goes back to the queue. Never under the Memory Limit, so closing after the chunk always comes first. Lower it if the PC freezes before (with 94 GB, 98 % leaves Windows and the graphics driver under 2 GB).
+- `test_memory` and `test_settings` check it (0.99.22 fails them).
+
 ## 0.99.22 — 2026-11-14
 
 - Performance and Optimization in a new order: Use GPU, Reload Nuke, Reload Nuke at, Memory Limit (under Reload Nuke at). Nothing else changed.

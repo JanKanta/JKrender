@@ -116,6 +116,34 @@ m._vram_checked = 0
 m._vram_guard()
 check("VRAM 96 %, a frame 20 s ago: none closes at once", e.killed == [], e.killed)
 
+say("Kill at: from this % the one started last closes at once; never under the Memory Limit")
+
+
+def nearly_full(ram=None, vram=None, **settings):
+    m, e, ws = manager(**settings)
+    m.vram_others = lambda: 1.0
+    m.ram_percent = lambda: ram if ram is not None else 40.0
+    m.vram = [50, 24576 * (vram if vram is not None else 30) / 100, 24576.0]
+    m.gpu_mem = {w.proc.pid: (10, 2000 * 1024 ** 2) for w in ws.values()}
+    m._last_vram_kill = m._last_kill = 0
+    m._ram_checked = m._vram_checked = 0
+    m._ram_guard()
+    m._vram_guard()
+    return m, e, ws
+
+
+m, e, ws = nearly_full(ram=96.5)
+check("RAM 96.5 %, Kill at 98 % (default): none closes at once", e.killed == [], e.killed)
+m, e, ws = nearly_full(ram=96.5, kill_ram=96)
+check("RAM 96.5 %, Kill at 96 %: W04 closes at once", e.killed == ["W04"], e.killed)
+m, e, ws = nearly_full(ram=93.0, kill_ram=80)
+check("Kill at 80 % is never under the limit (95 %): RAM 93 %, none", e.killed == [], e.killed)
+m, e, ws = nearly_full(vram=97.5)
+check("VRAM 97.5 %, Kill at 97 % (default): W04 closes at once", e.killed == ["W04"], e.killed)
+m, e, ws = nearly_full(vram=97.5, kill_vram=99)
+check("VRAM 97.5 %, Kill at 99 %: none closes at once", e.killed == [], e.killed)
+check("pct_kill: RAM 98, VRAM 97 by default", (jk.pct_kill({}, "RAM"), jk.pct_kill({}, "VRAM")) == (98.0, 97.0))
+
 say("Stalled just under the limit: the card full enough that the processes wait, VRAM 94.8 % with the limit at 95 %")
 
 

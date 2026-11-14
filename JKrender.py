@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.22 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.23 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.22"
+APP_VERSION = "0.99.23"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -73,7 +73,7 @@ SLOW_START = 15  # seconds of Nuke starting before the script opens that are wor
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
-                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90,
+                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90, "kill_ram": 98, "kill_vram": 97,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
@@ -361,6 +361,14 @@ def clear_open_nukes():
 def pct_limit(settings, name):
     """The RAM or VRAM limit in %, as set."""
     return float(settings.get("ram_limit", 95) if name == "RAM" else settings.get("vram_limit", 95))
+
+
+def pct_kill(settings, name):
+    """From this RAM or VRAM % on the process started last closes at once, mid-frame (Settings > Kill at): never under the
+    Memory Limit, so the gentle way, after its chunk, always comes first."""
+    if name == "RAM":
+        return max(pct_limit(settings, name), float(settings.get("kill_ram", 98)))
+    return max(pct_limit(settings, name), float(settings.get("kill_vram", 97)))
 
 
 def pct_reload(settings, name):
@@ -2988,7 +2996,7 @@ class RenderManager:
                 self._note_running("!! RAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                    % (pct, limit, cap), "warn")
             self._ram_ok_since = None
-            if pct >= min(98.0, limit + 6) and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
+            if pct >= pct_kill(self.settings, "RAM") and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
                 # Nearly out of memory: one process closes now instead of after its chunk.
                 running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
                 if running:
@@ -3032,7 +3040,7 @@ class RenderManager:
         or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
-        About to spill into the RAM (97 %), the last one started closes at once, as with the RAM. When it drops, as many
+        About to spill into the RAM (Kill at, 97 %), the last one started closes at once, as with the RAM. When it drops, as many
         come back at once as fit under the limit."""
         now = time.time()
         if now - self._vram_checked < 2:
@@ -3080,7 +3088,7 @@ class RenderManager:
                     self._vram_lowered_at = pct
                     self._note_running("!! VRAM %.0f %% (limit %.0f %%): down to %d Nuke processes until it drops"
                                        % (pct, limit, cap), "warn")
-            if pct >= max(97.0, min(99.0, limit + 2)) and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
+            if pct >= pct_kill(self.settings, "VRAM") and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
                 running = [(e, w) for e in self.engines for w in e.workers.values()
                            if w.gpu and w.state in ("loading", "idle", "busy")]
                 # the only one left keeps going: closing it would only throw its chunk away, again and again,
@@ -5960,9 +5968,30 @@ class MainWindow(QtWidgets.QMainWindow):
         row(perf, "Memory Limit", limit_parts,
             "Over the limit fewer Nuke processes run: the one started last closes after its chunk (now, if it is still\n"
             "opening the script), one at a time, and places come back when one more fits under the limit.\n"
-            "Nearly full, the one started last closes at once: RAM from 98 %, VRAM from 97 %, as its chunk goes back to the queue.\n"
+            "Nearly full (Kill at), the one started last closes at once and its chunk goes back to the queue.\n"
             "VRAM: with Use GPU, as every process uses the graphics card.")
         note(perf, "Over the limit the process started last closes first, and comes back when one more fits.")
+        self.s_kill_ram, self.s_kill_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        kill_parts = []
+        for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_limit),
+                                                    ("VRAM", self.s_kill_vram, "kill_vram", 97, self.s_vram)):
+            box.setRange(limit_box.value(), 99)  # never under the Memory Limit
+            box.setSuffix(" %")
+            box.setValue(max(limit_box.value(), int(self.settings.get(key, default))))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            limit_box.valueChanged.connect(box.setMinimum)
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            kill_parts.append(lab)
+            kill_parts.append(box)
+        self.s_kill_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_kill_vram.setEnabled)
+        row(perf, "Kill at", kill_parts,
+            "Nearly out of memory: the process started last closes at once, mid-frame. Its half-written frame is deleted\n"
+            "and its chunk goes back to the queue: a little work is lost, the memory is free at once.\n"
+            "Never under the Memory Limit, so closing after the chunk always comes first.\n"
+            "Lower it if the PC freezes before (Windows and the graphics driver need some memory left).")
+        note(perf, "Nearly full, the process started last closes at once, mid-frame.")
 
         cards.remove(jobs)
         cards.remove(perf)
@@ -6088,7 +6117,8 @@ class MainWindow(QtWidgets.QMainWindow):
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
-                           (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90)):
+                           (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90),
+                           (self.s_kill_ram, 98), (self.s_kill_vram, 97)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_chunk_auto, True),
