@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.26 — 2026-11-14
+
+- JKrender no longer remembers anything per script: the RAM a process of each script took (`script_ram` in the settings) is gone, and dropped from saved settings. Nothing read it any more; every render measures its processes for itself.
+- `test_settings` checks it (0.99.25 fails it).
+
 ## 0.99.25 — 2026-11-14
 
 - The Job tab comes before Settings: System, Job, Settings.

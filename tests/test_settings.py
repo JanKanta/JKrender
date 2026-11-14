@@ -4,7 +4,7 @@ from common import *
 from PySide6 import QtWidgets
 
 say("Settings kept where older versions had them move to ~/.nuke/JKrender/settings")
-jk, app = start({"processes": 6, "threads": 5, "ram": 3, "script_ram": {"sh010": 7.5}})
+jk, app = start({"processes": 6, "threads": 5, "ram": 3, "script_ram": {"sh010": 7.5}})  # script_ram: from before 0.99.26
 old = HOME + "/.jkrender"
 os.makedirs(old + "/test_results", exist_ok=True)
 os.makedirs(HOME + "/.jkrender/renders/r1", exist_ok=True)
@@ -82,7 +82,7 @@ check("RAM limit back to 95", s["ram_limit"] == 95 and win.s_limit.value() == 95
 check("VRAM limit back to 95", s["vram_limit"] == 95 and win.s_vram.value() == 95, s.get("vram_limit"))
 check("Reload Nuke at back to RAM 90 %, VRAM 90 %", s["reload_ram"] == 90 and s["reload_vram"] == 90
       and win.s_reload_ram.value() == 90 and win.s_reload_vram.value() == 90, (s.get("reload_ram"), s.get("reload_vram")))
-check("what JKrender learned of scripts is kept", s.get("script_ram") == {"sh010": 7.5}, s.get("script_ram"))
+check("nothing is remembered per script (script_ram is dropped)", "script_ram" not in s and "script_ram" not in win.settings, s.get("script_ram"))
 
 say("Memory Limit: RAM and VRAM in one row, always on")
 check("no on/off switches any more", not hasattr(win, "c_guard") and not hasattr(win, "c_vram"))

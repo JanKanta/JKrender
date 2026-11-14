@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.25 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.26 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.25"
+APP_VERSION = "0.99.26"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -181,6 +181,7 @@ def read_settings():
     except Exception:
         pass
     settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
+    settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
     return settings
 
 
@@ -2160,7 +2161,6 @@ class RenderEngine:
             # closing it after every chunk only costs a script load each time.
             if w.rss_base is None:
                 w.rss_base = w.rss
-                self._remember_ram(w.rss)
                 if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
                     self._ram_noted = True
                     self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB Cache set. "
@@ -2425,25 +2425,10 @@ class RenderEngine:
         for f in self.frames:
             self._submit_check(f)
 
-    def _remember_ram(self, gb):
-        """RAM one Nuke process of this script took after its first chunk (the most seen this run)."""
-        if self.movie or gb <= getattr(self, "_ram_seen", 0.0):
-            return
-        self._ram_seen = gb
-        need = dict(self.settings.get("script_ram") or {})
-        need[self.name] = round(gb, 1)
-        self.settings["script_ram"] = need
-        if not self.settings.get("_test"):
-            write_settings(self.settings)
-
     def size_gb(self):
         """GB one Nuke process of this render takes: the largest seen this run once one has rendered a few frames;
         before that its cache and what a process takes besides it. A process just loaded is far smaller than it will be."""
         return self.size_seen or self.ram + BESIDE_CACHE
-
-    def ram_need(self):
-        """GB per Nuke process this script took last time, or None."""
-        return None if self.movie else (self.settings.get("script_ram") or {}).get(self.name)
 
     def _schedule(self):
         now = time.time()
@@ -4237,7 +4222,6 @@ class ScriptTest(QtWidgets.QDialog):
         n, t, c, fresh = self.setups[self.index]
         settings = dict(self.main.settings)
         settings.update(processes=n, threads=t, ram=c, fresh_after_chunk=fresh, max_renders=1, _test=True)
-        settings.pop("script_ram", None)  # what the script took with another cache would keep processes out
         root = TEST_DIR / ("%s_%dx%d_%d_%s" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c, fresh))
         out = root / "out"
         out.mkdir(parents=True, exist_ok=True)
@@ -6112,10 +6096,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 != QtWidgets.QMessageBox.Yes):
             return
         plan = auto_plan(10 ** 6, False)
-        learned = {k: self.settings[k] for k in ("script_ram",) if k in self.settings}
         self.settings.clear()
         self.settings.update(DEFAULT_SETTINGS)
-        self.settings.update(learned)
         write_settings(self.settings)
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
