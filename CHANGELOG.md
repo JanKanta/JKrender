@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.35 — 2026-11-14
+
+- System tiles in a new order: **CPU, GPU, RAM, VRAM**, then Disk write, Disk read, Network. GPU and VRAM are two tiles now (VRAM: % and GB of the card).
+- The RAM tile says how much of the RAM in use the Nuke processes hold in their caches: "71.4 of 94 GB – cache 10.8 GB". The Nuke RAM tile is gone. CPU and RAM are wider, so their second line fits.
+- `test_settings` checks it (0.99.34 fails it).
+
 ## 0.99.34 — 2026-11-14
 
 - Close after this chunk reads **busy → closes by me** and then **closed by me** in State, without brackets.

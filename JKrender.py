@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.34 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.35 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.34"
+APP_VERSION = "0.99.35"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6534,14 +6534,14 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         tiles = QtWidgets.QHBoxLayout()
         self.m_cpu = Tile("CPU")
+        self.m_gpu = Tile("GPU")
         self.m_ram = Tile("RAM")
-        self.m_nuke = Tile("Nuke RAM")
+        self.m_vram = Tile("VRAM")
         self.m_dw = Tile("Disk write")
         self.m_dr = Tile("Disk read")
         self.m_net = Tile("Network")
-        self.m_gpu = Tile("GPU")
-        for t in (self.m_cpu, self.m_ram, self.m_nuke, self.m_dw, self.m_dr, self.m_net, self.m_gpu):
-            tiles.addWidget(t, 1)
+        for t in (self.m_cpu, self.m_gpu, self.m_ram, self.m_vram, self.m_dw, self.m_dr, self.m_net):
+            tiles.addWidget(t, 2 if t in (self.m_cpu, self.m_ram) else 1)  # their second line is the longest
         lay.addLayout(tiles)
         graphs = QtWidgets.QHBoxLayout()
         self.g_load = Graph("Load", [("cpu", "CPU", C["accent"]), ("ram", "RAM", C["ram"]),
@@ -7133,7 +7133,9 @@ class MainWindow(QtWidgets.QMainWindow):
         cpu = sum(per) / max(1, len(per))
         vm = psutil.virtual_memory()
         shown = m.engines if self.settings.get("show_all_workers", True) else [self.engine]
-        nuke_ram = sum(w.rss for x in shown for w in x.workers.values() if w.state != "gone")
+        # what the Nuke processes hold in their caches (each reports it after every frame), part of the RAM in use
+        nuke_cache = sum((getattr(w, "cache", None) or (0, 0))[0] for x in shown for w in x.workers.values()
+                         if w.state != "gone") / 1024 ** 3
         now = time.time()
         io = psutil.disk_io_counters()
         net = psutil.net_io_counters()
@@ -7150,20 +7152,22 @@ class MainWindow(QtWidgets.QMainWindow):
         # sum of every thread's load = how many threads' worth of work runs right now
         self.m_cpu.set("%.0f %%" % cpu, "%d of %d threads in use" % (round(sum(per) / 100), len(per)))
         guard = ("  ·  guard: %d of %d processes" % (m.ram_cap, m.total)) if m.ram_cap else ""
-        self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB%s" % (vm.used / 1024 ** 3, vm.total / 1024 ** 3, guard))
-        per_render = ["%d: %.1f" % (x.number, sum(w.rss for w in x.workers.values() if w.state != "gone"))
-                      for x in shown if any(w.state != "gone" for w in x.workers.values())]
-        self.m_nuke.set("%.1f GB" % nuke_ram, "%d processes%s" % (
-            sum(1 for x in shown for w in x.workers.values() if w.state != "gone"),
-            ("  ·  " + "  ".join(per_render)) if len(per_render) > 1 else ""))
+        self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB – cache %.1f GB%s" % (
+            vm.used / 1024 ** 3, vm.total / 1024 ** 3, nuke_cache, guard))
+        self.m_ram.setToolTip("RAM: %.0f %%%s%.1f of %.0f GB in use, of it %.1f GB in the caches of the Nuke processes" % (
+            vm.percent, chr(10), vm.used / 1024 ** 3, vm.total / 1024 ** 3, nuke_cache))
         self.m_dw.set("%.0f MB/s" % dw)
         self.m_dr.set("%.0f MB/s" % dr)
         self.m_net.set("%.1f MB/s" % nmb)
         gpu = self._gpu
         if gpu:
-            self.m_gpu.set("%.0f %%" % gpu[0], "VRAM %.1f / %.0f GB" % (gpu[1] / 1024, gpu[2] / 1024))
+            self.m_gpu.set("%.0f %%" % gpu[0], "")
+            vguard = ("  ·  guard: %d of %d processes" % (m.vram_cap, m.total)) if m.vram_cap else ""
+            self.m_vram.set("%.0f %%" % (gpu[1] / gpu[2] * 100 if gpu[2] else 0),
+                            "%.1f of %.0f GB%s" % (gpu[1] / 1024, gpu[2] / 1024, vguard))
         else:
             self.m_gpu.set("—", "no NVIDIA GPU" if not shutil.which("nvidia-smi") else "")
+            self.m_vram.set("—", "")
         vram = gpu[1] / gpu[2] * 100 if gpu and gpu[2] else None
         self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu[0] if gpu else 0, "vram": vram or 0})
         self._update_averages(now, cpu, vm.percent, gpu[0] if gpu else None, vram)
@@ -7296,7 +7300,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.m_cpu.set_avg("average %.0f %%  ·  %.1f threads" % (values["cpu"], values["cpu"] * (os.cpu_count() or 1) / 100.0)
                            if "cpu" in values else "")
         self.m_ram.set_avg("average %.0f %%" % values["ram"] if "ram" in values else "")
-        self.m_gpu.set_avg("average %.0f %%  ·  VRAM %.0f %%" % (values["gpu"], values.get("vram", 0)) if "gpu" in values else "")
+        self.m_gpu.set_avg("average %.0f %%" % values["gpu"] if "gpu" in values else "")
+        self.m_vram.set_avg("average %.0f %%" % values["vram"] if "vram" in values else "")
 
     def _empty_place_state(self):
         """State of a place no process has: why nothing runs there now."""
