@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.17 — 2026-11-14
+
+- Delete all (0.99.14) is gone again: Output has only Delete, for the render shown. `test_delete_all` removed.
+
 ## 0.99.16 — 2026-11-14
 
 - A place waiting to come back because the RAM or the VRAM is full: after 15 s the process holding the most of it (the most VRAM when the VRAM holds the places down, the most RAM when the RAM does) reloads Nuke after its chunk, so it starts small again and makes room. Only if it grew to 1.3 x what it took after its first chunk: a leak. A script that simply needs that much would only grow back, so then nothing reloads. One at a time, no frame lost; the next, if a place still waits, 15 s after this one is back. The Log says which and why.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.16 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.17 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.16"
+APP_VERSION = "0.99.17"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6150,10 +6150,6 @@ class MainWindow(QtWidgets.QMainWindow):
             bar.addWidget(b)
         self.b_delete_movie = b
         self.b_delete_movie.setToolTip("Delete the rendered video file from disk")
-        self.b_delete_all_movie = QtWidgets.QPushButton("Delete all")
-        self.b_delete_all_movie.clicked.connect(lambda _=False: self._delete_picked())
-        self.b_delete_all_movie.hide()
-        bar.addWidget(self.b_delete_all_movie)
         bar.addStretch(1)
         left.addLayout(bar)
         self.movie_view = QtWidgets.QTextBrowser()
@@ -6228,10 +6224,6 @@ class MainWindow(QtWidgets.QMainWindow):
                              "frames exactly the same as another anywhere in the sequence, and a size, channels, bit depth or compression unlike the rest.")
         self.b_delete = b
         self.b_delete.setToolTip("Delete rendered frames of this render from disk: a frame range, or all of them")
-        self.b_delete_all = QtWidgets.QPushButton("Delete all")
-        self.b_delete_all.clicked.connect(lambda _=False: self._delete_picked())
-        self.b_delete_all.hide()
-        bar.addWidget(self.b_delete_all)
         bar.addStretch(1)
         left.addLayout(bar)
         self.out_summary = QtWidgets.QLabel("")
@@ -6795,13 +6787,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.b_start.setToolTip("%d renders picked; finished ones are left as they are" % len(targets))
             self.b_pause.setEnabled(any(x.state == "rendering" for x in targets))
             self.b_stop.setEnabled(any(x.state in ("rendering", "paused", "finishing", "waiting") for x in targets))
-        with_output = [x for x in targets if self._has_output(x)] if len(targets) > 1 else []
-        idle = [x for x in with_output if x.state not in ("rendering", "paused", "finishing", "waiting")]
-        for widget in (self.b_delete_all, self.b_delete_all_movie):
-            widget.setVisible(len(with_output) > 1)
-            widget.setEnabled(bool(idle))
-            widget.setToolTip("Delete everything rendered of the %d picked renders from disk, after one question%s"
-                              % (len(targets), "; renders still running are left out" if len(idle) < len(with_output) else ""))
 
     # ---- timers -------------------------------------------------------------
     def _tick(self):
@@ -7828,11 +7813,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._delete_all(frames)
 
     @staticmethod
-    def _has_output(e):
-        """Something of this render on disk at the last check: frames, or its movie."""
-        return sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped")) > 0 or bool(e.movie and e.movie_info)
-
-    @staticmethod
     def _files_of(e, frames=None):
         frames = e.frame_list() if frames is None else frames
         return sorted({p for f in frames for p in e.output_files(f) if os.path.isfile(p)})
@@ -7855,30 +7835,6 @@ class MainWindow(QtWidgets.QMainWindow):
         e.scan_disk()  # anything that could not be deleted still counts as rendered
         e.done_if_on_disk()
         return failed
-
-    def _delete_picked(self):
-        """Delete all: everything rendered of the picked renders that are not running, after one question."""
-        renders = [(x, self._files_of(x)) for x in self._targets()
-                   if x.state not in ("rendering", "paused", "finishing", "waiting")]
-        renders = [(x, files) for x, files in renders if files]
-        if not renders:
-            QtWidgets.QMessageBox.information(self, "JKrender", "There is nothing rendered of these renders on disk.")
-            return
-        count = sum(len(files) for _, files in renders)
-        size = sum(os.path.getsize(p) for _, files in renders for p in files)
-        lines = ["%s: %d file(s), %s" % (x.write_names, len(files), fmt_size(sum(os.path.getsize(p) for p in files)))
-                 for x, files in renders]
-        ask = QtWidgets.QMessageBox.warning(
-            self, "Delete rendered frames",
-            "Delete everything rendered of %d renders, %d file(s), %s, from disk?\n\n%s\n\nThis cannot be undone."
-            % (len(renders), count, fmt_size(size), "\n".join(lines)),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel, QtWidgets.QMessageBox.Cancel)
-        if ask != QtWidgets.QMessageBox.Yes:
-            return
-        failed = []
-        for x, files in renders:
-            failed += self._delete_files(x, files)
-        self._after_delete(failed)
 
     def _delete_all(self, frames=None):
         """Delete the output files of these frames (all of the render's when None), after asking."""
