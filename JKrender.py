@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.49 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.50 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.49"
+APP_VERSION = "0.99.50"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2850,6 +2850,8 @@ class RenderManager:
         self.ram_cap = None  # RAM guard's lower process count while memory is short
         self._short_since = {}  # "RAM" / "VRAM": since when it has been at its Reload Nuke at % (Reload Nuke)
         self._wait_since = {}  # "RAM" / "VRAM": since when a place has waited to come back for it
+        self._wait_start = {}  # the same, for the Log: when the wait began (the 1.3 rule restarts _wait_since)
+        self._under_at = {}  # "RAM" / "VRAM": when it dropped under what a place comes back under, while one waits
         self._ram_checked = 0.0
         self._ram_ok_since = None
         self._last_kill = 0.0
@@ -3382,8 +3384,35 @@ class RenderManager:
         for name, cap in (("RAM", self.ram_cap), ("VRAM", self.vram_cap)):
             if rendering and cap is not None and cap < self.total and self.live_count() <= cap:
                 self._wait_since.setdefault(name, now)
+                self._wait_log(name, now)
             else:
                 self._wait_since.pop(name, None)
+                started = self._wait_start.pop(name, None)
+                under = self._under_at.pop(name, None)
+                if started is not None and cap is None or (started is not None and cap is not None and cap >= self.total):
+                    self._note_running("The places waiting for %s are back after %s%s" % (
+                        name, fmt_secs(now - started), ", %.0f s after it dropped under the mark" % (now - under) if under else ""))
+
+    def _wait_log(self, name, now):
+        """The Log says when a place starts waiting for memory, and under what it comes back; when the memory drops under
+        that, and so how long JKrender takes to bring it back."""
+        pct = self._mem_now().get(name)
+        if pct is None:
+            return
+        mark = self._return_under(name)
+        if name not in self._wait_start:
+            self._wait_start[name] = now
+            self._under_at.pop(name, None)
+            self._note_running("A place waits for %s: it comes back under %.0f %% (now %.0f %%; Reload Nuke at %.0f %%, or Kill at "
+                               "%.0f %% less one process)" % (name, mark, pct, pct_limit(self.settings, name),
+                                                             pct_kill(self.settings, name)))
+            return
+        if pct < mark and name not in self._under_at:
+            self._under_at[name] = now
+            self._note_running("%s %.0f %%: under %.0f %%, a place comes back once it stays there %d s" % (
+                name, pct, mark, RETURN_CHECK))
+        elif pct >= mark and name in self._under_at:
+            del self._under_at[name]  # back over it before the place came back
 
     def _held(self, w, name):
         """GB of RAM or VRAM process w holds now, and after its first chunk (None before that)."""

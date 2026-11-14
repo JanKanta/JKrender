@@ -112,6 +112,24 @@ m.ram_percent = lambda: 80.0
 settle(m, m._ram_guard)
 check("RAM 80 %: 94 %, under Kill at: it comes back", m.ram_cap is None, m.ram_cap)
 
+say("The Log says when a place starts waiting, when the memory drops under the mark, and when it is back")
+m, e, ws = manager()
+m.vram = [10, 24576 * 0.3, 24576.0]
+e.chunks = [types.SimpleNamespace(state="queued")]
+e.size_seen = 8.0
+ram = {"v": 99.0}
+m.ram_percent = lambda: ram["v"]
+m._hold_down("RAM", 99.0, live=3)
+ws[4].state = "gone"
+m._wait_update()
+check("'A place waits for RAM: it comes back under N %'", any("A place waits for RAM: it comes back under" in t for t in e.notes), e.notes[-2:])
+ram["v"] = 70.0
+m._wait_update()
+check("'RAM 70 %: under N %, a place comes back once it stays there'", any(t.startswith("RAM 70 %: under") for t in e.notes), e.notes[-2:])
+settle(m, lambda: (m._ram_guard(), m._wait_update()))
+check("and when it is back, how long after it dropped under the mark",
+      any("are back after" in t and "after it dropped under the mark" in t for t in e.notes), e.notes[-3:])
+
 say("Places come back one at a time: the next only once the last one has rendered a frame")
 m, e, ws = manager()
 m.ram_percent = lambda: 60.0

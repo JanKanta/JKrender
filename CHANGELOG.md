@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.50 — 2026-11-14
+
+- The Log says how a place waiting for memory goes: when it starts ("A place waits for RAM: it comes back under 85 % (now 99 %; Reload Nuke at 95 %, or Kill at 98 % less one process)"), when the memory drops under that mark ("RAM 84 %: under 85 %, a place comes back once it stays there 5 s"), and when it is back ("The places waiting for RAM are back after 5:04, 7 s after it dropped under the mark"). So it shows how fast JKrender brings a place back.
+- `test_memory` checks it (0.99.49 fails it).
+
 ## 0.99.49 — 2026-11-14
 
 - Test this script tests **Reload after** too: Add test and Edit test have it (with When memory is full), the Reload Nuke Rule column says "memory full, frame", "memory full, chunk" or "every chunk", and Use these settings sets it. Setups saved before get Reload after as it is set now.
