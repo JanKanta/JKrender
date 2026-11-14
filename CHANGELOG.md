@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.55 — 2026-11-14
+
+- A movie gets a process of its own with every thread, **beside** the places of Processes: it starts at once, takes no place from an image sequence rendering, and does not count for Max renders at once. Three movie Writes are three processes. Beside image sequences its process is named after their places (W05 with Processes 4); with only movies open, W01, W02, W03. It waits only when the memory has no room, and Kill at and GPU frozen close a movie last (it would start all over). The Nuke processes tile says "+ 1 for movies".
+- A place freed by a render or a movie that ended comes back at once; one at a time only while the memory holds places (W03 waited 16 s after a movie).
+- `test_movies` checks it with Reload after Frame and Chunk (0.99.54 fails it).
+
 ## 0.99.54 — 2026-11-14
 
 - With Reload after: Frame, a process handing its place to another render (a render starting beside it, Work on) or closing because the memory holds the places down goes right after the frame it just finished, not after its whole chunk; the rest of the chunk goes back to the queue. W04 took a minute and 7 frames to hand its place over. Close after this chunk still waits for the chunk.

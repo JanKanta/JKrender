@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.54 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.55 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.54"
+APP_VERSION = "0.99.55"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1973,6 +1973,10 @@ class RenderEngine:
         m = self.manager
         if m is None:
             return True
+        if self.movie:
+            # a movie has a process of its own, beside the places of Processes: it starts at once, unless the memory
+            # has no room (the first process always starts)
+            return m.live_count() + m.movie_count() == 0 or not m.memory_over()
         if m.free_slots() <= 0:
             return False
         refresh = [i for i in getattr(self, "refresh_ids", []) if i in self.workers and self.workers[i].state == "gone"]
@@ -2946,7 +2950,12 @@ class RenderManager:
         return [e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
 
     def live_count(self):
-        return sum(1 for e in self.engines for w in e.workers.values() if w.state != "gone")
+        """Processes running in the places of Processes (image sequences). A movie's process is beside them."""
+        return sum(1 for e in self.engines if not e.movie for w in e.workers.values() if w.state != "gone")
+
+    def movie_count(self):
+        """Processes running for movies, one a movie, beside the places of Processes."""
+        return sum(1 for e in self.engines if e.movie for w in e.workers.values() if w.state != "gone")
 
     def budget(self):
         """Processes the renders may use now: the total, unless the RAM or VRAM guard holds it lower."""
@@ -3083,10 +3092,11 @@ class RenderManager:
             wait = self.fall_wait()
             if wait:
                 return "one closed for memory, the next can try in %d s" % math.ceil(wait)
-            # one at a time: how much one really takes shows only once it has rendered
+            # one at a time while the memory holds places: how much one really takes shows only once it has rendered.
+            # A place freed otherwise (a movie done, another render done) comes back at once.
             first = next((w for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")
                           and not w.frames_here and now - w.spawned < 300), None)
-            if first is not None:
+            if first is not None and (self.ram_cap is not None or self.vram_cap is not None or self.memory_over()):
                 return "%s has not rendered its first frame yet" % first.name
         if psutil and self.settings.get("ram_guard", True):
             limit = pct_limit(self.settings, "RAM")
@@ -3123,15 +3133,17 @@ class RenderManager:
     @staticmethod
     def _close_first(running):
         """Of (engine, worker) pairs, the one to close over a limit: the last one started, so a process still opening
-        the script or just started goes before one with work behind it. One you started by hand only when nothing else is left."""
-        return max(running, key=lambda ew: (not ew[1].pinned, ew[1].spawned))
+        the script or just started goes before one with work behind it. One you started by hand only when nothing else is
+        left, and a movie (one file, it would start all over) after that."""
+        return max(running, key=lambda ew: (not ew[0].movie, not ew[1].pinned, ew[1].spawned))
 
     def _kill_pick(self, running, name):
         """Of (engine, worker) pairs, the one Kill at closes at once. While some are starting (no frame rendered yet: the
         start of a render, or a fresh Nuke after a reload), the least loaded of those: it has done no work yet. Once all
         render, the one holding the most RAM or VRAM: it frees the most at once, so one close is enough. One you started
         by hand only when nothing else is left; even sizes go to the one started last."""
-        pool = [ew for ew in running if not ew[1].pinned] or running
+        pool = ([ew for ew in running if not ew[0].movie and not ew[1].pinned] or [ew for ew in running if not ew[0].movie]
+                or running)  # a movie would start all over: last
         starting = [ew for ew in pool if not ew[1].frames_here]
         if starting:
             return min(starting, key=lambda ew: (self._held(ew[1], name)[0], -ew[1].spawned))
@@ -3524,7 +3536,8 @@ class RenderManager:
         W01-W08. A render never gets a number twice (its closed ones are started again under their own)."""
         running = {wid for e in self.engines for wid, w in e.workers.items() if w.state != "gone"}
         own = set(engine.workers) if engine is not None else set()
-        wid = 1
+        # a movie beside image sequences: after their places (W09 with Processes 8), so W01-W08 stay theirs
+        wid = self.total + 1 if engine is not None and engine.movie and any(not x.movie for x in self.engines) else 1
         while wid in running or wid in own:
             wid += 1
         return wid
@@ -3597,7 +3610,11 @@ class RenderManager:
         return bool(ready)
 
     def _admit(self):
-        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail()]
+        for e in [x for x in self.waiting if x.movie]:  # a movie starts at once, in a process of its own
+            self.waiting.remove(e)
+            e.state = e.resume_state
+            e.start(everything=e.everything)
+        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail() and not e.movie]
         while self.waiting and len(busy) < self.max_renders:
             e = self.waiting.pop(0)
             e.state = e.resume_state
@@ -3607,7 +3624,10 @@ class RenderManager:
 
     def _allocate(self):
         # a render with a process you started by hand first, so the place made for it is not dealt to another
-        active = sorted((e for e in self.engines if e.state in ("rendering", "paused")),
+        for e in self.engines:  # a movie: its one process, beside the places
+            if e.movie and e.state in ("rendering", "paused") and e.workers_target != min(1, e.need()):
+                e.set_workers(min(1, e.need()))
+        active = sorted((e for e in self.engines if e.state in ("rendering", "paused") and not e.movie),
                         key=lambda e: (not (e.restart_ids or e.hand_wids), e.started or 0, e.number))
         needs = {e: e.need() for e in active}
         share = {e: 0 for e in active}
@@ -7332,8 +7352,9 @@ class MainWindow(QtWidgets.QMainWindow):
         live = [w for w in e.workers.values() if w.state != "gone"]
         busy = sum(1 for w in live if w.state == "busy")
         self.t_workers.set("%d / %d" % (busy, len(live)),
-                           "rendering / running · %d of %d for all renders" % (self.manager.live_count(),
-                                                                               self.manager.total))
+                           "rendering / running · %d of %d for all renders%s" % (self.manager.live_count(),
+                                                                               self.manager.total,
+                               " + %d for movies" % self.manager.movie_count() if self.manager.movie_count() else ""))
         checked = [fr for fr in e.frames.values() if fr.checks]
         bad = sum(1 for fr in e.frames.values() if frame_broken(fr))
         small = sum(1 for fr in e.frames.values() if fr.small)
@@ -7477,7 +7498,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # every place of Processes, also the ones no process has taken yet, with why not
         taken = {wid for wid, _ in rows}
         # only movies open: one place each, so 3 movies show 3 rows, not the empty rest of Processes
-        places = m.total if any(not x.movie for x in m.engines) else min(m.total, sum(1 for x in m.engines if x.movie))
+        places = m.total if any(not x.movie for x in m.engines) else sum(1 for x in m.engines if x.movie)
         empty = [(wid, (None, wid)) for wid in range(1, places + 1) if wid not in taken]
         rows = [r for _, r in sorted(rows + empty, key=lambda r: r[0])]
         t.setRowCount(len(rows))
