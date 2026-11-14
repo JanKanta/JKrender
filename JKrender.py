@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.37 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.38 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.37"
+APP_VERSION = "0.99.38"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -4907,6 +4907,8 @@ class Tile(QtWidgets.QFrame):
         self.avg.hide()
         for label in (t, self.value, self.sub, self.avg):
             label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        for label in (self.sub, self.avg):
+            label.setWordWrap(True)  # tiles are all the same width: "71.4 of 94 GB – cache 10.8 GB" goes on in a second line
         lay.addWidget(t)
         lay.addWidget(self.value)
         lay.addWidget(self.sub)
@@ -6547,7 +6549,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.m_dr = Tile("Disk read")
         self.m_net = Tile("Network")
         for t in (self.m_cpu, self.m_gpu, self.m_ram, self.m_vram, self.m_dw, self.m_dr, self.m_net):
-            tiles.addWidget(t, 2 if t in (self.m_cpu, self.m_ram) else 1)  # their second line is the longest
+            tiles.addWidget(t, 1)  # all the same width; a long line wraps instead of being cut
         lay.addLayout(tiles)
         graphs = QtWidgets.QHBoxLayout()
         self.g_load = Graph("Load", [("cpu", "CPU", C["accent"]), ("ram", "RAM", C["ram"]),

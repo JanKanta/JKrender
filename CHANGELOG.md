@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.38 — 2026-11-14
+
+- The System tiles are all the same width again; a long line (RAM with the Nuke cache, CPU threads) goes on in a second line instead of being cut.
+
 ## 0.99.37 — 2026-11-14
 
 - A closed reload reads **closed (reload)** again, without the rule; quitting → reload (1.3 rule) stays.
