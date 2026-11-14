@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.14 — 2026-11-14
+
+- **Delete all** in Output, next to Delete: with more than one render picked (Shift+click) and more than one of them with frames on disk (or its movie), it deletes everything rendered of them after one question, which lists each render with its file count and size. Each is then ready to render again. A render still running is left out. Delete itself still acts on the render shown.
+- `test_delete_all` checks it (0.99.13 fails it).
+
 ## 0.99.13 — 2026-11-14
 
 - Checked: All frames again writes every frame anew. JKrender sends every frame of the range to Nuke, whether all, some or none were on disk, after a Stop, or for a new render opened over an earlier one's frames; every file then has a write time newer than the click. The real Nuke also replaces a frame another program holds open (it only leaves its temp file next to it). The last renders of a heavy comp's precomp, EXR and movie Writes had no file older than their start. Frames that look old are most likely the Read in Nuke showing what it cached (Reload the Read).
