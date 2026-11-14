@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.23 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.24 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.23"
+APP_VERSION = "0.99.24"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -73,7 +73,7 @@ SLOW_START = 15  # seconds of Nuke starting before the script opens that are wor
 PROBLEMS = ("missing", "empty", "truncated", "unreadable")
 
 DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True, "ram_limit": 95,
-                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90, "kill_ram": 98, "kill_vram": 97,
+                    "vram_guard": True, "vram_limit": 95, "reload_ram": 90, "reload_vram": 90, "kill_ram": 98, "kill_vram": 98,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
                     "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
@@ -368,7 +368,7 @@ def pct_kill(settings, name):
     Memory Limit, so the gentle way, after its chunk, always comes first."""
     if name == "RAM":
         return max(pct_limit(settings, name), float(settings.get("kill_ram", 98)))
-    return max(pct_limit(settings, name), float(settings.get("kill_vram", 97)))
+    return max(pct_limit(settings, name), float(settings.get("kill_vram", 98)))
 
 
 def pct_reload(settings, name):
@@ -3040,7 +3040,7 @@ class RenderManager:
         or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
         When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
         limit, nothing more closes (it would only slow the render down).
-        About to spill into the RAM (Kill at, 97 %), the last one started closes at once, as with the RAM. When it drops, as many
+        About to spill into the RAM (Kill at, 98 %), the last one started closes at once, as with the RAM. When it drops, as many
         come back at once as fit under the limit."""
         now = time.time()
         if now - self._vram_checked < 2:
@@ -5729,6 +5729,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sub_tabs = QtWidgets.QTabWidget()
         self.sub_tabs.addTab(self._system_tab(), "System")
         self.sub_tabs.addTab(self._settings_tab(), "Settings")
+        self.sub_tabs.addTab(self._job_scroll, "Job")
         split.addWidget(self.sub_tabs)
         split.setSizes([464, 576])
         rlay.addWidget(split, 1)
@@ -5754,7 +5755,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_details()
 
     def _settings_tab(self):
-        """General, Job over Performance and Optimization, Processes and Chunks.
+        """Settings: General, Performance and Optimization. Builds the Job tab too (Job, Processes and Chunks): self._job_scroll.
 
         Every card is a grid: the name of a setting on the left, its switch or value on the right,
         so everything lines up; a short grey note sits under the row it explains."""
@@ -5974,7 +5975,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_kill_ram, self.s_kill_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         kill_parts = []
         for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_limit),
-                                                    ("VRAM", self.s_kill_vram, "kill_vram", 97, self.s_vram)):
+                                                    ("VRAM", self.s_kill_vram, "kill_vram", 98, self.s_vram)):
             box.setRange(limit_box.value(), 99)  # never under the Memory Limit
             box.setSuffix(" %")
             box.setValue(max(limit_box.value(), int(self.settings.get(key, default))))
@@ -5992,16 +5993,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "Never under the Memory Limit, so closing after the chunk always comes first.\n"
             "Lower it if the PC freezes before (Windows and the graphics driver need some memory left).")
         note(perf, "Nearly full, the process started last closes at once, mid-frame.")
-
-        cards.remove(jobs)
-        cards.remove(perf)
-        column = QtWidgets.QWidget()  # Job over Performance: one place among the cards
-        stack = QtWidgets.QVBoxLayout(column)
-        stack.setContentsMargins(0, 0, 0, 0)
-        stack.setSpacing(12)
-        stack.addWidget(jobs)
-        stack.addWidget(perf, 1)
-        cards.append(column)
 
         # -- Processes and Chunks (Processes, Threads and Cache are shared by every render; locked while rendering)
         procs = card("Processes and Chunks")
@@ -6049,6 +6040,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "Off: every chunk keeps the size set under Chunk.")
         note(procs, "Every process finishes at about the same time.")
         self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
+        # Job and Processes and Chunks have a tab of their own, Job, next to Settings
+        job_cards = [jobs, procs]
+        for c in job_cards:
+            cards.remove(c)
+        w2 = QtWidgets.QWidget()
+        outer2 = QtWidgets.QGridLayout(w2)
+        outer2.setContentsMargins(12, 12, 12, 12)
+        outer2.setSpacing(12)
+        self._job_scroll = ReflowScroll(w2, outer2, job_cards)
+        self._job_scroll.reflow(10000)
         scroll = ReflowScroll(w, outer, cards)
         scroll.reflow(10000)
         return scroll
@@ -6118,7 +6119,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
                            (self.s_max, MAX_RENDERS), (self.s_limit, 95), (self.s_days, 15),
                            (self.s_vram, 95), (self.s_reload_ram, 90), (self.s_reload_vram, 90),
-                           (self.s_kill_ram, 98), (self.s_kill_vram, 97)):
+                           (self.s_kill_ram, 98), (self.s_kill_vram, 98)):
             box.setValue(value)
         for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_clean, True),
                         (self.c_gpu, True), (self.c_chunk_auto, True),

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.24 — 2026-11-14
+
+- A **Job** tab next to Settings holds the Job card (Slate frame, Framerange, Test this script) and Processes and Chunks. Settings keeps General and Performance and Optimization.
+- Kill at for VRAM is 98 % by default, as for RAM.
+- `test_settings` and `test_memory` check it (0.99.23 fails them).
+
 ## 0.99.23 — 2026-11-14
 
 - **Kill at** in Performance and Optimization, under Memory Limit: RAM 98 % and VRAM 97 % by default, as before when they were fixed. From there the process started last closes at once, mid-frame; its half-written frame is deleted and its chunk goes back to the queue. Never under the Memory Limit, so closing after the chunk always comes first. Lower it if the PC freezes before (with 94 GB, 98 % leaves Windows and the graphics driver under 2 GB).
