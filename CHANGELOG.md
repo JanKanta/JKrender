@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.51 — 2026-11-14
+
+- The processes table in System: **CPU** (was CPU used), and **GPU** and **VRAM** in two columns (GPU % and the GB of VRAM the process holds). Column orders saved before take the new names.
+- `test_movies` checks it (0.99.50 fails it).
+
 ## 0.99.50 — 2026-11-14
 
 - The Log says how a place waiting for memory goes: when it starts ("A place waits for RAM: it comes back under 85 % (now 99 %; Reload Nuke at 95 %, or Kill at 98 % less one process)"), when the memory drops under that mark ("RAM 84 %: under 85 %, a place comes back once it stays there 5 s"), and when it is back ("The places waiting for RAM are back after 5:04, 7 s after it dropped under the mark"). So it shows how fast JKrender brings a place back.

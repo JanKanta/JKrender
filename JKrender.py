@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.50 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.51 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.50"
+APP_VERSION = "0.99.51"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -91,7 +91,7 @@ APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender ha
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
 SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
-SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU used", "RAM", "Cache", "GPU", "Frames", "Last frame", "Avg frame",
+SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 FRESH_HOLD = 10  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
@@ -193,6 +193,13 @@ def read_settings():
     settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
     settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
     settings.pop("test_frames", None)  # 0.99.43: no Frames per setup; Round 2 renders 8 frames a process
+    for key in ("system_order", "system_hidden"):  # 0.99.51: CPU used is CPU, and VRAM has a column of its own after GPU
+        names = settings.get(key)
+        if isinstance(names, list) and "CPU used" in names:
+            names = ["CPU" if n == "CPU used" else n for n in names]
+            if key == "system_order" and "VRAM" not in names and "GPU" in names:
+                names.insert(names.index("GPU") + 1, "VRAM")
+            settings[key] = names
     if settings.get("fresh_after_chunk") not in ("short", "always"):  # 0.99.41: no Never; the memory rules need it
         settings["fresh_after_chunk"] = "short"
     setups = settings.get("test_setups")
@@ -6720,9 +6727,9 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addLayout(graphs)
         self.cores = CoreGrid()
         lay.addWidget(self.cores)
-        self.worker_table = QtWidgets.QTableWidget(0, 18)
+        self.worker_table = QtWidgets.QTableWidget(0, 19)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU used", "RAM", "Cache", "GPU", "Frames", "Avg frame",
+            ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Avg frame",
              "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame", "Write"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
@@ -7375,7 +7382,8 @@ class MainWindow(QtWidgets.QMainWindow):
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
-                      "" if gone or gpu is None else "%.0f %%  ·  %.1f GB" % (gpu[0], gpu[1] / 1024 ** 3),
+                      "" if gone or gpu is None else "%.0f %%" % gpu[0],
+                      "" if gone or gpu is None else "%.1f GB" % (gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
                       fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
                       self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else "",

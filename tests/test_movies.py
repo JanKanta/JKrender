@@ -37,6 +37,9 @@ win._slow_tick()
 pump(2)
 writes = {t.item(r, col).text() for r in range(t.rowCount()) if t.item(r, col) and t.item(r, 1) and t.item(r, 1).text()}
 check("it names the Write", writes == {"Write1"}, writes)
+check("columns CPU, GPU and VRAM (CPU used and GPU with VRAM in it before 0.99.51)",
+      "CPU" in names and "GPU" in names and "VRAM" in names and "CPU used" not in names
+      and head.visualIndex(names.index("VRAM")) == head.visualIndex(names.index("GPU")) + 1, names)
 for e in m.engines:
     e.stop("test done")
 wait(lambda: all(w.state == "gone" for e in m.engines for w in e.workers.values()), 60)
