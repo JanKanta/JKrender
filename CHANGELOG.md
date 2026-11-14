@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.33 — 2026-11-14
+
+- The **1.3 rule** (a place waiting for memory: the process holding the most of it reloads after its chunk, if it grew 1.3 x since its first chunk) waits 5 s instead of 15 s, and State says it ahead on that one process: **busy → reload (1.3 rule)**. The Log line starts with "1.3 rule".
+- GPU frozen comes sooner: every process 15 s without CPU (was 30 s; still at least 2 x the usual frame time) from 90 % VRAM, and the next GPU frozen close can follow 15 s after the last (was 30 s).
+- `test_memory` checks it (0.99.32 fails it).
+
 ## 0.99.32 — 2026-11-14
 
 - Kill at closes the right process: while some processes are starting (no frame rendered yet, at the start of a render or a fresh Nuke after a reload), the least loaded of those, as it has done no work yet; once all render, the one holding the most RAM or VRAM, so one close frees enough. Before, always the one started last, often the smallest.

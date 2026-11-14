@@ -231,9 +231,15 @@ e.killed.clear()
 m._vram_checked = 0
 m._cpu_idle_since = time.time() - 40
 m._vram_guard()
-check("not a second one within 30 s", e.killed == [], e.killed)
+check("not a second one within 15 s", e.killed == [], e.killed)
+check("15 s without CPU, 15 s between two", (jk.STALL_CPU_SECS, jk.STALL_GAP) == (15, 15), (jk.STALL_CPU_SECS, jk.STALL_GAP))
+m, e, ws = stalled(94.8, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=17, frame_secs=5.0)
+check("17 s without CPU, frames 5 s: one closes (15 s is enough)", e.killed == ["W04"], e.killed)
+m, e, ws = stalled(94.8, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=17, frame_secs=10.0)
+check("17 s without CPU, frames 10 s: not yet (2 x the frame time, 20 s)", e.killed == [], e.killed)
 
-say("A place waits 15 s for memory: the process holding the most of it reloads after its chunk, if it grew (a leak)")
+say("The 1.3 rule: a place waits 5 s for memory, the process holding the most of it reloads after its chunk, if it grew 1.3 x")
+check("5 s", jk.WAIT_RELOAD == 5, jk.WAIT_RELOAD)
 GB = 1024 ** 3
 
 
@@ -253,9 +259,13 @@ m, e, ws = waiting("RAM", 20)
 check("RAM: W01 does not reload, W02 holds the most", m.wait_reload(ws[1]) == "", m.wait_reload(ws[1]))
 why = m.wait_reload(ws[2])
 check("RAM, 20 s waiting: W02 reloads, 30 GB up from 20", "RAM" in why and "W02" in why and "30.0 GB" in why, why)
+check("the Log calls it the 1.3 rule", why.startswith("1.3 rule:"), why)
 check("then not again at once", m.wait_reload(ws[2]) == "")
-m, e, ws = waiting("RAM", 10)
-check("RAM, only 10 s waiting: none", m.wait_reload(ws[2]) == "")
+m, e, ws = waiting("RAM", 3)
+check("RAM, only 3 s waiting: none", m.wait_reload(ws[2]) == "")
+m, e, ws = waiting("RAM", 6)
+check("RAM, 6 s waiting: W02 reloads", "W02" in m.wait_reload(ws[2], peek=True))
+check("asking for State (peek) does not start the count again", "W02" in m.wait_reload(ws[2], peek=True))
 m, e, ws = waiting("RAM", 20, rss=(20.0, 23.0, 22.0, 21.0))
 check("RAM: the biggest grew only from 20 to 23 GB (no leak): none", m.wait_reload(ws[2]) == "")
 m, e, ws = waiting("VRAM", 20)
