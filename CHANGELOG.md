@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.44 — 2026-11-14
+
+- GPU frozen is found sooner. Without CPU: every process rendering a frame but one (at least two) is enough; one still working, opening the script again say, no longer hides a card the rest wait for. No frame: 2.5 x the usual frame time, at least 45 s (was 4 x, at least 60 s). A freeze that took 91 s to find would take about 45-57 s.
+- A place closed for memory comes back only if one more process at its largest keeps the RAM / VRAM under Kill at, as well as under Reload Nuke at. W06 was closed at Kill at four times in two minutes: back at 92 % RAM, at 98-100 % 20 s later. State: wait: Reload at 84 % of RAM.
+- `test_memory` checks it (0.99.43 fails it).
+
 ## 0.99.43 — 2026-11-14
 
 - Test this script has no **Frames per setup** any more: it changed nothing once a setup had 5 processes or more (4 a process won). Round 2 renders **8 frames a process** of the setup with the most processes, two chunks or so each, so growing memory and Reload Nuke show in the test. Every setup of a round still renders the same frames. The top right says what each round renders.

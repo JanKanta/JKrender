@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.43 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.44 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.43"
+APP_VERSION = "0.99.44"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -102,6 +102,8 @@ LEAK_GROWTH = 1.3
 STALL_CPU = 0.1
 STALL_CPU_SECS = 15
 STALL_GAP = 15  # s after a GPU frozen close before the next one
+STALL_FRAMES = 2.5  # no frame for this many times the usual frame time = the card froze
+STALL_MIN = 45.0  # and at least this many seconds
 MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
 # A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
 SOUNDS = {"done_v4": (1.6, ((0.00, 523.25, 1.10, 0.07), (0.00, 1046.50, 0.50, 0.06), (0.11, 783.99, 1.20, 0.07), (0.11, 1567.98, 0.50, 0.06),
@@ -2887,7 +2889,18 @@ class RenderManager:
         reload: Reload Nuke and Kill at catch it if the new one grows too big."""
         if not psutil:
             return 0
-        return 1 if pct < limit and not self.starting() else 0
+        return 1 if pct < limit and pct + self.one_pct("RAM") < pct_kill(self.settings, "RAM") and not self.starting() else 0
+
+    def one_pct(self, name):
+        """% of the RAM or VRAM one Nuke process of the renders running takes at its largest (0 when not known yet): a place
+        comes back only if it then stays under Kill at, or it would be closed again at once, round and round."""
+        if name == "RAM":
+            if not psutil:
+                return 0.0
+            total = psutil.virtual_memory().total / 1024 ** 3
+            sizes = [e.size_seen for e in self.engines if e.state == "rendering" and e.size_seen]
+            return max(sizes) / total * 100 if sizes else 0.0
+        return self.vram_one() or 0.0
 
     def starting(self):
         """A process still opening the script or before its first frame (for 5 minutes at most), or None."""
@@ -2998,22 +3011,29 @@ class RenderManager:
         if psutil and self.settings.get("ram_guard", True):
             limit = pct_limit(self.settings, "RAM")
             pct = self.ram_percent()
-            if pct >= limit:
+            if pct >= self._return_under("RAM"):
                 return self._ram_target(pct, limit)
         if self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
             limit = pct_limit(self.settings, "VRAM")
             real = float(self.vram[1]) / float(self.vram[2]) * 100
-            if real >= limit:
+            if real >= self._return_under("VRAM"):
                 return self._vram_target(real, limit, 0.0)
         return ""
 
+    def _return_under(self, name):
+        """The RAM or VRAM % a closed place comes back under: Reload Nuke at, or lower when one more process at its largest
+        would reach Kill at."""
+        return min(pct_limit(self.settings, name), pct_kill(self.settings, name) - self.one_pct(name))
+
     def _ram_target(self, pct, limit):
-        """What a process waiting for RAM waits for: the RAM under Reload Nuke at (as _more_fit)."""
-        return "RAM must drop under %.0f %% (now %.0f %%, Reload Nuke at)" % (limit, pct)
+        """What a process waiting for RAM waits for (as _more_fit)."""
+        return "RAM must drop under %.0f %% (now %.0f %%, Reload Nuke at or Kill at less one process)" % (
+            self._return_under("RAM"), pct)
 
     def _vram_target(self, real, limit, one=0.0, growing=0.0, starting=0):
-        """What a process waiting for VRAM waits for: the card under Reload Nuke at (as _more_fit_vram)."""
-        return "VRAM must drop under %.0f %% (now %.0f %%, Reload Nuke at)%s" % (limit, real, self.vram_holder())
+        """What a process waiting for VRAM waits for (as _more_fit_vram)."""
+        return "VRAM must drop under %.0f %% (now %.0f %%, Reload Nuke at or Kill at less one process)%s" % (
+            self._return_under("VRAM"), real, self.vram_holder())
 
     def _note_running(self, text, level="ev"):
         for e in self.engines:
@@ -3193,8 +3213,9 @@ class RenderManager:
                 self._note_running("!! VRAM %.0f %%: %d Nuke processes until there is room" % (pct, cap), "warn")
 
     def memory_over(self):
-        """What is over Reload Nuke at now: ["RAM"], ["VRAM"], both or []."""
-        return [name for name, pct in self._mem_now().items() if pct is not None and pct >= pct_limit(self.settings, name)]
+        """What a fresh Nuke or a place coming back would not fit in now: ["RAM"], ["VRAM"], both or []. Over Reload Nuke at,
+        or so full that one more process would reach Kill at."""
+        return [name for name, pct in self._mem_now().items() if pct is not None and pct >= self._return_under(name)]
 
     def _stall_check(self, now, pct, limit):
         """A card so full the processes stall (also under the limit, from STALL_VRAM): the last one started closes at
@@ -3233,11 +3254,13 @@ class RenderManager:
         return True
 
     def _cpu_stalled(self, now):
-        """Seconds every GPU process rendering a frame has used (almost) no CPU, once that is STALL_CPU_SECS and 2 x the
-        usual frame time; else 0."""
+        """Seconds every GPU process rendering a frame but one (and at least two) has used (almost) no CPU, once that is
+        STALL_CPU_SECS and 2 x the usual frame time; else 0. One still working (one opening the script again, say) must not
+        hide a card the rest wait for."""
         busy = [w for e in self.engines if e.state == "rendering" for w in e.workers.values()
                 if w.gpu and w.state == "busy"]
-        if len(busy) < 2 or any(getattr(w, "cpu", None) is None or w.cpu >= STALL_CPU for w in busy):
+        idle_ones = [w for w in busy if getattr(w, "cpu", None) is not None and w.cpu < STALL_CPU]
+        if len(busy) < 2 or len(idle_ones) < max(2, len(busy) - 1):
             self._cpu_idle_since = None
             return 0.0
         if self._cpu_idle_since is None:
@@ -3249,7 +3272,7 @@ class RenderManager:
 
     def _vram_stalled(self, now):
         """Seconds since any GPU process of a running render finished a frame, when that is far longer than a frame takes
-        (4 x the usual, at least a minute); else 0."""
+        (STALL_FRAMES x the usual, at least STALL_MIN s); else 0."""
         ends, secs, gpu = [], [], False
         for e in self.engines:
             if e.state != "rendering":
@@ -3262,7 +3285,7 @@ class RenderManager:
                     secs += w.frame_secs[-10:]
         if not ends or not gpu:
             return 0.0
-        wait = max(60.0, 4 * statistics.median(secs)) if secs else 180.0
+        wait = max(STALL_MIN, STALL_FRAMES * statistics.median(secs)) if secs else 180.0
         idle = now - max(ends)
         return idle if idle > wait else 0.0
 
@@ -3286,7 +3309,7 @@ class RenderManager:
         """As _more_fit, for the graphics card: one more while the VRAM is under Reload Nuke at and none is starting."""
         if not self.vram or not self.vram[2]:
             return 0
-        return 1 if pct < limit and not self.starting() else 0
+        return 1 if pct < limit and pct + (one or 0.0) < pct_kill(self.settings, "VRAM") and not self.starting() else 0
 
     def _short_update(self):
         """Since when the RAM and the VRAM have been at their Reload Nuke at %, without a break."""

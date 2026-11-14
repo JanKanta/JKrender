@@ -74,12 +74,13 @@ m._hold_down("RAM", 96.0, live=3)  # as when a reload's fresh Nuke does not fit
 check("a place that does not fit waits: 3 places", m.ram_cap == 3, m.ram_cap)
 ws[4].state = "gone"
 check("the ones going are not counted as still to come", m._ram_pending() < 0.5, m._ram_pending())
+e.size_seen = 8.0  # one process at its largest: 8 GB
 for v, want in ((96.0, 3), (80.0, None)):  # under Reload Nuke at (95 %) it comes back, as after a reload
     pct["v"] = v
     settle(m, m._ram_guard)
     check("RAM %.0f %%: places %s" % (v, want or "all back"), m.ram_cap == want, m.ram_cap)
 ws[4].state, ws[4].frames_here, ws[4].rss = "loading", 0, 2.0
-check("one opening the script counts what it will take", abs(m._ram_pending() - 24.0) < 0.1, m._ram_pending())
+check("one opening the script counts what it will take", abs(m._ram_pending() - (e.size_seen - 2.0)) < 0.1, m._ram_pending())
 
 say("VRAM over Reload Nuke at: nothing closes at once; a place held down comes back when it fits")
 m, e, ws = manager()
@@ -96,6 +97,21 @@ for v, want in ((96.0, 3), (80.0, None)):
     m.vram = [60, 24576 * v / 100, 24576.0]
     settle(m, m._vram_guard)
     check("VRAM %.0f %%: places %s" % (v, want or "all back"), m.vram_cap == want, m.vram_cap)
+say("A place comes back only if one more process stays under Kill at (W06 was closed four times in two minutes)")
+m, e, ws = manager()
+m.vram = [10, 24576 * 0.3, 24576.0]
+total = jk.psutil.virtual_memory().total / 1024 ** 3
+e.size_seen = total * 0.14  # one process at its largest: 14 % of the RAM
+m._hold_down("RAM", 99.0, live=3)
+ws[4].state = "gone"
+m.ram_percent = lambda: 92.0
+settle(m, m._ram_guard)
+check("RAM 92 %, one process 14 %: 106 % over Kill at, it does not come back", m.ram_cap == 3, m.ram_cap)
+check("State says under what it comes back: 84 %", "must drop under 84 %" in (m.no_room() or ""), m.no_room())
+m.ram_percent = lambda: 80.0
+settle(m, m._ram_guard)
+check("RAM 80 %: 94 %, under Kill at: it comes back", m.ram_cap is None, m.ram_cap)
+
 say("Places come back one at a time: the next only once the last one has rendered a frame")
 m, e, ws = manager()
 m.ram_percent = lambda: 60.0
@@ -138,6 +154,12 @@ m._last_vram_kill = 0
 m._vram_checked = 0
 m._vram_guard()
 check("VRAM 96 %, a frame 20 s ago: none closes at once", e.killed == [], e.killed)
+check("no frame for 2.5 x the frame time, at least 45 s", (jk.STALL_FRAMES, jk.STALL_MIN) == (2.5, 45.0))
+e.last_frame_at = time.time() - 50  # frames take 10 s: 50 s is over 45 s
+m._last_vram_kill = 0
+m._vram_checked = 0
+m._vram_guard()
+check("VRAM 96 %, frames 10 s, none for 50 s: one closes (it took a minute before)", len(e.killed) == 1, e.killed)
 
 say("Kill at: from this % the one started last closes at once; never under Reload Nuke at")
 
@@ -252,7 +274,9 @@ check("the note says they waited for the card", any("without using the CPU" in t
 m, e, ws = stalled(94.8, cpu=(0.0, 0.02, 0.0, 0.01), idle_for=10)
 check("only 10 s without CPU: none closes", e.killed == [], e.killed)
 m, e, ws = stalled(94.8, cpu=(0.0, 3.5, 0.0, 0.0), idle_for=40)
-check("one process still uses the CPU: none closes", e.killed == [], e.killed)
+check("all but one without CPU (one still working, say opening the script): one closes", len(e.killed) == 1, e.killed)
+m, e, ws = stalled(94.8, cpu=(0.0, 3.5, 2.0, 0.0), idle_for=40)
+check("two still use the CPU: none closes", e.killed == [], e.killed)
 m, e, ws = stalled(94.8, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=40, frame_secs=60.0)
 check("frames take a minute (a long GPU frame): 40 s without CPU is no stall", e.killed == [], e.killed)
 m, e, ws = stalled(80.0, cpu=(0.0, 0.0, 0.0, 0.0), idle_for=400, last_frame=600)
@@ -372,7 +396,9 @@ m.vram_cap = 5
 m.falls = []
 m.vram = [20, 24576 * 0.96, 24576.0]
 why = jk.MainWindow._memory_why(type("X", (), {"manager": m})())
-check("VRAM 96 %: 'wait: Reload at 95 % of VRAM'", jk.MainWindow._short_why(why) == "wait: Reload at 95 % of VRAM", (why, jk.MainWindow._short_why(why)))
+under = int(round(m._return_under("VRAM")))
+check("VRAM 96 %: 'wait: Reload at N % of VRAM' (95 %, or Kill at less one process)",
+      jk.MainWindow._short_why(why) == "wait: Reload at %d %% of VRAM" % under, (why, jk.MainWindow._short_why(why), under))
 ws[3].frames_here, ws[3].spawned = 0, time.time()
 why = jk.MainWindow._memory_why(type("X", (), {"manager": m})())
 check("W03 before its first frame: 'wait: W03 1st frame'", jk.MainWindow._short_why(why) == "wait: W03 1st frame", why)
