@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.29 — 2026-11-14
+
+- **busy → reload (RAM 91 %)** shows on one process only, and that is the one that reloads: the one holding the most of what is short (the most VRAM when the VRAM is short, else the most RAM). Before, every busy process showed it and whichever finished its chunk first went.
+- **busy → closes (RAM limit)** (or VRAM limit) shows on one process at a time, the one started last; the next is marked only once it has gone. Before, two could be marked when both limits went down.
+- `test_fresh_nuke` checks both (0.99.28 fails them).
+
 ## 0.99.28 — 2026-11-14
 
 - A process going to another render after its chunk shows **busy → move to render 2** in State, without the shot's name (was busy → 2 sh020).

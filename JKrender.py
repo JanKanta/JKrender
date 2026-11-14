@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.28 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.29 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.28"
+APP_VERSION = "0.99.29"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1532,7 +1532,7 @@ class RenderEngine:
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
             return "%s → move to render %d" % (state, w.leave_to.number)
-        fresh = self._fresh_due() if state == "busy" and not (w.retire or w.handover or w.leave) else ""
+        fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
         if fresh:
             return "busy → reload" if fresh == "always" else "busy → reload (%s)" % fresh
         if w.why_leaving and (w.handover or (w.retire and state == "busy")):
@@ -1940,6 +1940,12 @@ class RenderEngine:
             m = self.manager
             vram = m is not None and m.vram_bound()
             limit = vram or (m is not None and m.ram_cap is not None)
+            if limit:
+                # one at a time, so State shows "closes (RAM limit)" on the one process that goes, not on several
+                if any(x.why_leaving in ("RAM limit", "VRAM limit") and (x.retire or x.handover) and x.state != "gone"
+                       for x in self.workers.values()):  # _live() leaves out the ones already closing
+                    return
+                extra = 1
             for w in sorted(live, key=lambda w: (not w.leave, w.pinned, -w.spawned) if limit else
                             (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned, -w.spawned))[:extra]:
                 why = None if w.leave or not limit else ("VRAM limit" if vram else "RAM limit")
@@ -1957,7 +1963,7 @@ class RenderEngine:
                 w.retire = w.handover = False
                 w.why_leaving = w.closed_why = None
 
-    def _fresh_due(self):
+    def _fresh_due(self, w=None):
         """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when the RAM or VRAM has been
         at its Reload Nuke at % for FRESH_HOLD s, one process at a time: the next only once the last fresh one rendered its
         first frame, and only if memory is still short then. Never with no chunk left to hand out: the new one would have nothing to do.
@@ -1972,7 +1978,10 @@ class RenderEngine:
         m = self.manager
         if m is None or m.refreshing():
             return ""  # one at a time: the others go on with their next chunk meanwhile
-        return m.memory_short()
+        short = m.memory_short()
+        if short and w is not None and m.reload_pick(short) is not w:
+            return ""  # only the one picked reloads, and only it shows "busy → reload" in State
+        return short
 
     def _wait_due(self, w):
         """A place of the renders waits for memory and w, its chunk done, is the one to reload for it (see wait_reload)."""
@@ -2178,8 +2187,8 @@ class RenderEngine:
                 w.closed_why = "reload"
                 self.refresh_ids.append(w.id)
                 self._quit(w, "reloads after its chunk: %s" % self._wait_why)
-            elif self._fresh_due():
-                fresh = self._fresh_due()
+            elif self._fresh_due(w):
+                fresh = self._fresh_due(w)
                 w.closed_why = "reload"
                 self.refresh_ids.append(w.id)
                 self._quit(w, "reloads after its chunk%s, it took %.1f GB RAM%s" % (
@@ -3214,6 +3223,24 @@ class RenderManager:
                 self._short_since.pop(name, None)
             else:
                 self._short_since.setdefault(name, now)
+
+    def reload_pick(self, short):
+        """The one process that reloads for Reload Nuke When memory is full: the one holding the most of what is short
+        (VRAM when the VRAM is short, else RAM). Kept until it has reloaded or closed, so State points at one process
+        and that is the one that goes."""
+        name = "VRAM" if "VRAM" in short else "RAM"
+        pick = getattr(self, "_reload_pick", None)
+        if (pick is not None and pick[0] == name and pick[1].state in ("loading", "idle", "busy")
+                and not (pick[1].retire or pick[1].handover or pick[1].leave)):
+            return pick[1]
+        running = [w for e in self.engines if not e.movie and e.state == "rendering" for w in e.workers.values()
+                   if w.state in ("idle", "busy") and not (w.retire or w.handover or w.leave) and (name == "RAM" or w.gpu)]
+        if not running:
+            self._reload_pick = None
+            return None
+        top = max(running, key=lambda w: self._held(w, name)[0])
+        self._reload_pick = (name, top)
+        return top
 
     def _wait_update(self):
         """Since when a place has waited to come back because the RAM or the VRAM holds the processes down."""

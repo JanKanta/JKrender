@@ -31,11 +31,13 @@ for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none",
         win.manager.ram_percent = lambda r=ram: r
     win._start()
     seen = set()
-    most = {"n": 0}
+    most = {"n": 0, "shown": 0}
 
     def going():
-        seen.update(e.worker_state(w) for w in e.workers.values())
+        states = [e.worker_state(w) for w in e.workers.values()]
+        seen.update(states)
         most["n"] = max(most["n"], in_refresh(e))
+        most["shown"] = max(most["shown"], sum(1 for x in states if "→ reload" in x))
         return e.state in ("done", "failed", "stopped")
 
     wait(going, 180)
@@ -56,6 +58,24 @@ for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none",
         check("never for the last chunks", not any("no chunks" in x for x in fresh))
         if mode == "short":
             check("one at a time: never two fresh Nukes at once", most["n"] <= 1, most["n"])
+            check("State shows 'busy → reload' on one process at a time", most["shown"] == 1, most["shown"])
     win.close()
     win = None
+say("Over a limit with room for 2 of 4: one marked 'closes (RAM limit)' at a time")
+job = make_job("limit_one", 1001, 1040, env={"FAKE_SECS": "1.0"})
+win = jk.MainWindow(job)
+win.s_workers.setValue(4)
+e = win.engine
+win.c_fresh.setCurrentIndex(win.c_fresh.findData("off"))
+win._start()
+wait(lambda: sum(1 for w in e.workers.values() if w.state == "busy") == 4, 60)
+win.manager.ram_cap = 2
+e.workers_target = 2
+e._balance_workers()
+e._balance_workers()
+marked = [e.worker_state(w) for w in e.workers.values() if "closes (RAM limit)" in e.worker_state(w)]
+check("only one shows 'busy → closes (RAM limit)'", len(marked) == 1, [e.worker_state(w) for w in e.workers.values()])
+win._stop()
+wait(lambda: e.state == "stopped", 30)
+win.close()
 finish()
