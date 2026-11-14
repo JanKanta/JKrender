@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.28 — 2026-11-14
+
+- A process going to another render after its chunk shows **busy → move to render 2** in State, without the shot's name (was busy → 2 sh020).
+- `test_process_menu` checks it (0.99.27 fails it).
+
 ## 0.99.27 — 2026-11-14
 
 - A process closed because the graphics card froze shows **closed (GPU frozen)** in State, not closed (VRAM limit). Closed (VRAM limit) is left for the VRAM over Memory Limit or Kill at.

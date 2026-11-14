@@ -103,4 +103,11 @@ wait(lambda: e.state in ("done", "failed", "stopped"), 180)
 check("the render ends whole", e.state == "done" and len(files(job)) == 60, (e.state, len(files(job))))
 names = [x[1] for x in e.log if "W03 started again" in x[1] and x[0] == ""]
 check("no 'W03 started again' after it was removed", not names, names)
+say("A process going to another render after its chunk")
+import types
+mover = next(iter(e.workers.values()))
+keep = (mover.state, mover.leave, getattr(mover, "leave_to", None), mover.retire, mover.handover, mover.user_paused)
+mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = "busy", True, types.SimpleNamespace(number=2, name="sh020"), False, False, False
+check("State: busy → move to render 2, without the shot's name", e.worker_state(mover) == "busy → move to render 2", e.worker_state(mover))
+mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = keep
 finish()
