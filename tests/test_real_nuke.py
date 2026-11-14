@@ -17,7 +17,7 @@ if not exe:
     say("skipped: no Nuke*.exe in NUKE_DIR (%s)" % nuke_dir)
     finish()
 
-jk, app = start({"processes": 2, "threads": 4, "ram": 2, "check_pixels": True, "test_frames": 6})
+jk, app = start({"processes": 2, "threads": 4, "ram": 2, "check_pixels": True})
 os.environ["USERPROFILE"] = REAL_HOME  # JKrender read its own home at import; Nuke gets the real one
 
 d = RUN + "/real"

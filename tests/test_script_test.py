@@ -4,7 +4,7 @@ Use these settings."""
 from common import *
 from PySide6 import QtCore, QtWidgets
 
-jk, app = start({"processes": 2, "threads": 2, "ram": 2, "test_frames": 8, "chunk_auto": False, "chunk_size": 3,
+jk, app = start({"processes": 2, "threads": 2, "ram": 2, "chunk_auto": False, "chunk_size": 3,
                  "test_setups": [[3, 2, 2]]})  # saved before 0.91: three fields
 
 say("The setups")
@@ -27,16 +27,14 @@ check("Round 1: the same frames for every setup", quick[0] == quick[1] == quick[
 check("from the start of the shot to its end", quick[0][0] < 1010 and quick[0][-1] > 1050, (quick[0][0], quick[0][-1]))
 t.round, t.round_procs = "final", [2, 4]
 check("Round 2: the same frames for both", t._frames_for(2) == t._frames_for(4))
-t.s_frames.setValue(20)
-t.round, t.round_procs = "final", [2, 3, 4]
-check("Frames per setup 20: Round 2 renders 20, not each stretch rounded up to 24", len(t._frames_for(2)) == 20,
-      len(t._frames_for(2)))
-t.round_procs = [2, 6]
-check("at least 4 a process: 6 processes get 24", len(t._frames_for(6)) == 24, len(t._frames_for(6)))
-t.s_frames.setValue(57)
-t.round_procs = [2]
-check("57 of 60, stretches that meet: still 57", len(t._frames_for(2)) == 57, len(t._frames_for(2)))
-t.s_frames.setValue(8)
+check("no Frames per setup any more", not hasattr(t, "s_frames"))
+check("Round 2: 8 frames a process of the setup with the most: 4 processes, 32 frames, for both",
+      len(t._frames_for(2)) == 32 and len(t._frames_for(4)) == 32, (len(t._frames_for(2)), len(t._frames_for(4))))
+t.round_procs = [2, 3]
+check("2 and 3 processes: 24 frames for both", len(t._frames_for(2)) == len(t._frames_for(3)) == 24, len(t._frames_for(2)))
+t.round_procs = [8]
+check("8 processes would need 64, the shot has 60: all of them", len(t._frames_for(8)) == 60, len(t._frames_for(8)))
+check("the note at the top says it", "Round 2: 8 a process" in t.l_frames.text(), t.l_frames.text())
 
 say("Add test and Edit test, with Fresh Nuke after every chunk")
 

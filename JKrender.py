@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.42 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.43 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.42"
+APP_VERSION = "0.99.43"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -184,6 +184,7 @@ def read_settings():
         pass
     settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
     settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
+    settings.pop("test_frames", None)  # 0.99.43: no Frames per setup; Round 2 renders 8 frames a process
     if settings.get("fresh_after_chunk") not in ("short", "always"):  # 0.99.41: no Never; the memory rules need it
         settings["fresh_after_chunk"] = "short"
     setups = settings.get("test_setups")
@@ -3886,7 +3887,8 @@ class ScriptTest(QtWidgets.QDialog):
     # (a heavy comp: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
     SLOWER = 1.5
     GIVE_UP = 2
-    FRAMES = 20  # per setup by default (Frames per setup), and at least 2 per process, or a setup with many has them all on its first frame
+    ROUND2_FRAMES = 8  # per process in Round 2 (no Frames per setup since 0.99.43): two chunks or so each, so growing memory
+    # and Reload Nuke show in the test, not only the first frames
     TESTS = 7  # setups Create tests makes, from 1 process to the most this PC takes
     MIN_THREADS = 4  # a process gets at least this many threads
     MIN_CACHE = 4  # GB of cache a process gets at least: a heavy comp slows down a lot under that
@@ -4036,17 +4038,11 @@ class ScriptTest(QtWidgets.QDialog):
             lab.setObjectName("dim")
             return lab
 
-        wanted = int(window.settings.get("test_frames", self.FRAMES))
-        self.s_frames = box(1, 9999, wanted)  # more than the shot has stays set: it says so and renders them all
-        self.s_frames.setToolTip("Frames each setup renders in Round 2: stretches of frames in a row at the same 6 places spread\n"
-                                 "over the whole shot for every setup; at least 4 per process, so a setup with many gets more.\n"
-                                 "A shot with no more frames than that: all of them, and it says so.")
-        self.s_frames.valueChanged.connect(lambda v: window._save_setting("test_frames", v))
-        self.l_frames = label("")
-        self.s_frames.valueChanged.connect(self._frames_note)
+        self.l_frames = label("")  # how many frames each round renders, top right, after Add test and Remove test
+        self.l_frames.setToolTip("Every setup of a round renders the same frames: stretches of frames in a row at the same 6 places\n"
+                                 "spread over the whole shot, as many as the setup with the most processes needs.")
         self.add_defaults = (m.total, m.threads, m.ram, self.fresh, cpu, ram)  # what Add test starts from, and its limits
-        for widget in (label("Frames per setup"), self.s_frames, self.l_frames):  # top right, after Add test and Remove test
-            top.addWidget(widget)
+        top.addWidget(self.l_frames)
         buttons = QtWidgets.QHBoxLayout()
         self.b_start = QtWidgets.QPushButton("Start")
         self.b_start.setObjectName("primary")
@@ -4198,16 +4194,16 @@ class ScriptTest(QtWidgets.QDialog):
         self._fill_table()
 
     def _idle(self, on):
-        for widget in (self.b_start, self.b_create, self.b_add, self.b_remove, self.s_frames):
+        for widget in (self.b_start, self.b_create, self.b_add, self.b_remove):
             widget.setEnabled(on)
         self.b_stop.setEnabled(not on)
 
     def _wanted(self, processes):
-        """How many frames a setup of so many processes needs: Round 1 a few a process, Round 2 Frames per setup and at least 4
-        a process. Every setup of a round renders the most any of them needs, the same frames."""
+        """How many frames a setup of so many processes needs: Round 1 QUICK_FRAMES a process, Round 2 ROUND2_FRAMES a process.
+        Every setup of a round renders the most any of them needs, the same frames."""
         if self.round == "quick":
             return max(self.QUICK_FRAMES * processes, 6)
-        return max(self.s_frames.value(), 4 * processes)
+        return max(self.ROUND2_FRAMES * processes, 8)
 
     PLACES = 6  # places spread over the shot, the same for every setup
     COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
@@ -4257,14 +4253,11 @@ class ScriptTest(QtWidgets.QDialog):
         return sorted(picked)
 
     def _frames_note(self, *_):
-        """Next to Frames per setup: how many the shot has, and when it has no more than that, that every setup renders them all."""
+        """Top right: how many frames the rounds render, the same for every setup of a round."""
         total = len(self.all_frames)
-        if self.s_frames.value() >= total:
-            self.l_frames.setText("the shot has only %d frames: every setup renders all of them" % total)
-            self.l_frames.setStyleSheet("color: %s;" % C["small"])
-        else:
-            self.l_frames.setText("of %d, from %d places spread over the whole shot" % (total, max(1, min(self.PLACES, total // 3))))
-            self.l_frames.setStyleSheet("")
+        self.l_frames.setText("Round 1: %d frames a process, Round 2: %d a process, the same frames for every setup; of %d, from %d "
+                              "places over the whole shot" % (self.QUICK_FRAMES, self.ROUND2_FRAMES, total,
+                                                               max(1, min(self.PLACES, total // 3))))
 
     def _whole(self, r):
         """Seconds the whole shot would take: the test as it went (the start, the first frames warming up), then the shot's
@@ -4619,8 +4612,8 @@ class ScriptTest(QtWidgets.QDialog):
             rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
                     for r in range(self.table.rowCount())]
             path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
-            lines = ["%s, Frames per setup %d (Round 1: 3 a process; Round 2: at least 4 a process), %d in the shot, %d threads" % (
-                self.src.name, self.s_frames.value(), len(self.all_frames), os.cpu_count() or 0),
+            lines = ["%s, Round 1: %d frames a process, Round 2: %d a process, %d in the shot, %d threads" % (
+                self.src.name, self.QUICK_FRAMES, self.ROUND2_FRAMES, len(self.all_frames), os.cpu_count() or 0),
                      " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except OSError:

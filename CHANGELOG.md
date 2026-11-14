@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.43 — 2026-11-14
+
+- Test this script has no **Frames per setup** any more: it changed nothing once a setup had 5 processes or more (4 a process won). Round 2 renders **8 frames a process** of the setup with the most processes, two chunks or so each, so growing memory and Reload Nuke show in the test. Every setup of a round still renders the same frames. The top right says what each round renders.
+- `test_script_test` checks it (0.99.42 fails it).
+
 ## 0.99.42 — 2026-11-14
 
 - Kill at for the VRAM closes a process only if that gets the card under Kill at. When other programs hold the card (three open NukeX), closing JKrender's processes one after another would only throw their work away: none closes, and the Log says so once in 2 minutes, naming the program that holds the most. The GPU frozen guard still acts if the card stalls.
