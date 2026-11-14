@@ -55,7 +55,7 @@ for mode, ram, want, procs in (("off", None, "none", 2), ("short", 40.0, "none",
         check("State never says reload", not any("reload" in s for s in seen), sorted(seen))
     else:
         check("fresh Nukes after chunks", len(fresh) >= (3 if mode == "always" else 1), len(fresh))
-        why = "busy → reload" if mode == "always" else "busy → reload (RAM 91 %)"
+        why = "busy → reload" if mode == "always" else "busy → reload (RAM over 90 %)"
         check("State says it ahead: '%s'" % why, why in seen, sorted(seen))
         check("the timeline shows the reload", "again: reload" in loads, loads)
         check("never for the last chunks", not any("no chunks" in x for x in fresh))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.30 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.31 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.30"
+APP_VERSION = "0.99.31"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -3333,14 +3333,14 @@ class RenderManager:
         return ""
 
     def memory_short(self):
-        """What is short for Fresh Nuke after every chunk: "RAM 91 %", "VRAM 93 %", both, or "". Within 5 % of the limit for
-        FRESH_HOLD s without a break, not one reading over it. A process closed for memory that waits to come back is no
+        """What is over Reload Nuke at, held FRESH_HOLD s without a break: "RAM over 95 %", "VRAM over 95 %", both, or "".
+        The threshold, not the reading: State says busy → reload (VRAM over 95 %). A process closed for memory that waits to come back is no
         reason by itself: it comes back once there is room, and fresh Nukes at 60 % only cost script loads."""
         now, pct, why = time.time(), self._mem_now(), []
         for name in ("RAM", "VRAM"):
             since = self._short_since.get(name)
             if since is not None and now - since >= FRESH_HOLD:
-                why.append("%s %.0f %%" % (name, pct[name]) if pct[name] is not None else name)
+                why.append("%s over %.0f %%" % (name, pct_limit(self.settings, name)))
         return ", ".join(why)
 
     def take_wid(self, engine=None):
@@ -7211,8 +7211,8 @@ class MainWindow(QtWidgets.QMainWindow):
         m = re.match(r"(V?RAM) must drop under (\d+) % \(now (\d+) %", why)
         if m:  # now -> where one more fits, with room kept for the processes still starting
             starting = re.search(r"and (\d+) starting", why)
-            return "wait: %s %s → %s %%%s" % (m.group(1), m.group(3), m.group(2),
-                                             " (%s starting)" % starting.group(1) if starting else "")
+            return "wait: Reload at %s %% of %s%s" % (m.group(2), m.group(1),
+                                                    " (%s starting)" % starting.group(1) if starting else "")
         m = re.match(r"(V?RAM) (\d+) %: one more fits, checking", why)
         if m:
             return "wait: %s ok, checking" % m.group(1)

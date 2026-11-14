@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.31 — 2026-11-14
+
+- State for Reload Nuke shows the threshold, not the reading: **busy → reload (VRAM over 95 %)** (or RAM, or both).
+- A place waiting for memory shows **wait: Reload at 85 % of VRAM** (or RAM): the % under which one more process fits, with "(2 starting)" when some are still starting. Was wait: VRAM 92 → 85 %.
+- `test_memory` and `test_fresh_nuke` check it (0.99.30 fails them).
+
 ## 0.99.30 — 2026-11-14
 
 - **No Memory Limit any more.** One rule takes its place: once the RAM or VRAM has stayed at or over **Reload Nuke at (95 %) for 10 s**, the process holding the most of it reloads Nuke after its chunk. The fresh Nuke starts as soon as it fits: at once when the old one had grown, or once there is room, so one process fewer runs while the script needs that much (State: wait: RAM 96 → 88 %). Over Reload Nuke at nothing else closes; places closed for memory come back only under it.
