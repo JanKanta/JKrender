@@ -170,6 +170,7 @@ m, e, ws = stalled(94.8, last_frame=300)
 check("no frame for 5 minutes at 94.8 %: the one started last closes", e.killed == ["W04"], e.killed)
 check("and the places go one down until the card has room", m.vram_cap == 3, m.vram_cap)
 check("the note says why", any("no frame finished" in t and "W04 closed now" in t for t in e.notes), e.notes)
+check("State says closed (GPU frozen)", ws[4].closed_why == "GPU frozen", ws[4].closed_why)
 for v, want in ((93.0, 3), (60.0, None)):
     m.vram = [60, 24576 * v / 100, 24576.0]
     settle(m, m._vram_guard)

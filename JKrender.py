@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.26 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.27 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.26"
+APP_VERSION = "0.99.27"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1147,7 +1147,7 @@ class Worker:
         self.leave = False  # Work on another render: this one hands its place over first
         self.handover = False  # its place goes to another render: it still renders one chunk, then closes
         self.why_leaving = None  # "RAM limit" while it closes after its chunk because RAM is over the limit
-        self.closed_why = None  # why it closed, shown in State: "RAM limit", "VRAM limit"
+        self.closed_why = None  # why it closed, shown in State: "RAM limit", "VRAM limit", "GPU frozen", "reload", "by me"
         self.exit_code = None
         try:
             self.ps = psutil.Process(proc.pid) if psutil else None
@@ -1557,7 +1557,7 @@ class RenderEngine:
         it goes on first), one with no chunk closes now, one already closing for a limit or for another render closes for
         good, and a closed one (waiting to come back for memory, or closed) does not come back."""
         w.user_leaving = True
-        w.why_leaving = w.closed_why = "by you"
+        w.why_leaving = w.closed_why = "by me"  # State: busy → closes (by me), then closed (by me)
         w.handover = w.leave = False
         if w.state == "gone":  # Processes goes down with it, so its place is not taken again
             self.held.discard(w.id)  # one you closed kept its place empty: that place goes with it
@@ -1576,7 +1576,7 @@ class RenderEngine:
             w.retire = True
             self.note("%s closes after its chunk, by you" % w.name)
         else:
-            self._quit(w, "by you")
+            self._quit(w, "by me")
 
     def user_start_here(self, wid, src=None):
         """Start again, in this render, a process that closed in render src (finished, stopped), under its name;
@@ -3128,7 +3128,7 @@ class RenderManager:
         else:
             why = "no frame finished for %.0f s" % stalled
         e.note("!! VRAM %.0f %%: %s, the card is full: %s closed now%s" % (pct, why, w.name, self._chunk_back(w)), "err")
-        w.closed_why = "VRAM limit"
+        w.closed_why = "GPU frozen"  # State: closed (GPU frozen)
         e._kill(w, requeue=True, note="stopped")
         self._fell_vram()
         self._last_vram_kill = now

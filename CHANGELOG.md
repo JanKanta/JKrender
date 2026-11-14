@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.27 — 2026-11-14
+
+- A process closed because the graphics card froze shows **closed (GPU frozen)** in State, not closed (VRAM limit). Closed (VRAM limit) is left for the VRAM over Memory Limit or Kill at.
+- Close after this chunk shows **busy → closes (by me)** and then **closed (by me)**, not "by you".
+- `test_memory` checks it (0.99.26 fails it).
+
 ## 0.99.26 — 2026-11-14
 
 - JKrender no longer remembers anything per script: the RAM a process of each script took (`script_ram` in the settings) is gone, and dropped from saved settings. Nothing read it any more; every render measures its processes for itself.
