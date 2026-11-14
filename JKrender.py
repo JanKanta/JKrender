@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.41 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.42 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -52,7 +52,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.41"
+APP_VERSION = "0.99.42"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1145,6 +1145,7 @@ class Worker:
         self.frame_secs = []
         self.frame_ends = []  # when this very Nuke finished each frame (time.time()), for Test this script
         self.segments = []  # [kind, label, t0, t1 or None, state]
+        self.seg_info = {}  # chunk segment start -> {"spec", "count", "frames", "end", "after"}: the Workers tooltip
         self.tail = collections.deque(maxlen=200)
         self.log = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)  # line by line: readable while it runs
         self.log_path = log_path
@@ -1179,6 +1180,12 @@ class Worker:
             return True
         except Exception:
             return False
+
+    def chunk_info(self):
+        """The record of its last chunk segment (see seg_info), or None."""
+        if self.segments and self.segments[-1][0] == "chunk":
+            return self.seg_info.get(self.segments[-1][2])
+        return None
 
     def close_segment(self, state):
         if self.segments and self.segments[-1][3] is None:
@@ -1819,6 +1826,7 @@ class RenderEngine:
             if ended and 0 <= load[2] - ended < 30:
                 load[2] = ended  # from when the old one finished: closing it and starting this one is the reload too
             w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
+            w.seg_info = dict(old.seg_info)  # the tooltips of its earlier chunks stay
             w.frame_ends = list(old.frame_ends)  # one lane: Test this script counts its frames across the restart
         w.pinned = by_hand
         w.fresh = bool(old and old.closed_why == "reload")  # in place of one closed to reload
@@ -1845,6 +1853,10 @@ class RenderEngine:
     def _kill(self, w, requeue, note):
         if w.state == "gone":
             return
+        info = w.chunk_info()
+        if info is not None and w.segments[-1][3] is None:
+            why = {"VRAM limit": "VRAM full", "RAM limit": "RAM full"}.get(w.closed_why, w.closed_why)
+            info["end"] = "stopped mid-chunk%s" % (": %s" % why if why else (" (%s)" % note if note else ""))
         try:
             w.proc.kill()
         except Exception:
@@ -2051,6 +2063,9 @@ class RenderEngine:
             return
         w.state = "quitting"
         w.quit_at = time.time()
+        info = w.chunk_info()
+        if info is not None and info["after"] is None:
+            info["after"] = "closed: %s" % why
         w.close_segment("done")
         w.send("QUIT")
         self.note("%s closing (%s)" % (w.name, why))
@@ -2196,6 +2211,9 @@ class RenderEngine:
             self.last_frame_at = now
             if self.state == "rendering" or self.state == "paused":
                 self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
+            info = w.chunk_info()
+            if info is not None and w.segments[-1][3] is None:
+                info["frames"].append(f)
             fr = self.frames.get(f)
             if fr is not None:
                 fr.state, fr.secs, fr.worker = "done", secs, w.name
@@ -2214,6 +2232,9 @@ class RenderEngine:
                 c.state = "done"
                 c.ended = now
                 c.frames = []
+            info = w.chunk_info()
+            if info is not None:
+                info["end"] = "rendered"
             w.close_segment("done")
             w.chunk = None
             w.frame = None
@@ -2255,6 +2276,9 @@ class RenderEngine:
             self.note("!! %s frame %s failed on %s: %s (%s)" % (c.name if c else "?", frame, w.name, msg, reason), "err")
             if frame in self.frames:
                 self.frames[frame].state = "queued"
+            info = w.chunk_info()
+            if info is not None:
+                info["end"] = "frame %s failed: %s" % (frame, (msg or reason)[:120])
             w.close_segment("failed")
             w.chunk = None
             w.frame = None
@@ -2295,6 +2319,9 @@ class RenderEngine:
             if w.frame is not None:
                 self._delete_partial(w.frame, w.frame_started)
             self._requeue(w.chunk, error=classify_error(tail) + " (Nuke exited, code %s)" % code)
+        info = w.chunk_info()
+        if info is not None and w.segments[-1][3] is None and not expected:
+            info["end"] = "Nuke crashed (exit code %s): its half-written frame deleted" % code
         w.close_segment("done" if expected else "crashed")
         w.state = "gone"
         w.chunk = None
@@ -2571,7 +2598,10 @@ class RenderEngine:
             line = "RANGE %s %d %d" % (chunk.name, min(chunk.frames), max(chunk.frames))
         else:
             line = "RENDER %s %s" % (chunk.name, frames_to_spec(chunk.frames))
-        w.segments.append(["chunk", chunk.name, time.time(), None, "rendering"])
+        seg = ["chunk", chunk.name, time.time(), None, "rendering"]
+        w.segments.append(seg)
+        w.seg_info[seg[2]] = {"spec": frames_to_spec(chunk.frames), "count": len(chunk.frames), "frames": [], "end": None,
+                              "after": None}
         if not w.send(line):
             self._requeue(chunk, count_attempt=False)
             w.close_segment("failed")
@@ -3108,6 +3138,17 @@ class RenderManager:
                 if len(running) > 1:
                     # as with the RAM: while some are starting the least loaded of them, else the one holding the most
                     e, w = self._kill_pick(running, "VRAM")
+                    kill = pct_kill(self.settings, "VRAM")
+                    if pct - vram_of(w) / total * 100 >= kill:
+                        # Other programs hold the card (NukeX with 16 GB): closing this one would not get it under Kill
+                        # at, only throw its work away, and the next one after it. The GPU frozen guard still acts.
+                        if now - self._vram_others_noted > 120:
+                            self._vram_others_noted = now
+                            self._note_running(
+                                "VRAM %.0f %% (Kill at %.0f %%), but closing %s would free only %.1f GB%s: other programs "
+                                "hold the card, so %d keep going" % (pct, kill, w.name, vram_of(w) / 1024,
+                                                                     self.vram_holder(), len(running)), "warn")
+                        return
                     e.note("!! VRAM %.0f %% (Kill at): %s (%.1f GB) closed now%s"
                            % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
                     w.closed_why = "VRAM %.0f %%" % pct
@@ -3763,6 +3804,36 @@ class Gantt(QtWidgets.QWidget):
             t += step
         p.end()
 
+    @staticmethod
+    def _chunk_tip(e, w, label, a, b, state, who):
+        """What a chunk on the timeline did: its frames, which rendered, how it ended and what the process did next."""
+        info = w.seg_info.get(a) or {}
+        c = next((c for c in e.chunks if c.name == label), None)
+        spec = info.get("spec") or (c.spec if c else "?")
+        lines = ["%s on %s, %s" % (label, who, fmt_secs((b or time.time()) - a))]
+        count, done = info.get("count"), info.get("frames") or []
+        lines.append("frames %s%s" % (spec, " (%d)" % count if count else ""))
+        if state == "rendering":
+            lines.append("rendering: %d of %d frames so far" % (len(done), count or 0))
+            return "\n".join(lines)
+        if info.get("end") not in (None, "rendered") or (done and count and len(done) < count):
+            if done:
+                lines.append("rendered %s (%d of %d); the rest went back to the queue" % (frames_to_spec(done), len(done), count or 0))
+            else:
+                lines.append("no frame rendered; the chunk went back to the queue")
+        end = info.get("end") or {"done": "rendered", "crashed": "Nuke crashed", "failed": "failed"}.get(state, state)
+        if end == "rendered":
+            lines.append("ended: every frame rendered")
+        else:
+            lines.append("ended: %s" % end)
+        after = info.get("after")
+        if after:
+            lines.append("then: %s" % after)
+        elif end == "rendered":
+            later = [s for s in w.segments if s[0] == "chunk" and s[2] > a]
+            lines.append("then: on to %s" % later[0][1] if later else "then: no chunk left for it")
+        return "\n".join(lines)
+
     def contextMenuEvent(self, event):
         y = event.pos().y()
         for y0, y1, e, w in getattr(self, "_rows", []):  # the row's current process
@@ -3780,8 +3851,7 @@ class Gantt(QtWidgets.QWidget):
                     text = ("%s opening the script again%s: %.1f s" % (who, " (%s)" % why if why else "", b - a)
                             if label.startswith("again") else "%s opening the script: %.1f s" % (who, b - a))
                 else:
-                    c = next((c for c in e.chunks if c.name == label), None)
-                    text = "%s on %s — %s\nframes %s\n%s" % (label, who, state, c.spec if c else "?", fmt_secs(b - a))
+                    text = self._chunk_tip(e, w, label, a, b, state, who)
                 QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), text, self)
                 return
         QtWidgets.QToolTip.hideText()

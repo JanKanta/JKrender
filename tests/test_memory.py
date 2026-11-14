@@ -170,6 +170,23 @@ m, e, ws = nearly_full(vram=97.5, kill_vram=97)
 check("VRAM 97.5 %, Kill at 97 %: W04 closes at once", e.killed == ["W04"], e.killed)
 check("pct_kill: RAM 98, VRAM 98 by default", (jk.pct_kill({}, "RAM"), jk.pct_kill({}, "VRAM")) == (98.0, 98.0))
 
+say("Kill at with the card held by other programs: none closes when closing one would not get it under Kill at")
+m, e, ws = manager()
+m.vram_others = lambda: 70.0
+m.ram_percent = lambda: 40.0
+m.vram = [50, 24576 * 0.995, 24576.0]  # 99.5 %: our four hold 0.2 GB each, the rest is NukeX
+m.gpu_mem = {w.proc.pid: (10, 0.2 * 1024 ** 3) for w in ws.values()}
+m._last_vram_kill = m._last_kill = 0
+m._vram_checked = 0
+m._vram_guard()
+check("99.5 %, one of ours holds 0.2 GB (0.8 %): none closes, it would stay over 98 %", e.killed == [], e.killed)
+check("the Log says why", any("other programs hold the card" in t for t in e.notes), e.notes[-2:])
+m.gpu_mem[ws[2].proc.pid] = (10, 6 * 1024 ** 3)  # W02 holds 6 GB (24 %): closing it gets the card to 75 %
+e.notes.clear()
+m._vram_checked = 0
+m._vram_guard()
+check("W02 holds 6 GB: closing it helps, so it closes", e.killed == ["W02"], e.killed)
+
 say("Kill at while processes start: the least loaded of the starting ones; once all render: the one holding the most")
 m, e, ws = manager()
 m.vram_others = lambda: 1.0

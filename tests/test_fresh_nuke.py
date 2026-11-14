@@ -67,6 +67,10 @@ for mode, ram, want, procs in (("short", 40.0, "none", 2), ("short", 91.0, "some
         why = "busy → reload" if mode == "always" else "busy → reload (RAM over 90 %)"
         check("State says it ahead: '%s'" % why, why in seen, sorted(seen))
         check("the timeline shows the reload", "again: reload" in loads, loads)
+        tips = [jk.Gantt._chunk_tip(e, w, s[1], s[2], s[3], s[4], w.name) for w in e.workers.values() for s in w.segments
+                if s[0] == "chunk" and s[3]]
+        check("the chunk before a reload says so: 'then: closed: reloads after its chunk'",
+              any("then: closed: reloads after its chunk" in t for t in tips), [t for t in tips if "then: closed" in t][:1] or tips[:1])
         check("never for the last chunks", not any("no chunks" in x for x in fresh))
         if mode == "short":
             check("one at a time: never two fresh Nukes at once", most["n"] <= 1, most["n"])

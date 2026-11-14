@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.42 — 2026-11-14
+
+- Kill at for the VRAM closes a process only if that gets the card under Kill at. When other programs hold the card (three open NukeX), closing JKrender's processes one after another would only throw their work away: none closes, and the Log says so once in 2 minutes, naming the program that holds the most. The GPU frozen guard still acts if the card stalls.
+- The Workers timeline tooltip of a chunk says what happened: its frames, how many rendered, how it ended (every frame rendered, stopped mid-chunk and why: GPU frozen, VRAM 98 %, by me…, Nuke crashed, a frame failed) and what the process did next (on to C07, closed: reloads after its chunk (1.3 rule …), closed: no chunks left).
+- `test_memory`, `test_robust` and `test_fresh_nuke` check it (0.99.41 fails them).
+
 ## 0.99.41 — 2026-11-14
 
 - Reload Nuke has no **Never** any more: When memory is full and After every chunk. Never switched off the gentle memory rules (the reload over Reload Nuke at), leaving only Kill at. Settings and Test this script setups saved with Never read When memory is full.

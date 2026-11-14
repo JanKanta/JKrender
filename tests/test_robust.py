@@ -57,6 +57,13 @@ check("it crashed once", os.path.exists(os.path.dirname(frame_path(job, 0)) + "/
 crash = [x[1] for x in e1.log if "W0" in x[1] and ("crash" in x[1].lower() or "exit" in x[1].lower() or "ended" in x[1].lower())]
 check("the Log says a process went down", bool(crash), [x[1] for x in e1.log][-12:])
 check("the places stay W01 and W02", sorted(e1.workers) == [1, 2], sorted(e1.workers))
+tips = [jk.Gantt._chunk_tip(e1, w, s[1], s[2], s[3], s[4], w.name) for w in e1.workers.values() for s in w.segments
+        if s[0] == "chunk" and s[3]]
+crashed = [t for t in tips if "Nuke crashed" in t]
+check("Workers tooltip of the crashed chunk: 'ended: Nuke crashed', which frames made it", len(crashed) == 1
+      and "ended: Nuke crashed" in crashed[0] and "went back to the queue" in crashed[0], tips)
+whole = [t for t in tips if "ended: every frame rendered" in t]
+check("a whole chunk: 'ended: every frame rendered' and what came next", whole and all("then: " in t for t in whole), whole[:2])
 wait(lambda: e1.verified(), 60)
 win._refresh_cards()
 card = win.cards[e1]
