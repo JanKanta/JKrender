@@ -69,9 +69,23 @@ def _write_nodes():
     return writes
 
 
+SCRIPT_EXTS = (".nk", ".nknc", ".nkind")  # Nuke, Nuke Non-commercial, Nuke Indie
+
+
+def _nuke_mode():
+    """"nc" in Nuke Non-commercial, "indie" in Nuke Indie, "" otherwise: the worker Nuke needs the same mode
+    (--nc / --indie), or it asks for a licence this machine may not have."""
+    env = getattr(nuke, "env", {}) or {}
+    if env.get("nc"):
+        return "nc"
+    if env.get("indie"):
+        return "indie"
+    return ""
+
+
 def _script_path():
     path = nuke.root().name()
-    if not path or path == "Root" or not path.lower().endswith(".nk"):
+    if not path or path == "Root" or not path.lower().endswith(SCRIPT_EXTS):
         nuke.message("Save the Nuke script before rendering it with JKrender.")
         return None
     try:
@@ -190,6 +204,7 @@ def _make_job(writes, renders_dir):
         "first": first,
         "last": last,
         "nuke_exe": _nuke_executable(),
+        "nuke_mode": _nuke_mode(),
         "nuke_version": getattr(nuke, "NUKE_VERSION_STRING", ""),
         "fps": root["fps"].value(),
         "format": format_text,

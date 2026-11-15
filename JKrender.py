@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.56 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.57 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.56"
+APP_VERSION = "0.99.57"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1779,8 +1779,10 @@ class RenderEngine:
         threads, ram = self._process_size()
         # Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, ...) on the CPU unless told --gpu
         gpu = ["--gpu", "0"] if gpu else []
+        # sent from Nuke Non-commercial or Indie: the worker runs in the same mode, with that licence (.nknc / .nkind)
+        mode = {"nc": ["--nc"], "indie": ["--indie"]}.get(self.job.get("nuke_mode") or "", [])
         return [
-            self.job.get("nuke_exe") or "Nuke",
+            self.job.get("nuke_exe") or "Nuke"] + mode + [
             "-i", "-m", str(threads), "-c", "%dG" % ram] + gpu + [
             "-t", str(WORKER_SCRIPT), script, original, names,
         ]

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.57 — 2026-11-15
+
+- Nuke Non-commercial and Indie: a script saved as `.nknc` or `.nkind` no longer asks to be saved first, the job says which Nuke sent it, and every worker Nuke starts in the same mode (`--nc` / `--indie`), so it gets that licence. Checked with Nuke 17.1 Non-commercial: terminal mode opens an existing `.nknc` and renders its Write. Nuke's own limits apply (Non-commercial: output up to HD).
+- `test_nc` checks it.
+
 ## 0.99.56 — 2026-11-14
 
 - The manual in all six languages (Czech, English, German, Spanish, Polish, Russian) brought up to date: installing with the ffmpeg download (and `lib/DECLINED_FFMPEG`), the System, Job, Settings, Donation and Author tabs, Reload Nuke, Reload after, Reload Nuke at and Kill at, every memory rule with a table of all its times and thresholds, every State text, the chunk tooltip in Workers, movies with a process of their own, a crashed Nuke no longer turning the card red, and Test this script without Frames per setup. New screenshots.
