@@ -327,6 +327,11 @@ def _nuke_python():
     if plugins:
         env["QT_PLUGIN_PATH"] = str(plugins)
     env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
+    if sys.platform == "darwin":
+        # PySide6 in Nuke*.app links Qt from Contents/Frameworks, which a Python started outside Nuke does not find alone
+        frameworks = str(folder.parent / "Frameworks")
+        env["DYLD_FRAMEWORK_PATH"] = os.pathsep.join(p for p in (frameworks, env.get("DYLD_FRAMEWORK_PATH", "")) if p)
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(p for p in (frameworks, str(folder), env.get("DYLD_LIBRARY_PATH", "")) if p)
     return str(python_exe), env
 
 
@@ -374,19 +379,31 @@ def _clean_env():
     return env
 
 
+LAST_PYTHON_ERROR = {"text": ""}
+
+
 def _has_pyside6(python_exe, env):
+    """True when this Python imports PySide6's widgets and psutil. Why not is kept for the message."""
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        return subprocess.run([python_exe, "-c", "import PySide6.QtWidgets, psutil"], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, timeout=20, creationflags=flags, env=env).returncode == 0
-    except Exception:
-        return False
+        r = subprocess.run([python_exe, "-c", "import PySide6.QtWidgets, psutil"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, timeout=20, creationflags=flags, env=env)
+        if r.returncode == 0:
+            return True
+        lines = [l for l in r.stderr.decode("utf-8", "replace").strip().splitlines() if l.strip()]
+        LAST_PYTHON_ERROR["text"] = "%s: %s" % (python_exe, lines[-1] if lines else "exit code %d" % r.returncode)
+    except Exception as exc:
+        LAST_PYTHON_ERROR["text"] = "%s: %s" % (python_exe, exc)
+    return False
 
 
 def _launch(app, job_paths):
     """Background thread, so Nuke never waits for the Python check. One launch carries every render."""
     own = None if os.environ.get("JKRENDER_PYTHON") else _nuke_python()
-    if own and _has_pyside6(*own):
+    own_error = ""
+    if own and not _has_pyside6(*own):
+        own_error, own = LAST_PYTHON_ERROR["text"], None
+    if own:
         python_exe, env = own
     else:
         env = _clean_env()
@@ -395,7 +412,8 @@ def _launch(app, job_paths):
             nuke.executeInMainThread(nuke.message, args=(
                 "JKrender needs a Python with PySide6 and psutil.\n\n"
                 "Install them with:  python -m pip install PySide6 psutil\n"
-                "or set JKRENDER_PYTHON to that python executable.",))
+                "or set JKRENDER_PYTHON to that python executable."
+                + ("\n\nNuke's own Python said:\n%s" % own_error if own_error else ""),))
             return
         try:
             PYTHON_CACHE.write_text(python_exe, encoding="utf-8")

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.61 — 2026-11-15
+
+- macOS: the window starts with Nuke's own Python from `Nuke*.app/Contents/MacOS/python3` with Qt's frameworks from `Contents/Frameworks` on its path (Nuke 17.0 on a Mac said "JKrender needs a Python with PySide6": PySide6 was there, its Qt was not found). When Nuke's Python still cannot import PySide6, the message shows what it said.
+
 ## 0.99.60 — 2026-11-15
 
 - First macOS version (not yet run on a Mac): the Nuke the workers run comes from `nuke.EXE_PATH` (inside `Nuke*.app/Contents/MacOS`), the window finds Nuke's own Python and PySide6 inside the app bundle, sounds play through `afplay`, the report names the CPU through `sysctl`, and ffmpeg / ffprobe are found in Homebrew's folders. Without an NVIDIA card the GPU and VRAM tiles stay empty. Windows behaves as before: checked in Nuke 16 (the same Nuke, Python and Qt plug-ins found) and with the tests.
