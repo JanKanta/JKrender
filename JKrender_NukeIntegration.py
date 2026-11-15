@@ -61,6 +61,15 @@ def _write_nodes():
             writes.append(n)
     disabled = [n for n in writes if _is_disabled(n)]
     writes = [n for n in writes if not _is_disabled(n)]
+    unnumbered = [n for n in writes if _no_frame_number(n)]
+    if unnumbered:
+        nuke.message("No frame number in the file path:\n\n%s\n\nEvery frame would overwrite this one file, so only the last "
+                     "frame would stay. Add #### (or %%04d) before the extension, like name.####.exr.%s"
+                     % ("\n".join("%s:  %s" % (n.fullName(), _knob(n, "file")) for n in unnumbered),
+                        "\n\nThe other Writes render." if len(unnumbered) < len(writes) else ""))
+        writes = [n for n in writes if n not in unnumbered]
+        if not writes:
+            return []
     if not writes:
         if disabled:
             nuke.message("The Write node(s) are disabled:\n\n" + "\n".join(n.fullName() for n in disabled))
@@ -70,6 +79,28 @@ def _write_nodes():
 
 
 SCRIPT_EXTS = (".nk", ".nknc", ".nkind")  # Nuke, Nuke Non-commercial, Nuke Indie
+MOVIE_TYPES = ("mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm", "gif", "ffmpeg")
+FRAME_NUMBER = re.compile(r"#+|%0?\d*d|\$F\d*|\[frame\]", re.I)
+
+
+def no_frame_number(path, file_type, first, last):
+    """An image sequence of more than one frame whose path has no frame number (####, %04d, $F4, [frame]):
+    every frame would be written over the same file. A movie is one file, a single frame needs no number."""
+    ext = os.path.splitext(path or "")[1].lower().lstrip(".")
+    if not path or (file_type or "").lower() in MOVIE_TYPES or ext in MOVIE_TYPES or first == last:
+        return False
+    return not FRAME_NUMBER.search(os.path.basename(path))
+
+
+def _no_frame_number(node):
+    try:
+        if _knob(node, "use_limit"):
+            first, last = int(_knob(node, "first")), int(_knob(node, "last"))
+        else:
+            first, last = int(nuke.root()["first_frame"].value()), int(nuke.root()["last_frame"].value())
+        return no_frame_number(str(_knob(node, "file")), str(_knob(node, "file_type")), first, last)
+    except Exception:
+        return False
 
 
 def _nuke_mode():

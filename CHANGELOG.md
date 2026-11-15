@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.58 — 2026-11-15
+
+- Render Selected Write(s) refuses a Write whose path has no frame number (`sss.exr` instead of `sss.####.exr`): every frame would be written over the same file and only the last would stay. The message names the Write and its path and says to add `####` (or `%04d`); the other selected Writes still render. A movie, a single frame and `####`, `%04d`, `$F4` and `[frame]` pass.
+- `test_frame_number` checks it.
+
 ## 0.99.57 — 2026-11-15
 
 - Nuke Non-commercial and Indie: a script saved as `.nknc` or `.nkind` no longer asks to be saved first, the job says which Nuke sent it, and every worker Nuke starts in the same mode (`--nc` / `--indie`), so it gets that licence. Checked with Nuke 17.1 Non-commercial: terminal mode opens an existing `.nknc` and renders its Write. Nuke's own limits apply (Non-commercial: output up to HD).
