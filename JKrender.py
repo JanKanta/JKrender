@@ -437,6 +437,20 @@ def apple_gpu():
     return float(util.group(1)), (float(used.group(1)) if used else None)
 
 
+def apple_gpu_name():
+    """Apple silicon (macOS): "Apple M4 Pro, 20 GPU cores" from the IOAccelerator, or None."""
+    try:
+        out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return None
+    model = re.search(r'"model"\s*=\s*"([^"]+)"', out)
+    cores = re.search(r'"gpu-core-count"\s*=\s*(\d+)', out)
+    if not model:
+        return None
+    return model.group(1) + (", %s GPU cores" % cores.group(1) if cores else "")
+
+
 def hidden():
     """Popen kwargs that stop Windows from opening a console window for each Nuke."""
     if sys.platform.startswith("win"):
@@ -570,6 +584,8 @@ def machine_info():
             gpu, vram = gpu.strip(), round(float(vram) / 1024, 1)
         except Exception:
             pass
+    if gpu is None and sys.platform == "darwin":
+        gpu = apple_gpu_name()  # unified memory: no VRAM of its own, vram_gb stays None
     _MACHINE.update({
         "id": hashlib.blake2b(platform.node().lower().encode("utf-8"), digest_size=6).hexdigest(),
         "cpu": cpu, "threads": os.cpu_count(),
@@ -910,6 +926,8 @@ def check_pixels(paths):
                              "bit depth": " ".join(sorted({str(c.pixels.dtype) for c in channels.values()})),
                              "compression": str(header.get("compression", "")).split(".")[-1].replace("_COMPRESSION", "")}
                     blank = blank or _blank(channels)
+                    # where the pixels sit: a moving element with the same pixels in a moved bbox is not the same frame
+                    digest.update(repr(tuple(int(v) for xy in header["dataWindow"] for v in xy)).encode())
                     for name in sorted(channels):
                         pixels = channels[name].pixels
                         digest.update(pixels.tobytes())
@@ -2574,6 +2592,7 @@ class RenderEngine:
             for key, value in ((fr.pixels or {}).get("props") or {}).items():
                 usual.setdefault(key, collections.Counter())[value] += 1
         usual = {key: counts.most_common(1)[0][0] for key, counts in usual.items()}
+        slate = self.slate_frames()  # the slate often holds the first frame: not a frame the same as another
         for f, fr in sorted(self.frames.items()):
             fr.same_as = None
             if not fr.pixels:
@@ -2588,6 +2607,8 @@ class RenderEngine:
                 differs[f] = fr.pixels["differs"]
             if fr.pixels["blank"]:
                 blank.setdefault(fr.pixels["blank"], []).append(f)
+            elif f in slate:
+                pass
             elif fr.pixels["hash"] in first:
                 fr.same_as = first[fr.pixels["hash"]]
                 same.append(f)

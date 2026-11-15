@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Check pixels: an EXR's hash takes in where its pixels sit (the data window), so a moving element whose bbox moves with the same pixels is no longer "exactly the same as an earlier one" (a render of 0-100 with a moving shape listed 8 such frames). The slate frame, which often holds the first frame, is left out of that check, as it is out of the small-frame check.
+- macOS: the render report names the Apple GPU (model and GPU cores) instead of none.
+
 ## 0.99.62 — 2026-11-15
 
 - macOS on Apple silicon: the GPU tile shows the GPU's use and the VRAM tile the GPU memory in use, from macOS's IOAccelerator statistics (`ioreg`), and the Load graph draws the GPU. The memory is unified, part of the RAM, so the RAM rules cover it and the VRAM rules leave it alone.

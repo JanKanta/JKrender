@@ -77,4 +77,41 @@ pump(0.3)
 done = [f for f, fr in e3.frames.items() if fr.state == "done"]
 check("stopped", e3.state == "stopped", e3.state)
 check("the frames done before Stop are checked", bool(done) and all(e3.frames[f].checks for f in done), done)
+
+say("Same pixels: a moving element in a moved bbox is not the same frame, the slate holding the first frame is fine")
+try:
+    import numpy as np
+    import OpenEXR
+
+    exr_dir = RUN + "/exr_bbox"
+    os.makedirs(exr_dir, exist_ok=True)
+    pixels = np.random.default_rng(1).random((40, 60, 3)).astype(np.float16)
+
+    def exr(name, x0, y0):
+        path = exr_dir + "/" + name
+        header = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage,
+                  "dataWindow": ((x0, y0), (x0 + 59, y0 + 39)), "displayWindow": ((0, 0), (199, 99))}
+        OpenEXR.File(header, {"RGB": pixels}).write(path)
+        return path
+
+    a, b, c = (jk.check_pixels([exr(n, x, y)]) for n, x, y in (("a.exr", 10, 10), ("b.exr", 50, 20), ("c.exr", 10, 10)))
+    check("same pixels, bbox moved: other hash", a["hash"] != b["hash"], (a, b))
+    check("same pixels, same bbox: same hash", a["hash"] == c["hash"], (a, c))
+except ImportError:
+    say("  (numpy / OpenEXR missing: the EXR part is skipped)")
+
+e.slate_frames = lambda: {1001}
+for f, fr in e.frames.items():
+    fr.pixels = {"nan": 0, "inf": 0, "hash": "h%d" % (1002 if f == 1001 else f), "blank": None, "props": {}}
+e.pixels_pending, e.pixels_total = 1, len(e.frames)
+before = len(e.log)
+e._on_pixels(e.pixels_run, 1002, e.frames[1002].pixels)
+notes = [x[1] for x in list(e.log)[before:]]
+check("the slate, the same as the first frame, is not reported", not any("exactly the same" in n for n in notes), notes)
+e.frames[1004].pixels["hash"] = "h1003"
+e.pixels_pending = 1
+before = len(e.log)
+e._on_pixels(e.pixels_run, 1004, e.frames[1004].pixels)
+notes = [x[1] for x in list(e.log)[before:]]
+check("two shot frames the same are reported", any("exactly the same" in n and "1004" in n for n in notes), notes)
 finish()
