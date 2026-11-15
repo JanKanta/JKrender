@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.56 — 2026-11-14
+
+- The manual in all six languages (Czech, English, German, Spanish, Polish, Russian) brought up to date: installing with the ffmpeg download (and `lib/DECLINED_FFMPEG`), the System, Job, Settings, Donation and Author tabs, Reload Nuke, Reload after, Reload Nuke at and Kill at, every memory rule with a table of all its times and thresholds, every State text, the chunk tooltip in Workers, movies with a process of their own, a crashed Nuke no longer turning the card red, and Test this script without Frames per setup. New screenshots.
+- The Kill at tooltip says which process closes: while some are still starting the least loaded of those, otherwise the one holding the most (it said the one started last), and the Reload Nuke at note says the reload comes after the frame or the chunk, as Reload after says (it said after the chunk).
+
 ## 0.99.55 — 2026-11-14
 
 - A movie gets a process of its own with every thread, **beside** the places of Processes: it starts at once, takes no place from an image sequence rendering, and does not count for Max renders at once. Three movie Writes are three processes. Beside image sequences its process is named after their places (W05 with Processes 4); with only movies open, W01, W02, W03. It waits only when the memory has no room, and Kill at and GPU frozen close a movie last (it would start all over). The Nuke processes tile says "+ 1 for movies".

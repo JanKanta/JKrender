@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.55 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.56 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.55"
+APP_VERSION = "0.99.56"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -403,8 +403,8 @@ def pct_limit(settings, name):
 
 
 def pct_kill(settings, name):
-    """From this RAM or VRAM % on the process started last closes at once, mid-frame (Settings > Kill at): never under the
-    Memory Limit, so the gentle way, after its chunk, always comes first."""
+    """From this RAM or VRAM % on one process closes at once, mid-frame (Settings > Kill at, _kill_pick picks it): never
+    under Reload Nuke at, so the gentle way, the reload, always comes first."""
     if name == "RAM":
         return max(pct_limit(settings, name), float(settings.get("kill_ram", 98)))
     return max(pct_limit(settings, name), float(settings.get("kill_vram", 98)))
@@ -6333,10 +6333,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_gpu.toggled.connect(self.s_reload_vram.setEnabled)
         row(perf, "Reload Nuke at", reload_parts,
             "Once the RAM or the VRAM has stayed at or over this %% for %d s (Reload Nuke: When memory is full),\n"
-            "the process holding the most of it reloads Nuke after its chunk and starts small again, one process at a time.\n"
+            "the process holding the most of it reloads Nuke after its frame or chunk (Reload after) and starts small again, one process at a time.\n"
             "It starts again as soon as it fits: at once when it had grown (a leak), or once there is room, so one\n"
             "process fewer runs while the script needs that much. Places closed for memory come back only under this %%." % FRESH_HOLD)
-        note(perf, "Held %d s at this, the process holding the most reloads after its chunk; it starts again once it fits." % FRESH_HOLD)
+        note(perf, "Held %d s at this, the process holding the most reloads after its frame or chunk; it starts again once it fits." % FRESH_HOLD)
         self.s_kill_ram, self.s_kill_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
         kill_parts = []
         for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_reload_ram),
@@ -6353,11 +6353,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.s_kill_vram.setEnabled(self.c_gpu.isChecked())
         self.c_gpu.toggled.connect(self.s_kill_vram.setEnabled)
         row(perf, "Kill at", kill_parts,
-            "Nearly out of memory: the process started last closes at once, mid-frame. Its half-written frame is deleted\n"
-            "and its chunk goes back to the queue: a little work is lost, the memory is free at once.\n"
-            "Never under Reload Nuke at, so the reload after the chunk always comes first.\n"
+            "Nearly out of memory: one process closes at once, mid-frame. While some are still starting, the least loaded of\n"
+            "those (it has done no work yet); otherwise the one holding the most, so one close is enough. A movie goes last.\n"
+            "Its half-written frame is deleted and its chunk goes back to the queue: a little work is lost, the memory is free at once.\n"
+            "Never under Reload Nuke at, so the reload always comes first.\n"
             "Lower it if the PC freezes before (Windows and the graphics driver need some memory left).")
-        note(perf, "Nearly full, the process started last closes at once, mid-frame.")
+        note(perf, "Nearly full, one process closes at once, mid-frame: a starting one first, else the biggest.")
 
         # -- Processes and Chunks (Processes, Threads and Cache are shared by every render; locked while rendering)
         procs = card("Processes and Chunks")

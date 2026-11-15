@@ -143,8 +143,10 @@ try:
     pump(1.5)
     shot("01_ready")
     sub(1)
+    w.sub_tabs.widget(1).grab().save(OUT + "/02c_job_panel.png")  # tabs: System, Job, Settings, Donation, Author
+    sub(2)
     shot("02_settings_ready")
-    w.sub_tabs.widget(1).grab().save(OUT + "/02b_settings_panel.png")
+    w.sub_tabs.widget(2).grab().save(OUT + "/02b_settings_panel.png")
     sub(0)
     w.add_job(make_job("sh020", 1001, 1048, 2.0), auto=False)
     e2 = w.engine
@@ -167,7 +169,7 @@ try:
     side(2)
     shot("06_details")
     side(0)
-    sub(1)
+    sub(2)
     shot("07_settings_rendering")
     sub(0)
     # menus: a process in System, an empty spot in System, the System header, a chunk, a frame
