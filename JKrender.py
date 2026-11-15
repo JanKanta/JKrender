@@ -437,6 +437,54 @@ def apple_gpu():
     return float(util.group(1)), (float(used.group(1)) if used else None)
 
 
+# macOS: {pid: (footprint bytes, GPU bytes)} of the Nuke processes, sampled every 2 s by the window. RSS leaves out what
+# macOS compressed and the graphics buffers, so a Nuke of 1.5 GB showed 0.16 GB; the footprint is what Activity Monitor shows.
+MAC_MEM = {}
+MAC_GPU_CATEGORIES = ("IOAccelerator", "IOSurface", "OpenCL", "(graphics)", "Metal")
+
+
+def footprint_parse(data):
+    """footprint's JSON -> {pid: (footprint bytes, GPU bytes)}. GPU memory: the Metal, IOSurface and OpenCL categories,
+    what the GPU holds for the process; it is part of the footprint, as the GPU's memory is part of the RAM."""
+    out = {}
+    for proc in (data or {}).get("processes") or []:
+        try:
+            cats = proc.get("categories") or {}
+            gpu = sum(float(c.get("dirty") or 0) for name, c in cats.items() if any(k in name for k in MAC_GPU_CATEGORIES))
+            out[int(proc["pid"])] = (float(proc.get("footprint") or 0), gpu)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    return out
+
+
+def mac_footprints(pids):
+    """macOS: footprint of these processes, one run of /usr/bin/footprint for all (about 0.1 s). {} when it fails."""
+    if not pids:
+        return {}
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="jkrender-footprint-")
+    os.close(fd)
+    try:
+        exe = "/usr/bin/footprint" if os.path.isfile("/usr/bin/footprint") else "footprint"
+        subprocess.run([exe, "-j", path, "-f", "bytes"] + [str(p) for p in pids],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        with open(path, encoding="utf-8") as f:
+            return footprint_parse(json.load(f))
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def process_ram(w):
+    """GB a Nuke process takes: on macOS its footprint (with what macOS compressed), elsewhere its RSS."""
+    mem = MAC_MEM.get(w.proc.pid) if sys.platform == "darwin" else None
+    return (mem[0] if mem else w.ps.memory_info().rss) / 1024 ** 3
+
+
 class AppleGpuPerProcess:
     """GPU use of every process on Apple silicon (macOS), what Activity Monitor's GPU column shows: the GPU time each
     process's Metal clients have used (AppUsage accumulatedGPUTime in ioreg, ns), over the time between two samples.
@@ -2288,7 +2336,7 @@ class RenderEngine:
         for w in self.workers.values():
             if w.state != "gone" and w.ps:
                 try:
-                    w.rss = w.ps.memory_info().rss / 1024 ** 3
+                    w.rss = process_ram(w)
                     w.rss_peak = max(w.rss_peak, w.rss)
                     if w.frames_here >= 2:
                         self.size_seen = max(self.size_seen, w.rss)
@@ -6977,11 +7025,11 @@ class MainWindow(QtWidgets.QMainWindow):
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
         head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
         names = [self.worker_table.horizontalHeaderItem(c).text() for c in range(self.worker_table.columnCount())]
-        if sys.platform == "darwin":  # Apple silicon: GPU % per process from macOS, no GPU memory of its own
+        if sys.platform == "darwin":  # Apple silicon: GPU % and GPU memory per process from macOS, the memory part of the RAM
             self.worker_table.horizontalHeaderItem(names.index("GPU")).setToolTip("GPU use of this Nuke process, as Activity Monitor shows it")
             self.worker_table.horizontalHeaderItem(names.index("VRAM")).setToolTip(
-                "Empty on a Mac: the GPU's memory is part of the RAM, and macOS does not tell it per process.\n"
-                "The VRAM tile and graph show what the whole GPU holds; the RAM tile and the RAM rules include it.")
+                "GPU memory of this Nuke process (Metal, IOSurface, OpenCL), from macOS's footprint.\n"
+                "On a Mac it is part of the RAM: the RAM column (the footprint, as Activity Monitor shows it) includes it.")
 
         def arrange(order, hidden):
             for i, name in enumerate(n for n in order if n in names):
@@ -7627,8 +7675,10 @@ class MainWindow(QtWidgets.QMainWindow):
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
             gpu = gpus.get(w.proc.pid)
-            if gpu is None and w.proc.pid in gpus_mac:
-                gpu = (gpus_mac[w.proc.pid], None)
+            if gpu is None and sys.platform == "darwin":
+                pct, mem = gpus_mac.get(w.proc.pid), MAC_MEM.get(w.proc.pid)
+                if pct is not None or mem:
+                    gpu = (pct, mem[1] if mem else None)
             state = x.worker_state(w)
             waits = (x, w) in coming_back
             if waits:
@@ -7637,7 +7687,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
                       "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
-                      "" if gone or gpu is None else "%.0f %%" % gpu[0],
+                      "" if gone or gpu is None or gpu[0] is None else "%.0f %%" % gpu[0],
                       "" if gone or gpu is None or gpu[1] is None else "%.1f GB" % (gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
                       fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
@@ -7921,6 +7971,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._gpu_procs_mac = apple_procs.sample()
                 except Exception:
                     self._gpu_procs_mac = {}
+                try:
+                    pids = [w.proc.pid for e in list(self.manager.engines) for w in list(e.workers.values()) if w.state != "gone"]
+                except Exception:
+                    pids = []
+                global MAC_MEM
+                MAC_MEM = mac_footprints(pids)
             if shutil.which("nvidia-smi"):
                 try:
                     out = subprocess.run(

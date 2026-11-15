@@ -1,4 +1,5 @@
-"""System on Apple silicon: GPU use per process from macOS's GPU time (ioreg AppUsage), no GPU memory per process, and the
+"""System on Apple silicon: GPU use per process from macOS's GPU time (ioreg AppUsage), RAM and GPU memory per process from
+macOS's footprint (RSS left out what macOS compressed), and the
 GPU's memory, part of the RAM, drawn in the Load graph as a share of the RAM. The parser runs everywhere; the window part
 only on a Mac, where JKrender reads the Apple GPU (stand-ins here, so the numbers are known)."""
 from common import *
@@ -29,6 +30,22 @@ check("the first sample has nothing to compare with", a.sample(IOREG % 100000000
 got = a.sample(IOREG % 2000000000, now=102.0)
 check("1 s of GPU in 2 s: 50 %", abs(got.get(42, 0) - 50.0) < 0.01 and got.get(7) == 0.0, got)
 
+say("macOS: a process's memory from footprint, what Activity Monitor shows; its GPU memory a part of it")
+FP = {"processes": [
+    {"pid": 42, "footprint": 1541410896, "categories": {
+        "Malloc Small": {"dirty": 396918784, "swapped": 355893248},
+        "IOSurface": {"dirty": 171966464}, "OpenCL": {"dirty": 68485120},
+        "IOAccelerator (graphics)": {"dirty": 37748736}, "IOAccelerator": {"dirty": 688128},
+        "Owned physical footprint (unmapped) (graphics)": {"dirty": 42991616}}},
+    {"pid": 7, "footprint": 231687536, "categories": {"Malloc Small": {"dirty": 93126656}}},
+    {"pid": "broken"}]}
+got = jk.footprint_parse(FP)
+check("the footprint of each process", got.get(42, (0,))[0] == 1541410896 and got.get(7, (0,))[0] == 231687536, got)
+check("its GPU memory: Metal, IOSurface and OpenCL", got.get(42, (0, 0))[1] == 171966464 + 68485120 + 37748736 + 688128 + 42991616, got)
+check("none for a process without them", got.get(7, (0, 1))[1] == 0, got)
+check("a broken entry is left out", "broken" not in got and len(got) == 2, got)
+check("no processes: nothing to ask", jk.mac_footprints([]) == {})
+
 if sys.platform == "darwin":
     say("macOS: the window shows it")
     gb = 1024 ** 3
@@ -42,20 +59,26 @@ if sys.platform == "darwin":
 
     procs = {}
     jk.AppleGpuPerProcess = Procs
+    fps = {}
+    jk.mac_footprints = lambda pids: {p: fps[p] for p in pids if p in fps}
     job = make_job("sh010", 1001, 1016, env={"FAKE_SECS": "0.4"})
     win = jk.MainWindow(job)
     win._start()
     wait(lambda: any(w.state == "busy" for w in win.engine.workers.values()), 60)
     w = next(w for w in win.engine.workers.values() if w.state == "busy")
     procs[w.proc.pid] = 33.0
-    wait(lambda: win._gpu_procs_mac.get(w.proc.pid) == 33.0, 10)
+    fps[w.proc.pid] = (3.5 * gb, 0.75 * gb)
+    wait(lambda: win._gpu_procs_mac.get(w.proc.pid) == 33.0 and jk.MAC_MEM.get(w.proc.pid), 10)
+    wait(lambda: abs(w.rss - 3.5) < 0.01, 5)
     win._update_system()
     t = win.worker_table
     names = [t.horizontalHeaderItem(c).text() for c in range(t.columnCount())]
     row = next(r for r in range(t.rowCount()) if t.item(r, 0) and t.item(r, 0).text() == w.name)
     check("its GPU column: 33 %", t.item(row, names.index("GPU")).text() == "33 %", t.item(row, names.index("GPU")).text())
-    check("its VRAM column empty: no GPU memory per process", t.item(row, names.index("VRAM")).text() == "")
-    check("and the header says why", "part of the RAM" in t.horizontalHeaderItem(names.index("VRAM")).toolTip())
+    check("its RAM column: the footprint, 3.5 GB", t.item(row, names.index("RAM")).text() == "3.5 GB", t.item(row, names.index("RAM")).text())
+    check("the memory rules see the same", abs(w.rss - 3.5) < 0.01 and w.rss_peak >= 3.5, (w.rss, w.rss_peak))
+    check("its VRAM column: its GPU memory, 0.8 GB", t.item(row, names.index("VRAM")).text() == "0.8 GB", t.item(row, names.index("VRAM")).text())
+    check("and the header says it is part of the RAM", "part of the RAM" in t.horizontalHeaderItem(names.index("VRAM")).toolTip())
     share = 2 * gb / jk.psutil.virtual_memory().total * 100
     check("the Load graph's VRAM: the GPU memory as a share of the RAM", abs(list(win.g_load.data["vram"])[-1] - share) < 0.1,
           (list(win.g_load.data["vram"])[-1], share))
