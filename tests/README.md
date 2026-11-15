@@ -7,9 +7,11 @@ python tests/run_tests.py --real     # also a small render and Test this script 
 ```
 
 Each test runs JKrender offscreen and silent, in a home folder of its own under `tests/_runs/`, so it never touches your settings,
-renders or open Nukes. Renders run on **FakeNuke** (`tests/fakenuke/FakeNuke.cs`, built on the first run with the C# compiler that
-comes with Windows): it speaks the worker's protocol and writes PNG frames in a fraction of a second, without a licence, and can
-crash mid-chunk on purpose. Nuke's Python is found under `C:/Program Files/Nuke*` (or set `NUKE_DIR`). `--real` needs a Nuke licence
+renders or open Nukes. Renders run on **FakeNuke**: on Windows `tests/fakenuke/FakeNuke.cs`, built on the first run with the C# compiler
+that comes with Windows; on macOS and Linux `tests/fakenuke/fake_nuke.py`, run with Nuke's Python by a launcher named like Nuke.
+It speaks the worker's protocol and writes PNG frames in a fraction of a second, without a licence, and can crash mid-chunk on
+purpose. Nuke's Python is found under `C:/Program Files/Nuke*`, `/Applications/Nuke*/Nuke*.app` or `/usr/local/Nuke*` (or set
+`NUKE_DIR` to Nuke's folder, on macOS the `.app`). `--real` needs a Nuke licence
 and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tests against another copy, an older version for one.
 
 | Test | What it checks |
@@ -23,7 +25,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the Write column in System |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a crash never turns the card red (also while it renders), red with a broken frame |
-| `test_ffmpeg_fetch` | ffmpeg fetched on the first start from a release served locally: the newest LGPL build, only the programs and DLLs kept, nothing left on a wrong SHA-256, asked once together with numpy, the PC's own ffmpeg first |
+| `test_ffmpeg_fetch` | ffmpeg fetched on the first start from a release served locally: the newest LGPL build, only the programs and DLLs kept, nothing left on a wrong SHA-256, asked once together with numpy, the PC's own ffmpeg first; on macOS and Linux never offered |
 | `test_rewrite` | All frames again writes every file anew (its write time is newer than the click): all frames on disk, some, a stopped render, a new render opened over an earlier one's frames |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 | `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |

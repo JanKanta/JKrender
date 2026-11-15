@@ -6,19 +6,18 @@ import re
 import subprocess
 from common import *
 
-running = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Nuke*"], capture_output=True, text=True).stdout
-if "Nuke" in running.replace("INFO: No tasks", ""):
+if nuke_is_open():
     say("skipped: a Nuke is open")
     finish()
 
 nuke_dir = os.environ.get("NUKE_DIR", "")
-exe = sorted(p for p in glob.glob(nuke_dir + "/Nuke*.exe") if re.match(r"Nuke\d+\.\d+\.exe$", os.path.basename(p)))
+exe = real_nuke_exes(nuke_dir)
 if not exe:
-    say("skipped: no Nuke*.exe in NUKE_DIR (%s)" % nuke_dir)
+    say("skipped: no Nuke in NUKE_DIR (%s)" % nuke_dir)
     finish()
 
 jk, app = start({"processes": 2, "threads": 4, "ram": 2, "check_pixels": True})
-os.environ["USERPROFILE"] = REAL_HOME  # JKrender read its own home at import; Nuke gets the real one
+use_real_home()  # JKrender read its own home at import; Nuke gets the real one
 
 d = RUN + "/real"
 os.makedirs(d + "/render", exist_ok=True)
@@ -44,7 +43,7 @@ Write {
  name Write1
 }
 """ % out)
-job = {"version": 1, "script": script, "first": 1001, "last": 1010, "nuke_exe": exe[-1].replace("\\", "/"),
+job = {"version": 1, "script": script, "first": 1001, "last": 1010, "nuke_exe": exe[0].replace("\\", "/"),
        "nuke_version": os.path.basename(nuke_dir), "fps": 24, "format": "640x360", "env": {},
        "writes": [{"name": "Write1", "output": out, "file_type": "png", "views": ["main"]}]}
 json.dump(job, open(d + "/job.json", "w", encoding="utf-8"), indent=1)

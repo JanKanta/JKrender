@@ -1,16 +1,14 @@
 """With the real Nuke Non-commercial (run_tests.py --real real_nc): a .nknc made in NC terminal mode, rendered by JKrender
 with NC workers (--nc): an EXR sequence with Reload Nuke After every chunk, then a PNG sequence and a ProRes movie side by
 side, every check, and Test this script. Needs a Nuke whose NC sign-in works from the terminal (JKRENDER_NC_EXE, or the
-newest C:/Program Files/Nuke*). The worker gets your real home, where the NC sign-in lives. HD only, as NC renders."""
+newest installed Nuke). The worker gets your real home, where the NC sign-in lives. HD only, as NC renders."""
 import glob
 import re
 import shutil
 import subprocess
 from common import *
 
-exe = os.environ.get("JKRENDER_NC_EXE") or next(iter(sorted(
-    (p for p in glob.glob("C:/Program Files/Nuke*/Nuke*.exe") if re.match(r"Nuke\d+\.\d+\.exe$", os.path.basename(p))),
-    key=lambda p: [int(x) for x in re.findall(r"\d+", os.path.basename(os.path.dirname(p)))], reverse=True)), "")
+exe = os.environ.get("JKRENDER_NC_EXE") or next(iter(real_nuke_exes()), "")
 if not exe:
     say("skipped: no Nuke")
     finish()
@@ -18,7 +16,7 @@ exe = exe.replace("\\", "/")
 # start() empties this test's folder: first, then the script
 jk, app = start({"processes": 2, "threads": 4, "ram": 2, "check_pixels": True, "chunk_auto": False, "chunk_size": 4,
                  "fresh_after_chunk": "always", "slate": False, "use_gpu": False})
-os.environ["USERPROFILE"] = REAL_HOME  # JKrender read its own home at import; Nuke gets the real one (the NC sign-in)
+use_real_home()  # JKrender read its own home at import; Nuke gets the real one (the NC sign-in)
 d = RUN + "/nc"
 shutil.rmtree(d, ignore_errors=True)
 os.makedirs(d + "/render")
@@ -36,7 +34,7 @@ nuke.scriptSaveAs(D + "/nc_v001.nknc", 1)
 print("SAVED", nuke.env.get("nc"))
 ''' % d)
 r = subprocess.run([exe, "--nc", "-i", "-t", mk], capture_output=True, text=True, timeout=300,
-                   env=dict(os.environ, USERPROFILE=REAL_HOME))
+                   env=dict(os.environ))
 if "SAVED True" not in r.stdout:
     say("skipped: Nuke Non-commercial does not start from the terminal here (%s)" % os.path.basename(exe))
     finish()
@@ -90,8 +88,12 @@ check("PNG done, 24 on disk", ep.state == "done" and len(pngs) == 24, (ep.state,
 check("PNG frames pass the check", not any(jk.frame_broken(fr) for fr in ep.frames.values()))
 check("movie done", em.state == "done", (em.state, [x[1] for x in em.log][-6:]))
 info = em.probe() or {}
-check("the movie: 24 frames, 25 fps, 1920 x 1080", info.get("frames") == 24 and abs((info.get("fps") or 0) - 25) < .01
-      and info.get("width") == 1920, {k: info.get(k) for k in ("frames", "fps", "width", "height", "codec")})
+if jk.find_tool("ffprobe"):
+    check("the movie: 24 frames, 25 fps, 1920 x 1080", info.get("frames") == 24 and abs((info.get("fps") or 0) - 25) < .01
+          and info.get("width") == 1920, {k: info.get(k) for k in ("frames", "fps", "width", "height", "codec")})
+else:  # a Mac without Homebrew's ffmpeg: JKrender fetches it only on Windows
+    say("  (no ffprobe on this machine: the movie's frames, fps and size are not read)")
+    check("without ffprobe the movie is still on disk", os.path.getsize(em.movie_path()) > 0, em.movie_path())
 check("the movie check is not bad", em.movie_verdict() != "bad", em.movie_verdict())
 
 say("Test this script with NC: 1 x 4 against 2 x 4")

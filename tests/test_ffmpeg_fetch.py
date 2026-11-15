@@ -90,6 +90,23 @@ check("the download fails", not ok and "SHA-256" in msg, msg)
 check("no folder, no part folder", not os.path.exists(target) and not os.path.exists(target + ".part"))
 check("no zip left in temp", not glob.glob(os.path.join(os.environ.get("TEMP", "/tmp"), "jkrender-ffmpeg-*")))
 
+if sys.platform != "win32":
+    say("4. macOS and Linux: the builds are Windows ones, so the first start never offers ffmpeg (Homebrew's or the PATH's is used)")
+    asked = []
+    fake = types.ModuleType("nuke")
+    fake.ask = lambda text: (asked.append(text), False)[1]
+    fake.message = lambda text: asked.append("MESSAGE " + text)
+    fake.executeInMainThread = lambda f, args=(): f(*args)
+    fake.GUI = True
+    sys.modules["nuke"] = fake
+    integ = load("JKrender_NukeIntegration")
+    deps.nuke_python = lambda nuke_exe=None: sys.executable
+    integ._offer_downloads()
+    check("no ffmpeg in the first-start question", asked and not any("- ffmpeg" in t or "about %d MB" % deps.FFMPEG_MB in t for t in asked), asked)
+    check("and nothing fetched", not os.path.exists(target), os.listdir(plugin + "/lib") if os.path.isdir(plugin + "/lib") else [])
+    server.shutdown()
+    finish()
+
 say("4. The real fetch")
 write_sums(names)
 ok, msg = deps.fetch_ffmpeg(target, release=url)

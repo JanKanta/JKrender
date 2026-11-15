@@ -23,7 +23,7 @@ NAME = os.path.splitext(os.path.basename(sys.argv[0]))[0]
 RUN = os.environ.get("JKRENDER_TEST_RUN") or (HERE + "/_runs/" + NAME)
 HOME = RUN + "/home"
 SETTINGS_DIR = HOME + "/.nuke/JKrender/settings"
-FAKE = os.environ.get("JKRENDER_FAKE_NUKE") or (HERE + "/fakenuke/build/Nuke16.0v9/Nuke16.0.exe")
+FAKE = os.environ.get("JKRENDER_FAKE_NUKE") or (HERE + "/fakenuke/build/Nuke16.0v9/Nuke16.0" + (".exe" if sys.platform.startswith("win") else ""))
 REAL_HOME = os.environ.get("JKRENDER_REAL_HOME") or os.path.expanduser("~")
 
 failed = 0
@@ -167,6 +167,38 @@ def answer(button_text, also=None):
                 return
         box.reject()
     QtCore.QTimer.singleShot(30, click)
+
+
+def real_nuke_exes(folder=None):
+    """The real Nuke programs, newest first: in folder (NUKE_DIR: Nuke's folder, on macOS the .app), or every installed one
+    (C:/Program Files/Nuke*, /Applications/Nuke*, /usr/local/Nuke*)."""
+    import re
+    if sys.platform.startswith("win"):
+        pattern, name = ((folder + "/Nuke*.exe") if folder else "C:/Program Files/Nuke*/Nuke*.exe"), r"Nuke\d+\.\d+\.exe$"
+    elif sys.platform == "darwin":
+        pattern = (folder + "/Contents/MacOS/Nuke*") if folder else "/Applications/Nuke*/Nuke*.app/Contents/MacOS/Nuke*"
+        name = r"Nuke\d+\.\d+$"
+    else:
+        pattern, name = ((folder + "/Nuke*") if folder else "/usr/local/Nuke*/Nuke*"), r"Nuke\d+\.\d+$"
+    found = [p.replace("\\", "/") for p in glob.glob(pattern) if re.match(name, os.path.basename(p)) and os.path.isfile(p)]
+    return sorted(found, key=lambda p: [int(x) for x in re.findall(r"\d+", p.split("/Nuke")[1].split("/")[0])], reverse=True)
+
+
+def nuke_is_open():
+    """True while any real Nuke runs (yours, a render): the tests with the real Nuke then skip themselves."""
+    import subprocess
+    if sys.platform.startswith("win"):
+        running = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Nuke*"], capture_output=True, text=True).stdout
+        return "Nuke" in running.replace("INFO: No tasks", "")
+    out = subprocess.run(["pgrep", "-f", r"/Nuke[0-9]+\.[0-9]+( |$)"], capture_output=True, text=True).stdout
+    return bool(out.strip())
+
+
+def use_real_home():
+    """JKrender read this test's home when imported; Nuke gets the real one (licence, NC sign-in, start-up scripts)."""
+    os.environ["USERPROFILE"] = REAL_HOME
+    if not sys.platform.startswith("win"):
+        os.environ["HOME"] = REAL_HOME
 
 
 def free_port():

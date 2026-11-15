@@ -8,14 +8,13 @@ import re
 import subprocess
 from common import *
 
-running = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Nuke*"], capture_output=True, text=True).stdout
-if "Nuke" in running.replace("INFO: No tasks", ""):
+if nuke_is_open():
     say("skipped: a Nuke is open")
     finish()
 nuke_dir = os.environ.get("NUKE_DIR", "")
-exe = sorted(p for p in glob.glob(nuke_dir + "/Nuke*.exe") if re.match(r"Nuke\d+\.\d+\.exe$", os.path.basename(p)))
+exe = real_nuke_exes(nuke_dir)
 if not exe:
-    say("skipped: no Nuke*.exe in NUKE_DIR (%s)" % nuke_dir)
+    say("skipped: no Nuke in NUKE_DIR (%s)" % nuke_dir)
     finish()
 
 shutil.rmtree(RUN, ignore_errors=True)
@@ -100,7 +99,7 @@ env = dict(os.environ)
 env.update(USERPROFILE=home.replace("/", "\\"), HOME=home, JK_INSTALL_PORT=str(free_port()))  # a number on Nuke's command line is a frame range
 for k in ("NUKE_PATH", "PYTHONPATH", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM", "JKRENDER_TEST_RUN"):
     env.pop(k, None)
-r = subprocess.run([exe[-1], "-i", "-t", driver, script], env=env, cwd=RUN, capture_output=True, text=True,
+r = subprocess.run([exe[0], "-i", "-t", driver, script], env=env, cwd=RUN, capture_output=True, text=True,
                    encoding="utf-8", errors="replace", timeout=900)
 line = next((l for l in r.stdout.splitlines() if l.startswith("RESULT ")), None)
 check("Nuke ran the steps", line is not None, (r.stdout + r.stderr)[-800:])

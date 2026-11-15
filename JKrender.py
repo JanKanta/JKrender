@@ -2527,7 +2527,8 @@ class RenderEngine:
         for i, p in enumerate(self.output_files(frame)):
             self.pending_checks += 1
             fut = self.checker.submit(check_file, p)
-            fut.add_done_callback(lambda fu, f=frame, i=i: self.events.put(("check", f, i, fu.result())))
+            # cancelled when the render closes: nothing to report (result() would raise in the callback)
+            fut.add_done_callback(lambda fu, f=frame, i=i: fu.cancelled() or self.events.put(("check", f, i, fu.result())))
 
     def _on_check(self, frame, idx, result):
         self.pending_checks -= 1

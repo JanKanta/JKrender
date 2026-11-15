@@ -31,8 +31,9 @@ After every finished change, without asking: bump `APP_VERSION` and the version 
 commit, tag `vX.Y.Z` (no "alpha"), push the commit and the tag, copy the files as above. Tell the user the new version.
 
 ## Tests
-- `python tests/run_tests.py` runs everything offscreen against a stand-in Nuke (`docs/manual/FakeNuke.cs`, built with
-  the Windows C# compiler). **FakeNuke is Windows-only for now**; a Python stand-in for macOS and Linux is still to do.
+- `python tests/run_tests.py` runs everything offscreen against a stand-in Nuke: on Windows `tests/fakenuke/FakeNuke.cs`
+  (built with the Windows C# compiler), on macOS and Linux `tests/fakenuke/fake_nuke.py` (run with Nuke's Python). Keep the
+  two doing the same.
 - A small UI or text change: run only the test that covers it (`run_tests.py settings`). A change to the memory rules
   or the scheduler: the whole suite, and release only when it is green. The whole suite only once in a while otherwise.
 - `run_tests.py --real` adds tests with the real Nuke (`test_real_nuke`, `test_real_nc`). Run them only when the PC is

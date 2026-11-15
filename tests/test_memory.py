@@ -7,6 +7,7 @@ from common import *
 
 jk, app = start(qt=False)
 jk.RETURN_CHECK = 0.3
+TOTAL = jk.psutil.virtual_memory().total / 1024 ** 3  # sizes as a share of this machine's RAM: 8 GB is 6 % of 128 GB, a third of 24 GB
 
 
 class P:
@@ -74,13 +75,13 @@ m._hold_down("RAM", 96.0, live=3)  # as when a reload's fresh Nuke does not fit
 check("a place that does not fit waits: 3 places", m.ram_cap == 3, m.ram_cap)
 ws[4].state = "gone"
 check("the ones going are not counted as still to come", m._ram_pending() < 0.5, m._ram_pending())
-e.size_seen = 8.0  # one process at its largest: 8 GB
+e.size_seen = TOTAL * 0.06  # one process at its largest: 6 % of the RAM
 for v, want in ((96.0, 3), (80.0, None)):  # under Reload Nuke at (95 %) it comes back, as after a reload
     pct["v"] = v
     settle(m, m._ram_guard)
     check("RAM %.0f %%: places %s" % (v, want or "all back"), m.ram_cap == want, m.ram_cap)
-ws[4].state, ws[4].frames_here, ws[4].rss = "loading", 0, 2.0
-check("one opening the script counts what it will take", abs(m._ram_pending() - (e.size_seen - 2.0)) < 0.1, m._ram_pending())
+ws[4].state, ws[4].frames_here, ws[4].rss = "loading", 0, e.size_seen / 4
+check("one opening the script counts what it will take", abs(m._ram_pending() - e.size_seen * 0.75) < 0.1, m._ram_pending())
 
 say("VRAM over Reload Nuke at: nothing closes at once; a place held down comes back when it fits")
 m, e, ws = manager()
@@ -116,7 +117,7 @@ say("The Log says when a place starts waiting, when the memory drops under the m
 m, e, ws = manager()
 m.vram = [10, 24576 * 0.3, 24576.0]
 e.chunks = [types.SimpleNamespace(state="queued")]
-e.size_seen = 8.0
+e.size_seen = TOTAL * 0.06
 ram = {"v": 99.0}
 m.ram_percent = lambda: ram["v"]
 m._hold_down("RAM", 99.0, live=3)
@@ -134,6 +135,7 @@ say("Places come back one at a time: the next only once the last one has rendere
 m, e, ws = manager()
 m.ram_percent = lambda: 60.0
 m.vram = [10, 24576 * 0.3, 24576.0]
+e.size_seen = TOTAL * 0.06
 m._hold_down("RAM", 96.0, live=2)
 ws[3].state = ws[4].state = "gone"
 ws[2].frames_here, ws[2].spawned = 0, time.time()  # W02 has not rendered a frame yet
