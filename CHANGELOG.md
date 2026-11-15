@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.59 — 2026-11-15
+
+- `test_real_nc` (with `--real`): Nuke 17.1 Non-commercial end to end. A `.nknc` made in NC terminal mode, rendered by JKrender with `--nc` workers: an EXR sequence with Reload Nuke After every chunk, a PNG sequence and a ProRes movie side by side, frame, pixel and movie checks, and Test this script. All pass. The Nuke menu code was also run inside NC: it takes the `.nknc`, writes `nuke_mode: nc` and refuses a Write without a frame number.
+
 ## 0.99.58 — 2026-11-15
 
 - Render Selected Write(s) refuses a Write whose path has no frame number (`sss.exr` instead of `sss.####.exr`): every frame would be written over the same file and only the last would stay. The message names the Write and its path and says to add `####` (or `%04d`); the other selected Writes still render. A movie, a single frame and `####`, `%04d`, `$F4` and `[frame]` pass.
