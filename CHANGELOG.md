@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.62 — 2026-11-15
+
+- macOS on Apple silicon: the GPU tile shows the GPU's use and the VRAM tile the GPU memory in use, from macOS's IOAccelerator statistics (`ioreg`), and the Load graph draws the GPU. The memory is unified, part of the RAM, so the RAM rules cover it and the VRAM rules leave it alone.
+
 ## 0.99.61 — 2026-11-15
 
 - macOS: the window starts with Nuke's own Python from `Nuke*.app/Contents/MacOS/python3` with Qt's frameworks from `Contents/Frameworks` on its path (Nuke 17.0 on a Mac said "JKrender needs a Python with PySide6": PySide6 was there, its Qt was not found). When Nuke's Python still cannot import PySide6, the message shows what it said.

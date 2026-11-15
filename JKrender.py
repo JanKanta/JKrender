@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.61 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.62 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.61"
+APP_VERSION = "0.99.62"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -420,6 +420,21 @@ def pct_reload(settings, name):
     """From this RAM or VRAM % on (held FRESH_HOLD s), Reload Nuke "When memory is full" reloads: Settings > Performance and
     Optimization > Reload Nuke at. 90 % unless set."""
     return pct_limit(settings, name)
+
+
+def apple_gpu():
+    """Apple silicon (macOS): (GPU use %, GPU memory in use in bytes) from the IOAccelerator statistics, or None.
+    The memory is unified, part of the RAM, so it only shows; the RAM rules already cover it."""
+    try:
+        out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return None
+    util = re.search(r'"Device Utilization %"\s*=\s*(\d+)', out)
+    used = re.search(r'"In use system memory"\s*=\s*(\d+)', out)
+    if not util:
+        return None
+    return float(util.group(1)), (float(used.group(1)) if used else None)
 
 
 def hidden():
@@ -5612,7 +5627,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select(self.engine)
         if psutil:
             psutil.cpu_percent(percpu=True)
-        if shutil.which("nvidia-smi") or sys.platform.startswith("win"):
+        self._gpu_mac = None  # macOS: (GPU %, unified memory in use), shown only
+        if shutil.which("nvidia-smi") or sys.platform.startswith("win") or sys.platform == "darwin":
             threading.Thread(target=self._gpu_loop, daemon=True).start()
         QtWidgets.QApplication.instance().installEventFilter(self)  # clicks off the cards drop the Shift picks
         self.timer = QtCore.QTimer(self)
@@ -7501,12 +7517,17 @@ class MainWindow(QtWidgets.QMainWindow):
             vguard = ("  ·  guard: %d of %d processes" % (m.vram_cap, m.total)) if m.vram_cap else ""
             self.m_vram.set("%.0f %%" % (gpu[1] / gpu[2] * 100 if gpu[2] else 0),
                             "%.1f of %.0f GB%s" % (gpu[1] / 1024, gpu[2] / 1024, vguard))
+        elif getattr(self, "_gpu_mac", None):
+            mac = self._gpu_mac
+            self.m_gpu.set("%.0f %%" % mac[0], "Apple GPU")
+            self.m_vram.set("%.1f GB" % (mac[1] / 1024 ** 3) if mac[1] is not None else "—", "unified memory, part of the RAM")
         else:
             self.m_gpu.set("—", "no NVIDIA GPU" if not shutil.which("nvidia-smi") else "")
             self.m_vram.set("—", "")
         vram = gpu[1] / gpu[2] * 100 if gpu and gpu[2] else None
-        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu[0] if gpu else 0, "vram": vram or 0})
-        self._update_averages(now, cpu, vm.percent, gpu[0] if gpu else None, vram)
+        gpu_use = gpu[0] if gpu else (self._gpu_mac[0] if getattr(self, "_gpu_mac", None) else None)
+        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu_use or 0, "vram": vram or 0})
+        self._update_averages(now, cpu, vm.percent, gpu_use, vram)
         self.g_io.add({"dw": dw, "dr": dr, "net": nmb})
         self.cores.set_values(per)
         t = self.worker_table
@@ -7824,6 +7845,8 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 per_process = None
         while True:
+            if sys.platform == "darwin":
+                self._gpu_mac = apple_gpu()
             if shutil.which("nvidia-smi"):
                 try:
                     out = subprocess.run(
