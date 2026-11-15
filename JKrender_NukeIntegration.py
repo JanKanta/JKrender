@@ -201,7 +201,10 @@ def _session_env():
 
 
 def _nuke_executable():
-    exe = os.path.abspath(os.sys.executable)
+    """The Nuke program the worker processes run: nuke.EXE_PATH (on macOS inside Nuke*.app/Contents/MacOS), else
+    Python's executable when that is Nuke."""
+    exe = getattr(nuke, "EXE_PATH", "") or os.sys.executable
+    exe = os.path.abspath(exe)
     return exe if "nuke" in Path(exe).name.lower() else ""
 
 
@@ -301,19 +304,28 @@ def _nuke_python():
     """Nuke's own Python with Nuke's PySide6 and psutil, so nothing has to be installed.
 
     Returns (python, environment), or None when this Nuke does not ship them."""
-    exe = Path(os.path.abspath(os.sys.executable))
-    if "nuke" not in exe.name.lower():
+    exe = _nuke_executable()
+    if not exe:
         return None
-    folder = exe.parent
-    python_exe = folder / ("python.exe" if os.name == "nt" else "python3")
-    site = folder / "pythonextensions" / "site-packages"
-    if not python_exe.is_file() or not (site / "PySide6").is_dir():
+    folder = Path(exe).parent
+    if os.name == "nt":
+        pythons = [folder / "python.exe"]
+    else:  # macOS: Nuke*.app/Contents/MacOS/python3(.x); Linux: next to the Nuke binary
+        pythons = [folder / "python3", folder / "python"] + sorted(folder.glob("python3.*"), reverse=True)
+    python_exe = next((p for p in pythons if p.is_file()), None)
+    roots = [folder, folder.parent / "Resources", folder.parent / "Frameworks"]
+    site = next((r / "pythonextensions" / "site-packages" for r in roots
+                 if (r / "pythonextensions" / "site-packages" / "PySide6").is_dir()), None)
+    if python_exe is None or site is None:
         return None
     env = dict(os.environ)
     for key in ("PYTHONHOME", "PYTHONSTARTUP", "QML2_IMPORT_PATH", "PYSIDE_DESIGNER_PLUGINS"):
         env.pop(key, None)
     env["PYTHONPATH"] = str(site)
-    env["QT_PLUGIN_PATH"] = str(folder / "qtplugins")
+    plugins = next((p for p in (folder / "qtplugins", folder.parent / "PlugIns", folder.parent / "Resources" / "qtplugins")
+                    if p.is_dir()), None)
+    if plugins:
+        env["QT_PLUGIN_PATH"] = str(plugins)
     env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
     return str(python_exe), env
 

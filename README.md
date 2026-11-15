@@ -5,7 +5,7 @@ on one PC, checks every frame it writes, and keeps the PC from running out of me
 
 ![JKrender with four renders: three rendering side by side and one done, the frame preview, the timeline of every Nuke process and the system monitor](docs/screenshot.png)
 
-**Version 0.99.59** · Nuke 16 · Windows · free
+**Version 0.99.60** · Nuke 16 · Windows · macOS (first version) · free
 
 📘 Manual, 19 pages: [English](docs/JKrender_manual_en.pdf) · [Čeština](docs/JKrender_navod.pdf) · [Deutsch](docs/JKrender_manual_de.pdf) · [Español](docs/JKrender_manual_es.pdf) · [Polski](docs/JKrender_manual_pl.pdf) · [Русский](docs/JKrender_manual_ru.pdf)
 
@@ -70,6 +70,7 @@ Then select Writes in Nuke and choose **JKrender → Render Selected Write(s)** 
 - Said no to the download? Delete `lib/DECLINED` (numpy, OpenEXR) or `lib/DECLINED_FFMPEG` to be asked again.
 - **Another Python:** set `JKRENDER_PYTHON`; it needs `pip install PySide6 psutil numpy OpenEXR`.
 - ffmpeg: an ffmpeg on PATH or from `winget install ffmpeg` is used first; otherwise the LGPL build from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), checked against its SHA-256, goes into `lib/ffmpeg` and travels with the JKrender folder.
+- **macOS** (first version, being tested): clone or unpack into `~/.nuke/JKrender` (hidden in Finder: Cmd+Shift+G, `~/.nuke`), add the same line to `~/.nuke/init.py`, and `brew install ffmpeg` for movies. The window runs in Nuke's own Python from `Nuke*.app/Contents`. Without an NVIDIA card the GPU and VRAM tiles stay empty; the RAM rules work as on Windows.
 - **Nuke Non-commercial and Indie:** scripts saved as `.nknc` / `.nkind` render too; every Nuke process starts in the same mode (`--nc` / `--indie`). Nuke's own limits apply (Non-commercial: output up to HD, 1920 x 1080).
 - Render logs go to `log/` next to `JKrender.py` (deleted after 15 days); settings are per user in `~/.nuke/JKrender/settings`.
 

@@ -174,6 +174,8 @@ def system_tool(name):
     if not found and sys.platform == "win32":
         link = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links", _exe(name))
         found = link if os.path.isfile(link) else None
+    if not found and sys.platform == "darwin":  # Homebrew: not on the PATH of an app started from the Dock
+        found = next((p for p in ("/opt/homebrew/bin/" + name, "/usr/local/bin/" + name) if os.path.isfile(p)), None)
     return found
 
 

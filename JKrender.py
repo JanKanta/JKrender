@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.59 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.60 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.59"
+APP_VERSION = "0.99.60"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -184,7 +184,13 @@ def sound_file(name):
 
 
 def play_sound(name):
-    """Plays in the background, the window does not wait for it. Outside Windows it just beeps."""
+    """Plays in the background, the window does not wait for it. macOS through afplay; elsewhere it just beeps."""
+    if sys.platform == "darwin":
+        try:
+            subprocess.Popen(["afplay", str(sound_file(name))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception:
+            pass
     try:
         import winsound
         winsound.PlaySound(str(sound_file(name)), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
@@ -534,6 +540,12 @@ def machine_info():
             cpu = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
     except Exception:
         pass
+    if sys.platform == "darwin":
+        try:
+            cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+                                 timeout=5).stdout.strip() or cpu
+        except Exception:
+            pass
     gpu, vram = None, None
     if shutil.which("nvidia-smi"):
         try:
@@ -973,6 +985,8 @@ def find_tool(name):
     if not found and sys.platform.startswith("win"):
         link = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / (name + ".exe")
         found = str(link) if link.is_file() else None
+    if not found and sys.platform == "darwin":  # Homebrew, which an app started from the Dock has not on its PATH
+        found = next((p for p in ("/opt/homebrew/bin/" + name, "/usr/local/bin/" + name) if os.path.isfile(p)), None)
     if not found:
         try:
             import jkrender_deps

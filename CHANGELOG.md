@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.60 — 2026-11-15
+
+- First macOS version (not yet run on a Mac): the Nuke the workers run comes from `nuke.EXE_PATH` (inside `Nuke*.app/Contents/MacOS`), the window finds Nuke's own Python and PySide6 inside the app bundle, sounds play through `afplay`, the report names the CPU through `sysctl`, and ffmpeg / ffprobe are found in Homebrew's folders. Without an NVIDIA card the GPU and VRAM tiles stay empty. Windows behaves as before: checked in Nuke 16 (the same Nuke, Python and Qt plug-ins found) and with the tests.
+- macOS install steps in INSTALL.txt and the README.
+
 ## 0.99.59 — 2026-11-15
 
 - `test_real_nc` (with `--real`): Nuke 17.1 Non-commercial end to end. A `.nknc` made in NC terminal mode, rendered by JKrender with `--nc` workers: an EXR sequence with Reload Nuke After every chunk, a PNG sequence and a ProRes movie side by side, frame, pixel and movie checks, and Test this script. All pass. The Nuke menu code was also run inside NC: it takes the `.nknc`, writes `nuke_mode: nc` and refuses a Write without a frame number.
