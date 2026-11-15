@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- macOS on Apple silicon, System: the GPU column shows each Nuke process's GPU use (its GPU time from macOS, as Activity Monitor shows it); the VRAM column stays empty, as the GPU's memory is part of the RAM and macOS does not tell it per process (its header says so). The Load graph draws the GPU's memory as a share of the RAM (it was always 0), and the VRAM tile says that share too.
 - Check pixels: an EXR's hash takes in where its pixels sit (the data window), so a moving element whose bbox moves with the same pixels is no longer "exactly the same as an earlier one" (a render of 0-100 with a moving shape listed 8 such frames). The slate frame, which often holds the first frame, is left out of that check, as it is out of the small-frame check.
 - macOS: the render report names the Apple GPU (model and GPU cores) instead of none.
 - Tests run on macOS and Linux: `run_tests.py` finds Nuke in `/Applications/Nuke*/Nuke*.app` or `/usr/local/Nuke*`, and FakeNuke has a Python twin, `tests/fakenuke/fake_nuke.py`. `test_memory` sizes the processes as a share of the machine's RAM (8 GB is a third of a 24 GB Mac); the tests with the real Nuke find it and see an open one on every platform; `test_ffmpeg_fetch` checks that macOS and Linux are never offered the Windows ffmpeg; `test_real_nc` reads the movie only where there is an ffprobe.

@@ -437,6 +437,39 @@ def apple_gpu():
     return float(util.group(1)), (float(used.group(1)) if used else None)
 
 
+class AppleGpuPerProcess:
+    """GPU use of every process on Apple silicon (macOS), what Activity Monitor's GPU column shows: the GPU time each
+    process's Metal clients have used (AppUsage accumulatedGPUTime in ioreg, ns), over the time between two samples.
+    sample() -> {pid: GPU %}. There is no per-process GPU memory: the memory is unified, part of the RAM."""
+
+    def __init__(self):
+        self.last = None  # (time, {pid: ns})
+
+    @staticmethod
+    def parse(text):
+        """ioreg's text -> {pid: GPU ns used so far}, all Metal clients of a process added up."""
+        used = {}
+        for block in text.split("+-o ")[1:]:  # one Metal client each
+            m = re.search(r'"IOUserClientCreator"\s*=\s*"pid (\d+),', block)
+            if m:
+                pid = int(m.group(1))
+                used[pid] = used.get(pid, 0) + sum(int(x) for x in re.findall(r'"accumulatedGPUTime"\s*=\s*(\d+)', block))
+        return used
+
+    def sample(self, text=None, now=None):
+        if text is None:
+            text = subprocess.run(["ioreg", "-r", "-c", "AGXDeviceUserClient", "-d", "1", "-w", "0", "-l"],
+                                  capture_output=True, text=True, timeout=5).stdout
+        now = time.time() if now is None else now
+        used = self.parse(text)
+        out = {}
+        if self.last:
+            dt = max(0.1, now - self.last[0]) * 1e9
+            out = {pid: min(100.0, max(0.0, (ns - self.last[1].get(pid, ns)) / dt * 100)) for pid, ns in used.items()}
+        self.last = (now, used)
+        return out
+
+
 def apple_gpu_name():
     """Apple silicon (macOS): "Apple M4 Pro, 20 GPU cores" from the IOAccelerator, or None."""
     try:
@@ -5650,6 +5683,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if psutil:
             psutil.cpu_percent(percpu=True)
         self._gpu_mac = None  # macOS: (GPU %, unified memory in use), shown only
+        self._gpu_procs_mac = {}  # macOS: pid -> GPU %; no GPU memory per process, it is part of the RAM
         if shutil.which("nvidia-smi") or sys.platform.startswith("win") or sys.platform == "darwin":
             threading.Thread(target=self._gpu_loop, daemon=True).start()
         QtWidgets.QApplication.instance().installEventFilter(self)  # clicks off the cards drop the Shift picks
@@ -6943,6 +6977,11 @@ class MainWindow(QtWidgets.QMainWindow):
         head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
         head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
         names = [self.worker_table.horizontalHeaderItem(c).text() for c in range(self.worker_table.columnCount())]
+        if sys.platform == "darwin":  # Apple silicon: GPU % per process from macOS, no GPU memory of its own
+            self.worker_table.horizontalHeaderItem(names.index("GPU")).setToolTip("GPU use of this Nuke process, as Activity Monitor shows it")
+            self.worker_table.horizontalHeaderItem(names.index("VRAM")).setToolTip(
+                "Empty on a Mac: the GPU's memory is part of the RAM, and macOS does not tell it per process.\n"
+                "The VRAM tile and graph show what the whole GPU holds; the RAM tile and the RAM rules include it.")
 
         def arrange(order, hidden):
             for i, name in enumerate(n for n in order if n in names):
@@ -7542,13 +7581,18 @@ class MainWindow(QtWidgets.QMainWindow):
         elif getattr(self, "_gpu_mac", None):
             mac = self._gpu_mac
             self.m_gpu.set("%.0f %%" % mac[0], "Apple GPU")
-            self.m_vram.set("%.1f GB" % (mac[1] / 1024 ** 3) if mac[1] is not None else "—", "unified memory, part of the RAM")
+            self.m_vram.set("%.1f GB" % (mac[1] / 1024 ** 3) if mac[1] is not None else "—",
+                            "%.0f %% of the RAM, unified memory" % (mac[1] / vm.total * 100) if mac[1] is not None and vm.total
+                            else "unified memory, part of the RAM")
         else:
             self.m_gpu.set("—", "no NVIDIA GPU" if not shutil.which("nvidia-smi") else "")
             self.m_vram.set("—", "")
         vram = gpu[1] / gpu[2] * 100 if gpu and gpu[2] else None
         gpu_use = gpu[0] if gpu else (self._gpu_mac[0] if getattr(self, "_gpu_mac", None) else None)
-        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu_use or 0, "vram": vram or 0})
+        # Apple silicon: the GPU's memory is part of the RAM, so the graph draws it as a share of the RAM, under the RAM line
+        mac = getattr(self, "_gpu_mac", None)
+        shared = mac[1] / vm.total * 100 if not gpu and mac and mac[1] is not None and vm.total else None
+        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu_use or 0, "vram": vram or shared or 0})
         self._update_averages(now, cpu, vm.percent, gpu_use, vram)
         self.g_io.add({"dw": dw, "dr": dr, "net": nmb})
         self.cores.set_values(per)
@@ -7564,6 +7608,7 @@ class MainWindow(QtWidgets.QMainWindow):
         t.setRowCount(len(rows))
         self._worker_rows = rows
         gpus = self._gpu_procs or {}
+        gpus_mac = getattr(self, "_gpu_procs_mac", None) or {}  # macOS: GPU % only
         idle_why = self._empty_place_state() if empty else ""
         coming_back = self._coming_back(rows)
         memory_why = self._memory_why() if coming_back else ""
@@ -7582,6 +7627,8 @@ class MainWindow(QtWidgets.QMainWindow):
             avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
             gone = w.state == "gone"
             gpu = gpus.get(w.proc.pid)
+            if gpu is None and w.proc.pid in gpus_mac:
+                gpu = (gpus_mac[w.proc.pid], None)
             state = x.worker_state(w)
             waits = (x, w) in coming_back
             if waits:
@@ -7591,7 +7638,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
                       "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
                       "" if gone or gpu is None else "%.0f %%" % gpu[0],
-                      "" if gone or gpu is None else "%.1f GB" % (gpu[1] / 1024 ** 3),
+                      "" if gone or gpu is None or gpu[1] is None else "%.1f GB" % (gpu[1] / 1024 ** 3),
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
                       fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
                       self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else "",
@@ -7866,9 +7913,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 per_process = GpuPerProcess()
             except Exception:
                 per_process = None
+        apple_procs = AppleGpuPerProcess() if sys.platform == "darwin" else None
         while True:
             if sys.platform == "darwin":
                 self._gpu_mac = apple_gpu()
+                try:
+                    self._gpu_procs_mac = apple_procs.sample()
+                except Exception:
+                    self._gpu_procs_mac = {}
             if shutil.which("nvidia-smi"):
                 try:
                     out = subprocess.run(

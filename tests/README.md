@@ -27,5 +27,6 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a crash never turns the card red (also while it renders), red with a broken frame |
 | `test_ffmpeg_fetch` | ffmpeg fetched on the first start from a release served locally: the newest LGPL build, only the programs and DLLs kept, nothing left on a wrong SHA-256, asked once together with numpy, the PC's own ffmpeg first; on macOS and Linux never offered |
 | `test_rewrite` | All frames again writes every file anew (its write time is newer than the click): all frames on disk, some, a stopped render, a new render opened over an earlier one's frames |
+| `test_system` | macOS: GPU use per process from macOS's GPU time, no VRAM per process, the GPU's memory in the Load graph as a share of the RAM |
 | `test_real_nuke` | (`--real`) a render and Test this script with the real Nuke |
 | `test_real_install` | (`--real`) the install as a new user does it: the folder in `~/.nuke`, one line in `init.py`, then the menu's steps and a render with the real Nuke |
