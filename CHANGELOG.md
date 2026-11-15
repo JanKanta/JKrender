@@ -6,6 +6,7 @@
 - macOS: the render report names the Apple GPU (model and GPU cores) instead of none.
 - Tests run on macOS and Linux: `run_tests.py` finds Nuke in `/Applications/Nuke*/Nuke*.app` or `/usr/local/Nuke*`, and FakeNuke has a Python twin, `tests/fakenuke/fake_nuke.py`. `test_memory` sizes the processes as a share of the machine's RAM (8 GB is a third of a 24 GB Mac); the tests with the real Nuke find it and see an open one on every platform; `test_ffmpeg_fetch` checks that macOS and Linux are never offered the Windows ffmpeg; `test_real_nc` reads the movie only where there is an ffprobe.
 - A frame check cancelled when a render closes no longer prints a CancelledError.
+- `test_real_install` runs without a Nuke licence too: on a licence error it goes on in Non-commercial mode (`--nc`), with the script made and saved as a `.nknc`.
 
 ## 0.99.62 — 2026-11-15
 

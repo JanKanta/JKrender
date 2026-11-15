@@ -2,7 +2,8 @@
 in ~/.nuke/init.py, nothing else. Then Nuke (-t, in a home of its own) opens a small script, and what the JKrender menu does for
 Render Selected Write(s) runs: find JKrender.py, the log folder, make the job and snapshot, pick Nuke's own Python with PySide6.
 JKrender then renders it with the real Nuke (offscreen) and ends. numpy and OpenEXR are copied from your install, not
-downloaded. Skipped while any Nuke is open."""
+downloaded. Skipped while any Nuke is open. Without a Nuke licence (a Mac with Nuke Non-commercial only) it runs in NC mode:
+Nuke --nc, the snapshot a .nknc."""
 import glob
 import re
 import subprocess
@@ -72,7 +73,18 @@ try:
 except Exception as exc:
     out["integration_error"] = repr(exc)
     print("RESULT " + json.dumps(out)); sys.exit(0)
-nuke.scriptOpen(sys.argv[1])
+if nuke.env.get("nc"):
+    # Non-commercial opens only .nknc: the same script made here and saved as one, as an NC user has it
+    r = nuke.root()
+    r["first_frame"].setValue(1001); r["last_frame"].setValue(1006)
+    nuke.addFormat("640 360 0 0 640 360 1 jktest"); r["format"].setValue("jktest")
+    cb = nuke.nodes.CheckerBoard2(name="CheckerBoard1")
+    w = nuke.nodes.Write(name="Write1", file=os.path.dirname(sys.argv[1]) + "/render/shot.%04d.png", file_type="png")
+    w.setInput(0, cb)
+    nuke.scriptSaveAs(os.path.splitext(sys.argv[1])[0] + ".nknc", 1)
+    out["nc"] = True
+else:
+    nuke.scriptOpen(sys.argv[1])
 w = nuke.toNode("Write1")
 w.setSelected(True)
 out["writes"] = [n.fullName() for n in jk._write_nodes()]
@@ -99,8 +111,12 @@ env = dict(os.environ)
 env.update(USERPROFILE=home.replace("/", "\\"), HOME=home, JK_INSTALL_PORT=str(free_port()))  # a number on Nuke's command line is a frame range
 for k in ("NUKE_PATH", "PYTHONPATH", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM", "JKRENDER_TEST_RUN"):
     env.pop(k, None)
-r = subprocess.run([exe[0], "-i", "-t", driver, script], env=env, cwd=RUN, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", timeout=900)
+for mode in ([], ["--nc"]):
+    r = subprocess.run([exe[0]] + mode + ["-i", "-t", driver, script], env=env, cwd=RUN, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=900)
+    if "license for nuke was not found" not in (r.stdout + r.stderr).lower():
+        break
+    say("  no Nuke licence: Non-commercial mode (--nc)")
 line = next((l for l in r.stdout.splitlines() if l.startswith("RESULT ")), None)
 check("Nuke ran the steps", line is not None, (r.stdout + r.stderr)[-800:])
 res = json.loads(line[7:]) if line else {}
@@ -111,7 +127,7 @@ check("the selected Write is found", res.get("writes") == ["Write1"], res.get("w
 check("JKrender.py found next to it", norm(res.get("app")) == norm(plugin + "/JKrender.py"), res.get("app"))
 check("render folders go to its log folder", norm(res.get("renders")) == norm(plugin + "/log"), res.get("renders"))
 job = res.get("job") or ""
-check("a job and a snapshot of the script", os.path.isfile(job) and glob.glob(os.path.dirname(job) + "/snapshot_*.nk"), job)
+check("a job and a snapshot of the script", os.path.isfile(job) and glob.glob(os.path.dirname(job) + "/snapshot_*.nk*"), job)
 check("Nuke's own Python with PySide6 runs the window", res.get("pyside6") is True, res.get("python"))
 
 say("4. JKrender renders it with the real Nuke")
