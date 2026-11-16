@@ -111,11 +111,16 @@ if sys.platform == "darwin":
         for tool, h in sums.items():
             open(builds + "/" + tool + ".zip.sha256", "w").write("%s  %s.zip\n" % ("0" * 64 if tool == bad else h, tool))
 
+    cafile = deps.ca_file()
+    check("Nuke's Python, whose own certificates are missing, gets the Mac's for HTTPS", cafile and os.path.isfile(cafile), cafile)
     mac_sums(bad="ffprobe")
     ok, msg = deps.fetch_ffmpeg(target, release=url)
     check("a wrong SHA-256: it fails", not ok and "SHA-256" in msg, msg)
     check("no folder, no part folder", not os.path.exists(target) and not os.path.exists(target + ".part"))
     check("no zip left in temp", not glob.glob(os.path.join(tempfile.gettempdir(), "jkrender-ffmpeg-*")))
+    ok, msg = deps.fetch_ffmpeg(target, release="http://127.0.0.1:1/")
+    check("no server: it fails, and no empty zip is left in temp",
+          not ok and not glob.glob(os.path.join(tempfile.gettempdir(), "jkrender-ffmpeg-*")), msg)
     mac_sums()
     ok, msg = deps.fetch_ffmpeg(target, release=url)
     check("it is fetched", ok, msg)

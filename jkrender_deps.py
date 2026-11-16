@@ -237,14 +237,18 @@ def _download(url, timeout=120):
     """url into a temp file: (path, sha256, the URL it came from after redirects)."""
     digest = hashlib.sha256()
     fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="jkrender-ffmpeg-")
-    with os.fdopen(fd, "wb") as out, _get(url, timeout=timeout) as r:
-        final = r.geturl()
-        while True:
-            block = r.read(1 << 20)
-            if not block:
-                break
-            digest.update(block)
-            out.write(block)
+    try:
+        with os.fdopen(fd, "wb") as out, _get(url, timeout=timeout) as r:
+            final = r.geturl()
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                digest.update(block)
+                out.write(block)
+    except BaseException:
+        os.remove(tmp)  # no empty zip left in temp when the server cannot be reached
+        raise
     return tmp, digest.hexdigest(), final
 
 
@@ -294,11 +298,39 @@ def _fetch_ffmpeg_mac(target, say, base):
         shutil.rmtree(part, ignore_errors=True)
 
 
+CA_FILES = ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt")
+
+
+def ca_file():
+    """The certificates HTTPS checks servers against, when Python's own are missing, else None. Nuke's Python on macOS
+    looks for them where Foundry built it, so it trusts no server (CERTIFICATE_VERIFY_FAILED); the system's then, or
+    certifi's. Windows takes them from the system store."""
+    import ssl
+
+    paths = ssl.get_default_verify_paths()
+    if sys.platform == "win32" or os.environ.get(paths.openssl_cafile_env) or os.path.isfile(paths.openssl_cafile or ""):
+        return None
+    for path in CA_FILES:
+        if os.path.isfile(path):
+            return path
+    try:
+        import certifi
+    except ImportError:
+        try:
+            from pip._vendor import certifi
+        except ImportError:
+            return None
+    return certifi.where()
+
+
 def _get(url, timeout=60):
+    import ssl
     import urllib.request
 
     req = urllib.request.Request(url, headers={"User-Agent": "JKrender"})
-    return urllib.request.urlopen(req, timeout=timeout)
+    cafile = ca_file() if url.startswith("https:") else None
+    context = ssl.create_default_context(cafile=cafile) if cafile else None
+    return urllib.request.urlopen(req, timeout=timeout, context=context)
 
 
 def fetch_ffmpeg(target, log=None, release=None):
