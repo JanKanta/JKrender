@@ -8,9 +8,10 @@ read-only), and JKrender.py puts that folder on its path.
 Rendering does not need them; only the preview of EXR frames does.
 Nothing in here imports numpy or OpenEXR.
 
-ffmpeg and ffprobe, for checking movies and the movie player, are fetched the same way, on Windows only, when the PC has
-none of its own: the LGPL build from github.com/BtbN/FFmpeg-Builds, checked against the release's SHA-256 list, into
-lib/ffmpeg (only the programs and their DLLs).
+ffmpeg and ffprobe, for checking movies and the movie player, are fetched the same way, on Windows and macOS, when the PC
+has none of its own, into lib/ffmpeg: on Windows the LGPL build from github.com/BtbN/FFmpeg-Builds, checked against the
+release's SHA-256 list (only the programs and their DLLs); on macOS the static builds from ffmpeg.martin-riedl.de, for
+Apple silicon or Intel, each checked against the SHA-256 published next to it.
 """
 
 import os
@@ -146,8 +147,9 @@ def _strip(target):
 # ----------------------------------------------------------------------------
 # ffmpeg
 # ----------------------------------------------------------------------------
-FFMPEG_MB = 77  # the zip of the LGPL shared build, 9.0
+FFMPEG_MB = 77 if sys.platform == "win32" else 60  # Windows: the zip of the LGPL shared build; macOS: both zips, 9.0
 FFMPEG_RELEASE = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
+FFMPEG_MAC = "https://ffmpeg.martin-riedl.de/"
 FFMPEG_TOOLS = ("ffmpeg", "ffprobe")
 
 
@@ -227,6 +229,71 @@ def pick_ffmpeg(checksums):
     return None
 
 
+def mac_arch():
+    return "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "amd64"
+
+
+def _download(url, timeout=120):
+    """url into a temp file: (path, sha256, the URL it came from after redirects)."""
+    digest = hashlib.sha256()
+    fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="jkrender-ffmpeg-")
+    with os.fdopen(fd, "wb") as out, _get(url, timeout=timeout) as r:
+        final = r.geturl()
+        while True:
+            block = r.read(1 << 20)
+            if not block:
+                break
+            digest.update(block)
+            out.write(block)
+    return tmp, digest.hexdigest(), final
+
+
+def _fetch_ffmpeg_mac(target, say, base):
+    """macOS: ffmpeg.zip and ffprobe.zip of the newest release build for this Mac's processor; each zip's SHA-256 is read
+    from <its URL>.sha256. The folder appears only when both are whole."""
+    part = target + ".part"
+    tmp = None
+    sources = []
+    try:
+        shutil.rmtree(part, ignore_errors=True)
+        os.makedirs(part)
+        for tool in FFMPEG_TOOLS:
+            url = "%sredirect/latest/macos/%s/release/%s.zip" % (base, mac_arch(), tool)
+            say("downloading %s" % url)
+            tmp, got, final = _download(url)
+            with _get(final + ".sha256") as r:
+                listed = r.read().decode("utf-8", "replace").split()
+            want = listed[0].lower() if listed and len(listed[0]) == 64 else None
+            if got != want:
+                return False, "%s does not match its SHA-256 (got %s, the server lists %s)" % (final, got, want)
+            with zipfile.ZipFile(tmp) as z:
+                found = [i for i in z.infolist() if not i.is_dir() and i.filename.replace("\\", "/").split("/")[-1] == tool]
+                if not found:
+                    return False, "%s has no %s" % (final, tool)
+                with z.open(found[0]) as src, open(os.path.join(part, tool), "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            os.chmod(os.path.join(part, tool), 0o755)
+            os.remove(tmp)
+            tmp = None
+            sources.append("%s\nsha256 %s\n" % (final, want))
+        with open(os.path.join(part, "SOURCE.txt"), "w", encoding="utf-8") as f:
+            f.write("".join(sources) + "FFmpeg (these builds are GPL): https://ffmpeg.org/legal.html\n"
+                    "Delete this folder to remove it; JKrender then uses Homebrew's or the PATH's ffmpeg, if there is one.\n")
+        shutil.rmtree(target, ignore_errors=True)
+        os.replace(part, target)
+        say("ffmpeg is in %s" % target)
+        return True, target
+    except Exception as exc:
+        return False, "cannot download ffmpeg: %s" % exc
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        shutil.rmtree(part, ignore_errors=True)
+
+
 def _get(url, timeout=60):
     import urllib.request
 
@@ -240,6 +307,8 @@ def fetch_ffmpeg(target, log=None, release=None):
     Only ffmpeg, ffprobe and the DLLs they load are kept; the zip is checked against the SHA-256 the release lists, and
     the folder appears only when it is whole."""
     say = log or (lambda line: None)
+    if sys.platform == "darwin":
+        return _fetch_ffmpeg_mac(target, say, release or FFMPEG_MAC)
     release = release or FFMPEG_RELEASE
     tmp = None
     part = target + ".part"

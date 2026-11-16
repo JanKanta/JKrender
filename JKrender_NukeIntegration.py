@@ -548,7 +548,7 @@ def start_listener():
 # ----------------------------------------------------------------------------
 def _offer_downloads():
     """First start: offer, in one question, what JKrender can use but Nuke does not ship. numpy and OpenEXR for the EXR
-    preview; ffmpeg for checking and playing movies, when the PC has none of its own (Windows).
+    preview; ffmpeg for checking and playing movies, when the PC has none of its own (Windows, macOS).
 
     Each is asked once; saying no leaves a marker, and rendering works without them."""
     import jkrender_deps as deps
@@ -563,12 +563,12 @@ def _offer_downloads():
                          marker=deps.declined_marker(),
                          run=lambda t=target: deps.install(t, python_exe),
                          by_hand=lambda t=target: deps.pip_command_text(t, python_exe)))
-    if sys.platform == "win32" and deps.ffmpeg_needed() and not os.path.exists(deps.ffmpeg_declined_marker()):
+    if sys.platform in ("win32", "darwin") and deps.ffmpeg_needed() and not os.path.exists(deps.ffmpeg_declined_marker()):
         target = deps.ffmpeg_target()
         jobs.append(dict(what="ffmpeg", mb=deps.FFMPEG_MB, use="checking and playing movies (MOV, MP4, MXF)",
                          target=target, marker=deps.ffmpeg_declined_marker(),
                          run=lambda t=target: deps.fetch_ffmpeg(t),
-                         by_hand=lambda: "winget install ffmpeg"))
+                         by_hand=lambda: "winget install ffmpeg" if sys.platform == "win32" else "brew install ffmpeg"))
     if not jobs:
         return
     lines = "\n".join("- %s, about %d MB, for %s" % (j["what"], j["mb"], j["use"]) for j in jobs)

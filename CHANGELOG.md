@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- macOS: the first Nuke start offers ffmpeg, as on Windows, when the Mac has none (Homebrew's or the PATH's comes first): ffmpeg and ffprobe for checking and playing movies, the static builds from ffmpeg.martin-riedl.de for Apple silicon or Intel, about 60 MB, each zip checked against its published SHA-256, into lib/ffmpeg. When it fails, the message says `brew install ffmpeg`.
 - macOS on Apple silicon, System: a Nuke process's RAM is its footprint, what Activity Monitor shows, for the RAM column and the memory rules alike (RSS left out what macOS compressed and the graphics buffers: a Nuke of 1.44 GB showed 0.16 GB). The GPU column shows each process's GPU use (its GPU time from macOS) and the VRAM column its GPU memory (Metal, IOSurface, OpenCL), part of its RAM. The Load graph draws the GPU's memory as a share of the RAM (it was always 0), and the VRAM tile says that share too.
 - Check pixels: an EXR's hash takes in where its pixels sit (the data window), so a moving element whose bbox moves with the same pixels is no longer "exactly the same as an earlier one" (a render of 0-100 with a moving shape listed 8 such frames). The slate frame, which often holds the first frame, is left out of that check, as it is out of the small-frame check.
 - macOS: the render report names the Apple GPU (model and GPU cores) instead of none.

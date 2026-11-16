@@ -1,8 +1,11 @@
 """ffmpeg for the movie check, fetched on the first Nuke start when the PC has none: from a release served here (no
 internet), the newest LGPL shared build picked from its SHA-256 list, only the programs and DLLs kept, nothing left when the
-SHA-256 is wrong, the first-start question asked once with numpy, and JKrender finding the fetched ffprobe."""
+SHA-256 is wrong, the first-start question asked once with numpy, and JKrender finding the fetched ffprobe. On macOS the
+static ffmpeg and ffprobe of the Mac's processor, each checked against its .sha256; on Linux it is never offered."""
 import hashlib
 import http.server
+import subprocess
+import tempfile
 import importlib.util
 import threading
 import types
@@ -65,6 +68,17 @@ class Quiet(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=rel, **k)
 
+    def do_GET(self):  # macOS: like ffmpeg.martin-riedl.de, the "latest" URL sends on to the build's own folder
+        if self.path.startswith("/redirect/latest/macos/"):
+            arch, tool = self.path.split("/")[4], self.path.split("/")[-1]
+            self.send_response(307)
+            self.send_header("Location", "/download/macos/%s/1_9.0/%s" % (arch, tool))
+            self.end_headers()
+            return
+        super().do_GET()
+
+    do_HEAD = do_GET
+
     def log_message(self, *a):
         pass
 
@@ -80,6 +94,72 @@ check("master when there is no release build",
       == "ffmpeg-master-latest-win64-lgpl-shared.zip")
 check("none when there is no Windows LGPL build", deps.pick_ffmpeg("%s  ffmpeg-n9.0-latest-win64-gpl-9.0.zip\n" % ("d" * 64)) is None)
 
+if sys.platform == "darwin":
+    say("3. macOS: ffmpeg and ffprobe of this Mac's processor, each checked against its .sha256")
+    target = deps.ffmpeg_target()
+    check("the target is lib/ffmpeg next to the plugin", os.path.normcase(target) == os.path.normcase(plugin + "/lib/ffmpeg"), target)
+    check("no ffmpeg yet", deps.ffmpeg_needed() and deps.find_tool("ffprobe") is None)
+    builds = rel + "/download/macos/" + deps.mac_arch() + "/1_9.0"
+    os.makedirs(builds)
+    sums = {}
+    for tool in ("ffmpeg", "ffprobe"):
+        with zipfile.ZipFile(builds + "/" + tool + ".zip", "w") as z:
+            z.writestr(tool, "#!/bin/sh\necho fake %s\n" % tool)
+        sums[tool] = hashlib.sha256(open(builds + "/" + tool + ".zip", "rb").read()).hexdigest()
+
+    def mac_sums(bad=None):
+        for tool, h in sums.items():
+            open(builds + "/" + tool + ".zip.sha256", "w").write("%s  %s.zip\n" % ("0" * 64 if tool == bad else h, tool))
+
+    mac_sums(bad="ffprobe")
+    ok, msg = deps.fetch_ffmpeg(target, release=url)
+    check("a wrong SHA-256: it fails", not ok and "SHA-256" in msg, msg)
+    check("no folder, no part folder", not os.path.exists(target) and not os.path.exists(target + ".part"))
+    check("no zip left in temp", not glob.glob(os.path.join(tempfile.gettempdir(), "jkrender-ffmpeg-*")))
+    mac_sums()
+    ok, msg = deps.fetch_ffmpeg(target, release=url)
+    check("it is fetched", ok, msg)
+    kept = sorted(os.listdir(target)) if os.path.isdir(target) else []
+    check("only the two programs and SOURCE.txt", kept == ["SOURCE.txt", "ffmpeg", "ffprobe"], kept)
+    run = subprocess.run([target + "/ffprobe"], capture_output=True, text=True) if "ffprobe" in kept else None
+    check("ffprobe runs", run is not None and run.stdout.strip() == "fake ffprobe", run)
+    check("SOURCE.txt says where from", "/download/macos/%s/1_9.0/ffprobe.zip" % deps.mac_arch() in open(target + "/SOURCE.txt").read())
+    check("ffprobe is found there", deps.find_tool("ffprobe") == target + "/ffprobe", deps.find_tool("ffprobe"))
+    check("no longer needed", not deps.ffmpeg_needed())
+
+    say("4. macOS: the first-start question offers ffmpeg, as on Windows")
+    asked = []
+    answer = [False]
+    fake = types.ModuleType("nuke")
+    fake.ask = lambda text: (asked.append(text), answer[0])[1]
+    fake.message = lambda text: asked.append("MESSAGE " + text)
+    fake.executeInMainThread = lambda f, args=(): f(*args)
+    fake.GUI = True
+    sys.modules["nuke"] = fake
+    integ = load("JKrender_NukeIntegration")
+    deps.nuke_python = lambda nuke_exe=None: sys.executable
+    integ._offer_downloads()
+    check("not asked while there is one", not any("- ffmpeg" in t for t in asked), asked)
+    shutil.rmtree(target)
+    asked.clear()
+    integ._offer_downloads()
+    check("asked about ffmpeg, with its size", asked and "- ffmpeg, about %d MB" % deps.FFMPEG_MB in asked[0], asked)
+    check("no: its marker", os.path.isfile(deps.ffmpeg_declined_marker()))
+    asked.clear()
+    integ._offer_downloads()
+    check("not asked again", not any("- ffmpeg" in t for t in asked), asked)
+    os.remove(deps.ffmpeg_declined_marker())
+    answer[0] = True
+    deps.fetch_ffmpeg = lambda t, log=None, release=None: (False, "no internet")
+    asked.clear()
+    integ._offer_downloads()
+    deadline = time.time() + 10
+    while not any(t.startswith("MESSAGE") for t in asked) and time.time() < deadline:
+        time.sleep(0.05)
+    check("a failed download says how by hand: brew", any(t.startswith("MESSAGE") and "brew install ffmpeg" in t for t in asked), asked)
+    server.shutdown()
+    finish()
+
 say("3. A wrong SHA-256 leaves nothing")
 target = deps.ffmpeg_target()
 check("the target is lib/ffmpeg next to the plugin", os.path.normcase(target) == os.path.normcase(plugin + "/lib/ffmpeg"), target)
@@ -90,8 +170,8 @@ check("the download fails", not ok and "SHA-256" in msg, msg)
 check("no folder, no part folder", not os.path.exists(target) and not os.path.exists(target + ".part"))
 check("no zip left in temp", not glob.glob(os.path.join(os.environ.get("TEMP", "/tmp"), "jkrender-ffmpeg-*")))
 
-if sys.platform != "win32":
-    say("4. macOS and Linux: the builds are Windows ones, so the first start never offers ffmpeg (Homebrew's or the PATH's is used)")
+if sys.platform.startswith("linux"):
+    say("4. Linux: the builds are Windows ones, so the first start never offers ffmpeg (Homebrew's or the PATH's is used)")
     asked = []
     fake = types.ModuleType("nuke")
     fake.ask = lambda text: (asked.append(text), False)[1]
