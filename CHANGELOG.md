@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.99.63 — 2026-11-16
 
 - macOS: the first Nuke start offers ffmpeg, as on Windows, when the Mac has none (Homebrew's or the PATH's comes first): ffmpeg and ffprobe for checking and playing movies, the static builds from ffmpeg.martin-riedl.de for Apple silicon or Intel, about 60 MB, each zip checked against its published SHA-256, into lib/ffmpeg. When it fails, the message says `brew install ffmpeg`. Nuke's Python on macOS has no certificates for HTTPS (it looks for them where Foundry built it), so every download failed with CERTIFICATE_VERIFY_FAILED; downloads now use the Mac's own (/etc/ssl/cert.pem). A failed download no longer leaves an empty zip in temp.
 - macOS on Apple silicon, System: a Nuke process's RAM is its footprint, what Activity Monitor shows, for the RAM column and the memory rules alike (RSS left out what macOS compressed and the graphics buffers: a Nuke of 1.44 GB showed 0.16 GB). The GPU column shows each process's GPU use (its GPU time from macOS) and the VRAM column its GPU memory (Metal, IOSurface, OpenCL), part of its RAM. The Load graph draws the GPU's memory as a share of the RAM (it was always 0), and the VRAM tile says that share too.
