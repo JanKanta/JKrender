@@ -87,4 +87,32 @@ if sys.platform == "darwin":
     check("the GPU tile: 40 %", [l.text() for l in win.m_gpu.findChildren(jk.QtWidgets.QLabel)][1] == "40 %")
     win._stop()
     pump(0.5)
+
+say("Linux: GPU and VRAM per process from nvidia-smi (pmon and the compute apps)")
+PMON = "\n".join([
+    "# gpu         pid   type     sm    mem    enc    dec    jpg    ofa    command",
+    "# Idx           #    C/G      %      %      %      %      %      %    name",
+    "    0       4242     C     37     12      -      -      -      -    Nuke17.1",
+    "    0       4243     C      -      -      -      -      -      -    Nuke17.1",
+    "    0       1000     G      3      1      -      -      -      -    Xorg"])
+APPS = "4242, 2048\n4243, 512\n"
+got = jk.NvidiaSmiPerProcess.parse(PMON, APPS)
+check("Nuke 4242: 37 %, 2 GB", got.get(4242) == (37.0, 2048 * 1024 ** 2), got)
+check("Nuke 4243 on the card but idle: 0 %, 0.5 GB", got.get(4243) == (0.0, 512 * 1024 ** 2), got)
+check("a graphics process: its use, no memory (only compute apps have one)", got.get(1000) == (3.0, None), got)
+check("WSL's empty answer: nothing per process", jk.NvidiaSmiPerProcess.parse("# gpu pid\n    0          -     -      -", "") == {})
+
+say("Linux: the CPU's name from /proc/cpuinfo, not x86_64")
+CPUINFO = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 9 9950X 16-Core Processor\nflags\t\t: fpu\n"
+check("model name", jk.linux_cpu_name(CPUINFO) == "AMD Ryzen 9 9950X 16-Core Processor", jk.linux_cpu_name(CPUINFO))
+check("none: empty", jk.linux_cpu_name("processor\t: 0\n") == "")
+if sys.platform.startswith("linux"):
+    info = jk.machine_info()
+    check("this Linux: a CPU name and a readable OS", info["cpu"] not in ("", "x86_64") and info["os"].startswith("Linux "), info)
+
+say("Dialogs, message boxes and scroll bars dark everywhere (Linux has no dark theme to hand Qt)")
+pal = jk.dark_palette()
+check("window grey", pal.color(pal.ColorRole.Window).name() == jk.C["bg"], pal.color(pal.ColorRole.Window).name())
+check("text light", pal.color(pal.ColorRole.WindowText).name() == jk.C["text"])
+check("fields dark", pal.color(pal.ColorRole.Base).name() == jk.C["panel"])
 finish()

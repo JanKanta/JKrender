@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.64 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.65 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.64"
+APP_VERSION = "0.99.65"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -98,7 +98,9 @@ def rule_text(fresh, after):
 APP_PORT = int(os.environ.get("JKRENDER_PORT") or 54360)  # a second JKrender hands its render to the one already open, through this local port
 NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
-SYSTEM_WIDTHS = {"Process": 53, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
+# Windows Subsystem for Linux: the NVIDIA driver there lists no processes, so GPU and VRAM per process stay empty
+IS_WSL = sys.platform.startswith("linux") and "microsoft" in (os.uname().release if hasattr(os, "uname") else "").lower()
+SYSTEM_WIDTHS = {"Process": 60, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
 SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 FRESH_HOLD = 10  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
@@ -336,6 +338,41 @@ class GpuPerProcess:
                 pct, used = out.get(pid, (0.0, 0))
                 out[pid] = (pct, used + value)
         return out
+
+
+class NvidiaSmiPerProcess:
+    """GPU use and VRAM of every process on Linux, from nvidia-smi: `pmon` for the use (SM %), the compute apps for the
+    memory (Nuke's GPU nodes run on CUDA). WSL's driver lists no processes, so it is not used there.
+    sample() -> {pid: (percent or None, bytes or None)}."""
+
+    @staticmethod
+    def parse(pmon, apps):
+        out = {}
+        for line in (apps or "").splitlines():  # "12345, 2048"  (MiB)
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0].isdigit():
+                try:
+                    out[int(parts[0])] = (None, float(parts[1]) * 1024 ** 2)
+                except ValueError:
+                    pass
+        for line in (pmon or "").splitlines():  # "    0      12345     C     37     12  ..."  (gpu pid type sm mem ...)
+            parts = line.split()
+            if line.lstrip().startswith("#") or len(parts) < 4 or not parts[1].isdigit():
+                continue
+            try:
+                pct = float(parts[3])
+            except ValueError:
+                pct = 0.0  # "-": on the GPU, but it used none of it in this second
+            pid = int(parts[1])
+            old_pct, mem = out.get(pid, (None, None))
+            out[pid] = (max(pct, old_pct or 0.0), mem)  # one line per GPU: the busiest
+        return out
+
+    def sample(self):
+        apps = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                              capture_output=True, text=True, timeout=5).stdout
+        pmon = subprocess.run(["nvidia-smi", "pmon", "-c", "1", "-s", "u"], capture_output=True, text=True, timeout=8).stdout
+        return self.parse(pmon, apps)
 
 
 def clean_render_folders(root, days, keep=()):
@@ -656,6 +693,15 @@ def machine_info():
                                  timeout=5).stdout.strip() or cpu
         except Exception:
             pass
+    os_name = "%s %s" % (platform.system(), platform.version())  # 10.0.22000 and up is Windows 11
+    if sys.platform.startswith("linux"):
+        cpu = linux_cpu_name() or cpu  # platform.processor() says only "x86_64"
+        try:
+            os_name = "Linux " + (platform.freedesktop_os_release().get("PRETTY_NAME") or platform.release())
+        except Exception:
+            os_name = "Linux " + platform.release()
+        if IS_WSL:
+            os_name += " (WSL)"
     gpu, vram = None, None
     if shutil.which("nvidia-smi"):
         try:
@@ -671,8 +717,20 @@ def machine_info():
         "id": hashlib.blake2b(platform.node().lower().encode("utf-8"), digest_size=6).hexdigest(),
         "cpu": cpu, "threads": os.cpu_count(),
         "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1) if psutil else None,
-        "gpu": gpu, "vram_gb": vram, "os": "%s %s" % (platform.system(), platform.version())})  # 10.0.22000 and up is Windows 11
+        "gpu": gpu, "vram_gb": vram, "os": os_name})
     return dict(_MACHINE)
+
+
+def linux_cpu_name(text=None):
+    """The CPU's name from /proc/cpuinfo ("AMD Ryzen 9 9950X 16-Core Processor"), or "" when it has none."""
+    try:
+        if text is None:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        return next((line.split(":", 1)[1].strip() for line in text.splitlines()
+                     if line.split(":", 1)[0].strip() == "model name" and ":" in line), "")
+    except Exception:
+        return ""
 
 
 _CPU_LAYOUT = {}
@@ -7622,7 +7680,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.m_net.set("%.1f MB/s" % nmb)
         gpu = self._gpu
         if gpu:
-            self.m_gpu.set("%.0f %%" % gpu[0], "")
+            self.m_gpu.set("%.0f %%" % gpu[0], "whole card (WSL: none per process)" if IS_WSL else "")
             vguard = ("  ·  guard: %d of %d processes" % (m.vram_cap, m.total)) if m.vram_cap else ""
             self.m_vram.set("%.0f %%" % (gpu[1] / gpu[2] * 100 if gpu[2] else 0),
                             "%.1f of %.0f GB%s" % (gpu[1] / 1024, gpu[2] / 1024, vguard))
@@ -7963,6 +8021,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 per_process = GpuPerProcess()
             except Exception:
                 per_process = None
+        elif sys.platform.startswith("linux") and not IS_WSL and shutil.which("nvidia-smi"):
+            per_process = NvidiaSmiPerProcess()
         apple_procs = AppleGpuPerProcess() if sys.platform == "darwin" else None
         while True:
             if sys.platform == "darwin":
@@ -8542,6 +8602,22 @@ class MainWindow(QtWidgets.QMainWindow):
         event.accept()
 
 
+def dark_palette():
+    """JKrender's greys for whatever the style sheet does not paint: dialogs, message boxes, scroll bars, scroll areas.
+    Windows and macOS hand Qt their dark theme; Linux (WSL above all) often has none, and Qt drew those white."""
+    P = QtGui.QPalette
+    pal = P()
+    for role, col in ((P.Window, C["bg"]), (P.WindowText, C["text"]), (P.Base, C["panel"]), (P.AlternateBase, "#2d2d2d"),
+                      (P.Text, C["text"]), (P.Button, C["panel2"]), (P.ButtonText, C["text"]), (P.Highlight, "#6b4a22"),
+                      (P.HighlightedText, "#ffffff"), (P.ToolTipBase, C["panel2"]), (P.ToolTipText, C["text"]),
+                      (P.PlaceholderText, C["dim"]), (P.Link, C["accent"]), (P.BrightText, "#ffffff"), (P.Light, "#4a4a4a"),
+                      (P.Midlight, "#3f3f3f"), (P.Mid, "#2c2c2c"), (P.Dark, "#1e1e1e"), (P.Shadow, "#111111")):
+        pal.setColor(role, QtGui.QColor(col))
+    for role in (P.WindowText, P.Text, P.ButtonText):
+        pal.setColor(P.Disabled, role, QtGui.QColor("#5e5e5e"))
+    return pal
+
+
 def make_icon():
     """Grey tile, orange JK and a strip of chunks (orange, green, orange), drawn at every size Windows asks for."""
     icon = QtGui.QIcon()
@@ -8618,6 +8694,7 @@ def main():
     app.setApplicationName("JKrender")
     app.setWindowIcon(make_icon())
     app.setStyle("Fusion")
+    app.setPalette(dark_palette())
     app.setStyleSheet(STYLE)
     win = MainWindow(restored[0]["job"] if restored else args[0], exit_when_done=alone, restoring=bool(restored))
     going = []

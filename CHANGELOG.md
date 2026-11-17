@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.99.65 — 2026-11-17
+
+- Linux: dialogs, message boxes, Test this script, scroll bars and the Settings scroll area are dark, as on Windows and macOS. JKrender now sets its own dark palette everywhere; Linux (WSL above all) has no dark theme to hand Qt, so whatever the style sheet does not paint was white.
+- Linux, System: the GPU and VRAM columns show each Nuke process's GPU use and memory from `nvidia-smi` (pmon and the compute apps), on a Linux with an NVIDIA card. Under WSL the NVIDIA driver lists no processes, so the columns stay empty there and the GPU tile says so; the GPU and VRAM tiles show the whole card.
+- Linux: the CPU's name comes from /proc/cpuinfo (it said "x86_64"), and the render report names the distribution (and WSL) instead of the kernel build.
+- System: the Process column is a little wider, so "Process" fits with Linux's wider fonts.
+
 ## 0.99.64 — 2026-11-17
 
 - Linux: JKrender tested on Ubuntu 24.04 with Nuke 17.1 Non-commercial. The whole test suite runs there with FakeNuke, and from Nuke the JKrender menu finds Nuke's own Python with PySide6 and psutil and starts the window. `test_disk_checks` no longer expects a pixel check where numpy and OpenEXR are not installed yet (a fresh Linux): Nuke offers them at its first start, as on Windows and macOS.
