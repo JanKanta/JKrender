@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.99.69 — 2026-11-17
+
+- CONTRIBUTING.md for anyone who wants to change JKrender: which file does what, the platforms, running the tests without a Nuke licence, what to keep and what was removed on purpose, how to send a change.
+- CLAUDE.md holds for any contributor's Claude; the maintainer's own machines and release steps are in a part of their own at the end.
+- tests/README.md lists every test, Linux's checks too.
+
 ## 0.99.68 — 2026-11-17
 
 - INSTALL.txt: on macOS, too, JKrender offers ffmpeg at the first Nuke start; it no longer says to install it with brew first (an ffmpeg the Mac already has is still used first).
