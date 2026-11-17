@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.67 — 2026-11-17
+
+- Linux: the first Nuke start offers ffmpeg, as on Windows and macOS, when the PC has none: BtbN's LGPL shared build for Linux (about 63 MB, a .tar.xz checked against the SHA-256 the release lists), unpacked into lib/ffmpeg with ffmpeg and ffprobe in bin/ and the libraries they load in lib/ (about 160 MB). No sudo is needed. It is unpacked with the system's tar, since Nuke's Python on Linux has no lzma module, and ffprobe has to run before the folder appears. When the download fails, the message says `sudo apt install ffmpeg`. Tried for real on Ubuntu 24.04: a ProRes made with it reads back 50 frames at 25 fps.
+
 ## 0.99.66 — 2026-11-17
 
 - Linux: the sound when a render ends plays, through paplay (PulseAudio and PipeWire, WSL too), pw-play or aplay, whichever the PC has; it was silent there (only Windows and macOS had a player).

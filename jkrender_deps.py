@@ -21,6 +21,7 @@ import json
 import shutil
 import subprocess
 import sys
+import re
 import tempfile
 import zipfile
 
@@ -147,7 +148,7 @@ def _strip(target):
 # ----------------------------------------------------------------------------
 # ffmpeg
 # ----------------------------------------------------------------------------
-FFMPEG_MB = 77 if sys.platform == "win32" else 60  # Windows: the zip of the LGPL shared build; macOS: both zips, 9.0
+FFMPEG_MB = {"win32": 77, "darwin": 60}.get(sys.platform, 63)  # the download: Windows and Linux the LGPL shared build, macOS both zips
 FFMPEG_RELEASE = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
 FFMPEG_MAC = "https://ffmpeg.martin-riedl.de/"
 FFMPEG_TOOLS = ("ffmpeg", "ffprobe")
@@ -162,10 +163,16 @@ def ffmpeg_dirs():
     return [os.path.join(HERE, "lib", "ffmpeg"), os.path.join(os.path.expanduser("~"), ".jkrender", "lib", "ffmpeg")]
 
 
+def _tool_in(folder, name):
+    """ffmpeg / ffprobe in JKrender's own ffmpeg folder: in bin/ on Linux (its libraries in lib/ beside it), else at the top."""
+    in_bin = os.path.join(folder, "bin", name)
+    return in_bin if os.path.isfile(in_bin) else os.path.join(folder, _exe(name))
+
+
 def ffmpeg_installed():
     """JKrender's own ffmpeg folder, with both programs in it, or None."""
     for folder in ffmpeg_dirs():
-        if all(os.path.isfile(os.path.join(folder, _exe(n))) for n in FFMPEG_TOOLS):
+        if all(os.path.isfile(_tool_in(folder, n)) for n in FFMPEG_TOOLS):
             return folder
     return None
 
@@ -186,7 +193,7 @@ def find_tool(name):
     found = system_tool(name)
     if not found:
         folder = ffmpeg_installed()
-        found = os.path.join(folder, _exe(name)) if folder else None
+        found = _tool_in(folder, name) if folder else None
     return found
 
 
@@ -212,20 +219,23 @@ def _version_key(name):
         return ()
 
 
-def pick_ffmpeg(checksums):
-    """From the release's checksums.sha256 text: (file name, sha256) of the newest release build of the Windows LGPL
-    shared ffmpeg, or the master build when no release build is listed. None when there is neither."""
+def pick_ffmpeg(checksums, build="win64"):
+    """From the release's checksums.sha256 text: (file name, sha256) of the newest release build of the LGPL shared
+    ffmpeg for Windows ("win64", a .zip) or Linux ("linux64", a .tar.xz), or the master build when no release build is
+    listed. None when there is neither."""
+    ext = ".zip" if build == "win64" else ".tar.xz"
     found = {}
     for line in checksums.splitlines():
         parts = line.split()
         if len(parts) == 2 and len(parts[0]) == 64:
             found[parts[1].lstrip("*")] = parts[0].lower()
-    named = [n for n in found if n.startswith("ffmpeg-n") and "-win64-lgpl-shared-" in n and n.endswith(".zip")]
+    named = [n for n in found if n.startswith("ffmpeg-n") and "-%s-lgpl-shared-" % build in n and n.endswith(ext)]
     if named:
         best = max(named, key=_version_key)
         return best, found[best]
-    if "ffmpeg-master-latest-win64-lgpl-shared.zip" in found:
-        return "ffmpeg-master-latest-win64-lgpl-shared.zip", found["ffmpeg-master-latest-win64-lgpl-shared.zip"]
+    master = "ffmpeg-master-latest-%s-lgpl-shared%s" % (build, ext)
+    if master in found:
+        return master, found[master]
     return None
 
 
@@ -333,6 +343,82 @@ def _get(url, timeout=60):
     return urllib.request.urlopen(req, timeout=timeout, context=context)
 
 
+SONAME = re.compile(r"^lib\w+\.so\.\d+$")  # libavcodec.so.63: the names the programs load
+
+
+def _fetch_ffmpeg_linux(target, say, release):
+    """Linux: the newest LGPL shared build (.tar.xz), checked against the SHA-256 the release lists. Kept: bin/ffmpeg,
+    bin/ffprobe and the libraries they load in lib/, each under the name they look for (the programs find them through
+    their RPATH, $ORIGIN/../lib). ffprobe has to run before the folder appears."""
+    part = target + ".part"
+    tmp = None
+    try:
+        with _get(release + "checksums.sha256") as r:
+            picked = pick_ffmpeg(r.read().decode("utf-8", "replace"), "linux64")
+        if not picked:
+            return False, "no Linux LGPL build of ffmpeg in %s" % release
+        name, want = picked
+        say("downloading %s%s" % (release, name))
+        tmp, got, _ = _download(release + name, timeout=120)
+        if got != want:
+            return False, "%s does not match its SHA-256 (got %s, the release lists %s)" % (name, got, want)
+        shutil.rmtree(part, ignore_errors=True)
+        unpacked = part + ".x"
+        shutil.rmtree(unpacked, ignore_errors=True)
+        os.makedirs(unpacked)
+        os.makedirs(os.path.join(part, "bin"))
+        os.makedirs(os.path.join(part, "lib"))
+        # the system's tar: Nuke's Python on Linux has no lzma module, so tarfile cannot read .xz
+        env = dict(os.environ, PATH=os.pathsep.join(p for p in (os.environ.get("PATH", ""), "/usr/bin", "/bin") if p))  # tar runs xz
+        tar = shutil.which("tar", path=env["PATH"]) or "tar"
+        run = subprocess.run([tar, "-xJf", tmp, "-C", unpacked, "--no-same-owner"], capture_output=True, text=True, timeout=300,
+                             env=env)
+        if run.returncode != 0:
+            return False, "cannot unpack %s: %s" % (name, (run.stderr or "tar exit %d" % run.returncode).strip()[-300:])
+        tops = [d for d in os.listdir(unpacked) if os.path.isdir(os.path.join(unpacked, d))]
+        top = os.path.join(unpacked, tops[0]) if len(tops) == 1 else unpacked
+        root = os.path.realpath(unpacked)
+        kept = 0
+        for sub, wanted in (("bin", lambda n: n in FFMPEG_TOOLS), ("lib", SONAME.match)):
+            folder = os.path.join(top, sub)
+            for n in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+                src = os.path.realpath(os.path.join(folder, n))  # a library's symlink: the file it points to
+                if not wanted(n) or not src.startswith(root + os.sep) or not os.path.isfile(src):
+                    continue
+                dest = os.path.join(part, sub, n)
+                shutil.copyfile(src, dest)
+                os.chmod(dest, 0o755)
+                kept += 1
+        missing = [n for n in FFMPEG_TOOLS if not os.path.isfile(os.path.join(part, "bin", n))]
+        if missing:
+            return False, "%s has no %s" % (name, ", ".join(missing))
+        try:
+            run = subprocess.run([os.path.join(part, "bin", "ffprobe"), "-version"], capture_output=True, text=True, timeout=30)
+            why = "" if run.returncode == 0 else (run.stderr or run.stdout or "exit %d" % run.returncode)
+        except Exception as exc:
+            why = str(exc)
+        if why:
+            return False, "the downloaded ffprobe does not run: %s" % why.strip()[-300:]
+        with open(os.path.join(part, "SOURCE.txt"), "w", encoding="utf-8") as f:
+            f.write("%s%s\nsha256 %s\nFFmpeg is LGPL: https://ffmpeg.org/legal.html\n"
+                    "Delete this folder to remove it; JKrender then uses an ffmpeg on PATH, if there is one.\n"
+                    % (release, name, want))
+        shutil.rmtree(target, ignore_errors=True)
+        os.replace(part, target)
+        say("ffmpeg is in %s (%d files)" % (target, kept + 1))
+        return True, target
+    except Exception as exc:
+        return False, "cannot download ffmpeg: %s" % exc
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        shutil.rmtree(part, ignore_errors=True)
+        shutil.rmtree(part + ".x", ignore_errors=True)
+
+
 def fetch_ffmpeg(target, log=None, release=None):
     """Downloads ffmpeg into target. Returns (ok, message). Never raises.
 
@@ -341,6 +427,8 @@ def fetch_ffmpeg(target, log=None, release=None):
     say = log or (lambda line: None)
     if sys.platform == "darwin":
         return _fetch_ffmpeg_mac(target, say, release or FFMPEG_MAC)
+    if sys.platform.startswith("linux"):
+        return _fetch_ffmpeg_linux(target, say, release or FFMPEG_RELEASE)
     release = release or FFMPEG_RELEASE
     tmp = None
     part = target + ".part"

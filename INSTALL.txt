@@ -39,7 +39,8 @@ Linux (first version, being tested; tried on Ubuntu 24.04, also under WSL on Win
    (or download the zip from GitHub, unpack it into ~/.nuke and rename JKrender-main to JKrender).
    Update later with:  cd ~/.nuke/JKrender && git pull
 2. Add  nuke.pluginAddPath("./JKrender")  to ~/.nuke/init.py, as on Windows, and restart Nuke.
-3. ffmpeg for movies: sudo apt install ffmpeg (or your distribution's package; JKrender finds it on PATH).
+3. ffmpeg for movies: on the first start JKrender offers it, as on Windows (the LGPL build, about 63 MB to download,
+   160 MB in lib/ffmpeg; no sudo needed). An ffmpeg the PC already has (sudo apt install ffmpeg) is used first.
 4. The end sound plays through paplay, pw-play or aplay, whichever the PC has (Ubuntu has paplay).
 With an NVIDIA card System shows GPU and VRAM per Nuke process (nvidia-smi). Under WSL the driver lists no
 processes: there the tiles show the whole card only, and WSL gives Linux half the PC's RAM unless
