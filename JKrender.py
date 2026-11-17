@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.69 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.70 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.69"
+APP_VERSION = "0.99.70"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -2822,12 +2822,14 @@ class RenderEngine:
                     pass
         if self.state == "rendering":
             # Chunks go out in frame order; a retried one goes first, so a problem shows up again quickly.
-            queued = sorted((c for c in self.chunks if c.state == "queued" and self.in_scope(c)),
-                            key=lambda c: (c.attempts == 0, min(c.frames)))
+            # The queue is read again for each idle process: the rest of a chunk split at the end of a render is queued
+            # at once, and the next idle process takes it in this same tick instead of waiting for the next ones.
             for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
+                queued = sorted((c for c in self.chunks if c.state == "queued" and self.in_scope(c)),
+                                key=lambda c: (c.attempts == 0, min(c.frames)))
                 if not queued:
                     break
-                self._dispatch(w, self._tail_split(queued.pop(0)))
+                self._dispatch(w, self._tail_split(queued[0]))
             live = self._live()
             busy = sum(1 for w in live if w.state == "busy")
             loading = sum(1 for w in live if w.state in ("loading", "idle"))

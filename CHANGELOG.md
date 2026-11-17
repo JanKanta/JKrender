@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.70 — 2026-11-17
+
+- At the end of a render, when the last chunks are split so every Nuke finishes together, every idle Nuke gets its piece at once. Before, the rest of a split chunk waited for the next round, so the last Nukes in the list (W05, W06 of six) sat idle for a few tenths of a second before their last chunk: a gap in the Workers tab. `test_schedule` checks it.
+
 ## 0.99.69 — 2026-11-17
 
 - CONTRIBUTING.md for anyone who wants to change JKrender: which file does what, the platforms, running the tests without a Nuke licence, what to keep and what was removed on purpose, how to send a change.
