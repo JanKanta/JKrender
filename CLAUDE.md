@@ -13,7 +13,11 @@ JKrender is a local chunked renderer for Nuke: `JKrender.py` (the window, run in
   differences live in the code (`if sys.platform == "darwin"`, `"win32"`, `"linux"`), so a change made on one machine
   reaches the others.
 - **Windows is the main machine** and the only one that **releases** (version number, tag, CHANGELOG heading).
-- **macOS and Linux sessions** fix and test their platform, then commit and push to `main` with a message starting
+- **Linux is WSL2 Ubuntu 24.04 on the Windows PC** (user `honza`, Nuke in `~/Nuke17.1v3`, Non-commercial). The Windows
+  session fixes Linux in the Windows repo and tests it there itself: `wsl -d Ubuntu-24.04 -- bash <script.sh>` (put the
+  commands in a script file; inline quoting through PowerShell breaks). Releases stay on Windows; the WSL clone takes
+  them with `git pull`.
+- **The macOS session** (and a Linux one, if there ever is one) fixes and tests its platform, then commit and push to `main` with a message starting
   `macOS:` or `Linux:` and a line under `## Unreleased` at the top of `CHANGELOG.md`. They do not bump `APP_VERSION`
   and do not tag. The Windows session folds `## Unreleased` into the next release.
 - **Before any work:** `git pull --rebase`. **After a tested change:** commit and push at once, so the others build on it.

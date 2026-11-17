@@ -61,7 +61,11 @@ check("render done", e2.state == "done", e2.state)
 check("no frame checked while it rendered", seen["checked"] == 0, seen["checked"])
 check("every frame checked when it ended", all(fr.checks for fr in e2.frames.values()))
 order = [x[1] for x in e2.log if "Render finished" in x[1] or "Pixels checked" in x[1]]
-check("the Log: render finished, then the pixels checked", len(order) == 2 and "Render finished" in order[0], order)
+try:  # the pixel check needs numpy and OpenEXR (lib/<platform>); without them, as on a fresh Linux, there is none
+    import numpy, OpenEXR  # noqa: F401,E401
+    check("the Log: render finished, then the pixels checked", len(order) == 2 and "Render finished" in order[0], order)
+except ImportError:
+    check("the Log: render finished (no numpy / OpenEXR: no pixel check)", len(order) == 1 and "Render finished" in order[0], order)
 check("12 files written", len(files(job2)) == 12, len(files(job2)))
 
 say("Stop: what it rendered is checked")

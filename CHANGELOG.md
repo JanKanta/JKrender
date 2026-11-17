@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.64 — 2026-11-17
+
+- Linux: JKrender tested on Ubuntu 24.04 with Nuke 17.1 Non-commercial. The whole test suite runs there with FakeNuke, and from Nuke the JKrender menu finds Nuke's own Python with PySide6 and psutil and starts the window. `test_disk_checks` no longer expects a pixel check where numpy and OpenEXR are not installed yet (a fresh Linux): Nuke offers them at its first start, as on Windows and macOS.
+
 ## 0.99.63 — 2026-11-16
 
 - macOS: the first Nuke start offers ffmpeg, as on Windows, when the Mac has none (Homebrew's or the PATH's comes first): ffmpeg and ffprobe for checking and playing movies, the static builds from ffmpeg.martin-riedl.de for Apple silicon or Intel, about 60 MB, each zip checked against its published SHA-256, into lib/ffmpeg. When it fails, the message says `brew install ffmpeg`. Nuke's Python on macOS has no certificates for HTTPS (it looks for them where Foundry built it), so every download failed with CERTIFICATE_VERIFY_FAILED; downloads now use the Mac's own (/etc/ssl/cert.pem). A failed download no longer leaves an empty zip in temp.
