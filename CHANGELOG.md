@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.66 — 2026-11-17
+
+- Linux: the sound when a render ends plays, through paplay (PulseAudio and PipeWire, WSL too), pw-play or aplay, whichever the PC has; it was silent there (only Windows and macOS had a player).
+- INSTALL.txt has a Linux part: git clone into ~/.nuke, init.py, `sudo apt install ffmpeg` for movies, GPU per process and RAM under WSL.
+
 ## 0.99.65 — 2026-11-17
 
 - Linux: dialogs, message boxes, Test this script, scroll bars and the Settings scroll area are dark, as on Windows and macOS. JKrender now sets its own dark palette everywhere; Linux (WSL above all) has no dark theme to hand Qt, so whatever the style sheet does not paint was white.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.65 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.66 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.65"
+APP_VERSION = "0.99.66"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -185,11 +185,26 @@ def sound_file(name):
     return path
 
 
-def play_sound(name):
-    """Plays in the background, the window does not wait for it. macOS through afplay; elsewhere it just beeps."""
+def sound_player():
+    """The command that plays a WAV here, or None: afplay on macOS; on Linux paplay (PulseAudio and PipeWire, WSL too),
+    pw-play or aplay, whichever the PC has. Windows plays it itself (winsound)."""
     if sys.platform == "darwin":
+        return ["afplay"]
+    if sys.platform.startswith("linux"):
+        for tool in ("paplay", "pw-play", "aplay"):
+            found = shutil.which(tool)
+            if found:
+                return [found, "-q"] if tool == "aplay" else [found]
+    return None
+
+
+def play_sound(name):
+    """Plays in the background, the window does not wait for it. Windows through winsound, macOS through afplay, Linux
+    through paplay / pw-play / aplay (sound_player); with none of them it just beeps."""
+    player = sound_player()
+    if player:
         try:
-            subprocess.Popen(["afplay", str(sound_file(name))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(player + [str(sound_file(name))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
         except Exception:
             pass

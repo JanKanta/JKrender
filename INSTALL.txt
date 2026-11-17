@@ -33,3 +33,14 @@ macOS (first version, being tested)
 3. ffmpeg for movies: brew install ffmpeg (JKrender finds it in /opt/homebrew/bin or /usr/local/bin).
 On a Mac without an NVIDIA card the GPU and VRAM tiles stay empty and the VRAM rules have nothing to act on;
 the RAM rules work as on Windows. Nuke Non-commercial works there too (scripts .nknc).
+
+Linux (first version, being tested; tried on Ubuntu 24.04, also under WSL on Windows)
+1. In a terminal:  cd ~/.nuke && git clone https://github.com/JanKanta/JKrender.git
+   (or download the zip from GitHub, unpack it into ~/.nuke and rename JKrender-main to JKrender).
+   Update later with:  cd ~/.nuke/JKrender && git pull
+2. Add  nuke.pluginAddPath("./JKrender")  to ~/.nuke/init.py, as on Windows, and restart Nuke.
+3. ffmpeg for movies: sudo apt install ffmpeg (or your distribution's package; JKrender finds it on PATH).
+4. The end sound plays through paplay, pw-play or aplay, whichever the PC has (Ubuntu has paplay).
+With an NVIDIA card System shows GPU and VRAM per Nuke process (nvidia-smi). Under WSL the driver lists no
+processes: there the tiles show the whole card only, and WSL gives Linux half the PC's RAM unless
+%USERPROFILE%\.wslconfig says otherwise ([wsl2] memory=80GB).

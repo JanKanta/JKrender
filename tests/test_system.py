@@ -115,4 +115,24 @@ pal = jk.dark_palette()
 check("window grey", pal.color(pal.ColorRole.Window).name() == jk.C["bg"], pal.color(pal.ColorRole.Window).name())
 check("text light", pal.color(pal.ColorRole.WindowText).name() == jk.C["text"])
 check("fields dark", pal.color(pal.ColorRole.Base).name() == jk.C["panel"])
+say("The end sounds: a WAV each, and a player for it on every platform (Linux: paplay, pw-play or aplay)")
+import wave as _wave
+for _name in jk.SOUNDS:
+    _p = jk.sound_file(_name)
+    with _wave.open(str(_p), "rb") as _w:
+        check("%s: a stereo WAV of %.1f s" % (_name, jk.SOUNDS[_name][0]),
+              _w.getnchannels() == 2 and abs(_w.getnframes() / _w.getframerate() - jk.SOUNDS[_name][0]) < 0.01)
+_player = jk.sound_player()
+if sys.platform == "win32":
+    check("Windows: winsound plays it, no player needed", _player is None, _player)
+elif sys.platform == "darwin":
+    check("macOS: afplay", _player == ["afplay"], _player)
+elif any(jk.shutil.which(t) for t in ("paplay", "pw-play", "aplay")):
+    check("Linux: a player found", _player and os.path.basename(_player[0]) in ("paplay", "pw-play", "aplay"), _player)
+    if os.path.basename(_player[0]) == "paplay":  # silent (volume 0): the sound server takes the file
+        _r = jk.subprocess.run(_player + ["--volume=0", str(jk.sound_file("done_v4"))], capture_output=True, text=True, timeout=20)
+        check("Linux: paplay plays the done sound (at volume 0)", _r.returncode == 0, _r.stderr[-300:])
+else:
+    check("Linux without a player: none, it beeps", _player is None, _player)
+
 finish()
