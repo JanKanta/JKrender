@@ -548,7 +548,7 @@ def start_listener():
 # ----------------------------------------------------------------------------
 def _offer_downloads():
     """First start: offer, in one question, what JKrender can use but Nuke does not ship. numpy and OpenEXR for the EXR
-    preview; ffmpeg for checking and playing movies, when the PC has none of its own (Windows, macOS).
+    preview; ffmpeg for checking and playing movies, when the PC has none of its own.
 
     Each is asked once; saying no leaves a marker, and rendering works without them."""
     import jkrender_deps as deps

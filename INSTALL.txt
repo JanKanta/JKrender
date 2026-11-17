@@ -30,7 +30,8 @@ macOS (first version, being tested)
    (or download the zip from GitHub, unpack it into ~/.nuke and rename JKrender-main to JKrender).
    ~/.nuke is hidden in Finder: Cmd+Shift+G and type ~/.nuke.
 2. Add  nuke.pluginAddPath("./JKrender")  to ~/.nuke/init.py, as on Windows, and restart Nuke.
-3. ffmpeg for movies: brew install ffmpeg (JKrender finds it in /opt/homebrew/bin or /usr/local/bin).
+3. ffmpeg for movies: on the first start JKrender offers it, as on Windows (the static builds for Apple silicon
+   or Intel, about 60 MB, into lib/ffmpeg). An ffmpeg the Mac already has (brew install ffmpeg) is used first.
 On a Mac without an NVIDIA card the GPU and VRAM tiles stay empty and the VRAM rules have nothing to act on;
 the RAM rules work as on Windows. Nuke Non-commercial works there too (scripts .nknc).
 
