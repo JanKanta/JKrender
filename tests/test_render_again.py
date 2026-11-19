@@ -55,6 +55,9 @@ all_done(es)
 rendered = sorted(f for f, fr in es[1].frames.items() if fr.state == "done")
 check("sh020 rendered only 1003 and 1007", rendered == [1003, 1007], rendered)
 check("the others rendered nothing", all(not any(fr.state == "done" for fr in e.frames.values()) for e in (es[0], es[2])))
+check("and say so: Nothing to render, not 'Render finished in 0:00'",
+      all(any("Nothing to render" in x[1] for x in e.log) and not any("Render finished in 0:00" in x[1] for x in e.log)
+          for e in (es[0], es[2])), [x[1] for x in es[0].log][-3:])
 check("27 files again", sum(len(files(j)) for j in jobs) == 27)
 
 say("Cancel: nothing starts")
@@ -84,6 +87,28 @@ wait(lambda: e4.state == "done", 90)
 skipped = sorted(f for f, fr in e4.frames.items() if fr.state == "skipped")
 check("the frames from before Stop show as on disk, skipped", skipped == before, (skipped, before))
 check("all 12 on disk", len(files(job4)) == 12, len(files(job4)))
+
+say("All frames again stopped half way, Render: Go on renders the frames left too, though the old ones are on disk")
+# 0.99.71: before, Only missing was the only way on and the default; it took the old frames for done and the render
+# "finished in 0:00" with most of the shot still the old version.
+asked.clear()
+pick([e4])
+answer("All frames again", asked)
+win._start()
+wait(lambda: sum(1 for fr in e4.frames.values() if fr.state == "done") >= 4, 60)
+win._stop()
+wait(lambda: e4.pending_checks == 0, 10)
+new = sorted(f for f, fr in e4.frames.items() if fr.state == "done")
+left = 12 - len(new)
+asked.clear()
+pick([e4])
+answer("Go on (%d left)" % left, asked)
+win._start()
+check("it asked about going on", len(asked) == 1 and "every frame again" in asked[0], asked)
+wait(lambda: e4.state == "done", 90)
+second = sorted(f for f, fr in e4.frames.items() if fr.state == "done")
+check("the frames left were rendered, not skipped as on disk", second == sorted(set(range(1001, 1013)) - set(new)), (second, new))
+check("the frames from before Stop show as skipped", sorted(f for f, fr in e4.frames.items() if fr.state == "skipped") == new)
 
 say("Card numbers by place: a card closed leaves no gap")
 

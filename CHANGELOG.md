@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.99.71 — 2026-11-19
+
+- Render after Stop of an *All frames again* run asks to **Go on (N left)**, and that is the default: the frames the stopped run had not reached are rendered too. Before, only *Only missing* was offered (and the default); it took the old versions still on disk for done, so the render "finished in 0:00" with most of the shot still the old one.
+- A run that has nothing to render says "Nothing to render: all N frames are already on disk and pass the check" instead of "Render finished in 0:00. N frames". `test_render_again` checks both.
+
 ## 0.99.70 — 2026-11-17
 
 - At the end of a render, when the last chunks are split so every Nuke finishes together, every idle Nuke gets its piece at once. Before, the rest of a split chunk waited for the next round, so the last Nukes in the list (W05, W06 of six) sat idle for a few tenths of a second before their last chunk: a gap in the Workers tab. `test_schedule` checks it.

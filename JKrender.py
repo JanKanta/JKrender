@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.70 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.71 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.70"
+APP_VERSION = "0.99.71"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1495,6 +1495,7 @@ class RenderEngine:
         self.name = Path(job.get("script") or "render").stem  # e.g. shot_010_comp_v004
         self.write_names = ", ".join(w["name"] for w in job.get("writes", []))
         self.everything = False
+        self.run_all = False  # the last run renders every frame anew (All frames again, or going on with one after Stop)
         self.resume_state = "ready"
         self.movie_info = None  # probe_movie() of the movie file, for movie output
         self.notice = None  # (text, "ok" / "warn" / "bad") for the banner while rendering
@@ -1606,7 +1607,11 @@ class RenderEngine:
             self.note("The whole range is already rendered and passes the check: nothing to render", "ok")
 
     def start(self, everything=False):
-        """everything=True renders the whole range again, including frames already on disk."""
+        """everything=True renders the whole range again, including frames already on disk. everything="continue" goes on
+        with a stopped run that rendered every frame anew: the frames it had not rendered yet are rendered too, even
+        though an older version of them is on disk."""
+        cont = everything == "continue" and self.run_all and self.state in ("stopped", "failed")
+        everything = everything is True
         self.place_offset = 0
         if self.state in ("rendering", "starting", "finishing"):
             return
@@ -1642,7 +1647,13 @@ class RenderEngine:
             for fr in self.frames.values():
                 if fr.state == "done":
                     fr.state = "skipped"  # on disk already (an earlier run, before Stop, or found there): not this run's, dark green
-            self.scan_disk(skip=True)  # frames already on disk and passing the check are never rendered twice
+            if cont:
+                # what is on disk of the frames left is the old version the stopped run was replacing: render them too
+                self.note("Rendering every frame again goes on: %d frame(s) left"
+                          % sum(1 for fr in self.frames.values() if fr.state == "queued"), "ok")
+            else:
+                self.scan_disk(skip=True)  # frames already on disk and passing the check are never rendered twice
+        self.run_all = everything or cont
         self.before = {}
         if all(w.state == "gone" for w in self.workers.values()):
             # Stop closed every Nuke; the new run starts its own processes from W01 on a fresh timeline.
@@ -2925,9 +2936,13 @@ class RenderEngine:
             self.state = "ready"  # just the picked frames were rendered; Render does the rest
         else:
             self.state = "done"
-        self.note("Render %s in %s. %d frames, %d bad on disk." % (
-            "finished" if not failed else "ended with failures", fmt_secs(self.elapsed()), len(self.frames), len(bad)),
-            "err" if failed or bad else "ok")
+        if not failed and not bad and not any(fr.state == "done" for fr in self.frames.values()):
+            # this run rendered nothing: every frame was on disk already (dark green)
+            self.note("Nothing to render: all %d frames are already on disk and pass the check" % len(self.frames), "ok")
+        else:
+            self.note("Render %s in %s. %d frames, %d bad on disk." % (
+                "finished" if not failed else "ended with failures", fmt_secs(self.elapsed()), len(self.frames), len(bad)),
+                "err" if failed or bad else "ok")
         self.write_report()
         if self.settings.get("check_pixels", True) and not self.job.get("test_out"):
             self.check_all_pixels()
@@ -7238,19 +7253,28 @@ class MainWindow(QtWidgets.QMainWindow):
     def _ask_render_again(self, engines):
         """Render again on renders with frames on disk: True renders every frame anew, False only those missing or
         broken on disk (the rest are skipped, dark green), None cancels. One question for all of them. A movie is one file:
-        always all of it, so it is not asked about."""
+        always all of it, so it is not asked about. After Stop of a run that rendered every frame anew, "continue" goes
+        on with it (the default): what is on disk of the frames it had not reached is still the old version."""
         engines = [e for e in engines if not e.movie]
         on_disk, total = sum(self._on_disk(e) for e in engines), sum(len(e.frames) for e in engines)
         of = " of %d renders" % len(engines) if len(engines) > 1 else ""
-        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "JKrender",
-                                    "%d of %d frames%s were on disk at the last check.\n\nRender every frame again, or only the frames "
-                                    "missing or broken on disk?" % (on_disk, total, of), parent=self)
+        going = bool(engines) and all(e.run_all and e.state in ("stopped", "failed") for e in engines)
+        new = sum(1 for e in engines for fr in e.frames.values() if fr.state == "done")
+        if going:
+            text = ("The stopped render%s was rendering every frame again: %d of %d frames are new, the other %d on disk are "
+                    "still the old ones.\n\nGo on with the %d left, render only the frames missing or broken on disk, or "
+                    "start every frame again?" % (of, new, total, total - new, total - new))
+        else:
+            text = ("%d of %d frames%s were on disk at the last check.\n\nRender every frame again, or only the frames "
+                    "missing or broken on disk?" % (on_disk, total, of))
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "JKrender", text, parent=self)
+        cont = box.addButton("Go on (%d left)" % (total - new), QtWidgets.QMessageBox.AcceptRole) if going else None
         missing = box.addButton("Only missing", QtWidgets.QMessageBox.AcceptRole)
         every = box.addButton("All frames again", QtWidgets.QMessageBox.AcceptRole)
         box.addButton(QtWidgets.QMessageBox.Cancel)
-        box.setDefaultButton(missing)
+        box.setDefaultButton(cont or missing)
         box.exec()
-        return {missing: False, every: True}.get(box.clickedButton())
+        return {missing: False, every: True, cont: "continue"}.get(box.clickedButton())
 
     def _start(self):
         # every picked render that is not running, finished ones too: Render again on several at once
