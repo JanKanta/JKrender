@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.72 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.73 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.72"
+APP_VERSION = "0.99.73"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1494,6 +1494,9 @@ class RenderEngine:
         self.number = 1
         self.name = Path(job.get("script") or "render").stem  # e.g. shot_010_comp_v004
         self.write_names = ", ".join(w["name"] for w in job.get("writes", []))
+        # what the render writes, by its file name (shot_010_comp_v004.####.exr): the name of the Write node says little
+        self.output_names = ", ".join(os.path.basename((w.get("output") or "").replace("\\", "/")) or w["name"]
+                                      for w in job.get("writes", []))
         self.everything = False
         self.run_all = False  # the last run renders every frame anew (All frames again, or going on with one after Stop)
         self.resume_state = "ready"
@@ -1794,7 +1797,7 @@ class RenderEngine:
         state = "paused" if w.user_paused else w.state
         # where it goes after this chunk
         if w.leave and getattr(w, "leave_to", None) is not None:
-            return "%s → move to %s" % (state, getattr(w.leave_to, "write_names", "") or "render %d" % w.leave_to.number)
+            return "%s → move to %s" % (state, getattr(w.leave_to, "output_names", "") or "render %d" % w.leave_to.number)
         fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
         # when it goes (after the frame or the chunk) is in Settings > Reload after; the Log and the chunk's tooltip say it
         if not fresh and state == "busy" and not (w.retire or w.handover or w.leave) and self._wait_due(w, peek=True):
@@ -2300,7 +2303,7 @@ class RenderEngine:
                    for x in c.frames):
             return False  # its last frame: the chunk's end handles it
         if w.leave and getattr(w, "leave_to", None) is not None:
-            why = "goes on to %s" % (w.leave_to.write_names or "render %d" % w.leave_to.number)
+            why = "goes on to %s" % (getattr(w.leave_to, "output_names", "") or "render %d" % w.leave_to.number)
         elif w.why_leaving:
             why = "closes (%s)" % w.why_leaving
         else:
@@ -5154,7 +5157,8 @@ class RenderCard(QtWidgets.QFrame):
         self.close_btn.setStyleSheet("QToolButton { border: none; color: %s; font-size: 12pt; background: transparent; }"
                                      "QToolButton:hover { color: %s; }" % (C["dim"], C["text"]))
         self.close_btn.clicked.connect(lambda: self.closeRequested.emit(self.engine))
-        self.write = QtWidgets.QLabel(engine.write_names)
+        self.write = QtWidgets.QLabel(engine.output_names)
+        self.write.setToolTip("%s\n%s" % (engine.write_names, "\n".join(p for _, p in engine.outputs)))
         self.write.setStyleSheet("color: %s; background: transparent;" % C["dim"])
         self.bar = QtWidgets.QProgressBar()
         self.bar.setTextVisible(False)
@@ -5873,7 +5877,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if e.state in ("rendering", "paused", "finishing", "waiting"):
                 self.select(e)
                 self._bring_to_front()
-                QtWidgets.QMessageBox.information(self, "JKrender", "%s is already rendering here." % e.write_names)
+                QtWidgets.QMessageBox.information(self, "JKrender", "%s is already rendering here." % e.output_names)
                 return
             self._remove_engine(e)  # the newer send wins: it carries a fresh snapshot of the script
         e = self.manager.add(job, job_path.parent)
@@ -7798,7 +7802,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
                       fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
                       self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else "",
-                      ", ".join(str(x.get("name") or "") for x in x.job.get("writes") or [])]
+                      x.output_names]  # the file it writes, not the Write node's name
             for col, v in enumerate(values):
                 item = t.item(row, col)
                 if item is None:

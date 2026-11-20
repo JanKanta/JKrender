@@ -121,8 +121,8 @@ say("A process going to another render after its chunk")
 import types
 mover = next(iter(e.workers.values()))
 keep = (mover.state, mover.leave, getattr(mover, "leave_to", None), mover.retire, mover.handover, mover.user_paused)
-mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = "busy", True, types.SimpleNamespace(number=2, name="sh020", write_names="RENDER_EXR.Write3"), False, False, False
-check("State: busy → move to RENDER_EXR.Write3, the Write of the render it goes to", e.worker_state(mover) == "busy → move to RENDER_EXR.Write3", e.worker_state(mover))
+mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = "busy", True, types.SimpleNamespace(number=2, name="sh020", output_names="sh020_comp.####.exr"), False, False, False
+check("State: busy → move to sh020_comp.####.exr, the file of the render it goes to", e.worker_state(mover) == "busy → move to sh020_comp.####.exr", e.worker_state(mover))
 mover.state, mover.leave, mover.leave_to, mover.retire, mover.handover, mover.user_paused = keep
 say("Reload after: Frame: a process handing its place to another render goes after its frame, not its chunk")
 for after in ("frame", "chunk"):

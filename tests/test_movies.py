@@ -1,5 +1,5 @@
 """Movies: each a process of its own with every thread, beside the places of Processes (0.99.55); an image sequence keeps
-all its places when a movie starts, with Reload after Frame and Chunk; System rows; the Write column in System."""
+all its places when a movie starts, with Reload after Frame and Chunk; System rows; the Write column in System, with the file each render writes."""
 from common import *
 
 jk, app = start({"processes": 2, "threads": 2, "ram": 2, "max_renders": 1, "chunk_auto": False, "chunk_size": 4})
@@ -43,7 +43,7 @@ check("right after Render", head.visualIndex(col) == head.visualIndex(names.inde
 win._slow_tick()
 pump(2)
 writes = {t.item(r, col).text() for r in range(t.rowCount()) if t.item(r, col) and t.item(r, 1) and t.item(r, 1).text()}
-check("it names the Write", writes == {"Write1"}, writes)
+check("it names the file each render writes, not the Write node (0.99.73)", writes and all(w.endswith(".mov") for w in writes) and "Write1" not in writes, writes)
 check("columns CPU, GPU and VRAM (CPU used and GPU with VRAM in it before 0.99.51)",
       "CPU" in names and "GPU" in names and "VRAM" in names and "CPU used" not in names
       and head.visualIndex(names.index("VRAM")) == head.visualIndex(names.index("GPU")) + 1, names)

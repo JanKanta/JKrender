@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.73 — 2026-11-20
+
+- A render is named by the file it writes (shot_010_comp_v004.####.exr), not by its Write node (RENDER_EXR.Write3): under the script name on its card, in the Write column of System, in a process's State ("→ move to ...") and in "already rendering here". The card's tooltip still gives the Write node and the whole path. `test_movies` and `test_process_menu` check it.
+
 ## 0.99.72 — 2026-11-20
 
 - Output in a low window: the player bar (previous, play, next, the slider) and the frame info were drawn over the picture. The preview took "Ignored" as its size policy, and with the frame info's word wrap Qt counted 0 px for it. Now the picture takes what is left, never less than its minimum, and the Output page scrolls when the pane is lower or narrower than it needs. `test_output_layout` checks it at three window sizes.
