@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.75 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.76 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.75"
+APP_VERSION = "0.99.76"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -84,7 +84,8 @@ DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "check_frames": Tru
                     "vram_guard": True, "reload_ram": 95, "reload_vram": 95, "reload_after": "frame", "kill_ram": 98, "kill_vram": 98,
                     "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
                     "slate": True,
-                    "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short"}
+                    "auto_chunk": True, "hide_old_done": True, "end_sound": True, "fresh_after_chunk": "short",
+                    "preview_format": True}
 # Reload Nuke (setting fresh_after_chunk): a process closes after its chunk and a new one opens the script again, with its
 # RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
 FRESH_MODES = (("short", "When memory is full"), ("always", "After every chunk"))  # no Never since 0.99.41
@@ -1115,9 +1116,10 @@ def check_pixels(paths):
     return {"nan": nan, "inf": inf, "hash": digest.hexdigest(), "blank": blank, "props": props}
 
 
-def _exr_rgb(path):
+def _exr_rgb(path, on_format=True):
     """RGB of an EXR on its format (display window): a bbox (data window) smaller than the format sits where it is on
-    black, one larger than the format (overscan) is cut to it. Before 0.99.75 the bbox alone filled the preview."""
+    black, one larger than the format (overscan) is cut to it. Before 0.99.75 the bbox alone filled the preview.
+    on_format=False: the bbox alone, so it fills the preview (a close look at a small element; right click on it)."""
     import numpy as np
     import OpenEXR
 
@@ -1135,6 +1137,8 @@ def _exr_rgb(path):
             else:
                 a = np.asarray(next(iter(ch.values())).pixels, dtype=np.float32)
                 a = np.repeat(a[:, :, None], 3, axis=2) if a.ndim == 2 else a[:, :, :3]
+        if not on_format:
+            return a
         try:
             header = f.header()
             (dx0, dy0), (dx1, dy1) = header["dataWindow"]
@@ -1154,13 +1158,13 @@ def _exr_rgb(path):
     return out
 
 
-def preview_image(path, max_w, max_h):
-    """QImage of a rendered frame; EXR is shown linear -> sRGB, clipped to 0-1."""
+def preview_image(path, max_w, max_h, on_format=True):
+    """QImage of a rendered frame; EXR is shown linear -> sRGB, clipped to 0-1, on its format (or its bbox alone)."""
     if path.lower().endswith(".exr"):
         try:
             import numpy as np
 
-            a = _exr_rgb(path)
+            a = _exr_rgb(path, on_format)
         except ImportError:
             raise RuntimeError("the EXR preview needs numpy and OpenEXR.\nRestart Nuke to download them.")
         h, w = a.shape[:2]
@@ -6929,6 +6933,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_info.setWordWrap(True)
         self.preview_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.preview.installEventFilter(self)  # double-click: big preview
+        self.preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.preview.customContextMenuRequested.connect(self._preview_menu)
         self.preview.setToolTip("Mouse wheel zooms, drag moves. Double-click fits the frame again, or, when it fits,\n"
                                 "makes the preview as big as the three panes (Esc goes back)")
         # the preview, its frame bar and the frame info in one box, so the box can move to the big view and back
@@ -7026,11 +7032,30 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.preview.zoom > 1.001 and self._preview_frame is not None:
                 self._show_frame(self._preview_frame)  # stopped while zoomed in: real pixels again
 
+    def _preview_menu(self, pos):
+        """Right click on the preview: the EXR on its whole format, or its bbox alone, filling the preview."""
+        menu = QtWidgets.QMenu(self)
+        act = menu.addAction("Show the whole format")
+        act.setCheckable(True)
+        act.setChecked(bool(self.settings.get("preview_format", True)))
+        act.setToolTip("On: an EXR whose bbox is smaller than its format sits in its place on black.\n"
+                       "Off: the bbox alone fills the preview, for a close look at a small element.")
+        menu.setToolTipsVisible(True)
+
+        def switched(on):
+            self._save_setting("preview_format", on)
+            if self._preview_frame is not None:
+                self._show_frame(self._preview_frame)
+
+        act.toggled.connect(switched)
+        menu.exec(self.preview.mapToGlobal(pos))
+
     def _frame_image(self, frame, path, full):
         """The frame's picture, at the preview's size or at its own; kept, about 300 MB of them, for a smooth second loop."""
         ratio = self.preview.devicePixelRatioF()
         size = (10 ** 6, 10 ** 6) if full else (max(200, int(self.preview.width() * ratio)), max(150, int(self.preview.height() * ratio)))
-        key = (frame, "full" if full else size, os.path.getmtime(path))
+        on_format = bool(self.settings.get("preview_format", True))
+        key = (frame, "full" if full else size, os.path.getmtime(path), on_format)
         image = self._pix_cache.get(key)
         if image is not None:
             self._pix_cache.move_to_end(key)
@@ -7038,7 +7063,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if full:
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            image = preview_image(path, *size)
+            image = preview_image(path, *size, on_format=on_format)
         finally:
             if full:
                 QtWidgets.QApplication.restoreOverrideCursor()

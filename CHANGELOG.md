@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.76 — 2026-11-20
+
+- Right click on the Output preview: **Show the whole format**, on by default. Off, the bbox of an EXR fills the preview alone, for a close look at a small element (as before 0.99.75). It is remembered. `test_exr_preview` checks both and the menu.
+
 ## 0.99.75 — 2026-11-20
 
 - The Output preview and its frame player show an EXR on its format (display window), not on its bbox (data window). A bbox smaller than the format sits in its place on black instead of being stretched over the whole preview; a bbox larger than the format (overscan) is cut to it. Movies were always whole frames. `test_exr_preview` checks both cases.

@@ -25,7 +25,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
 | `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the File column in System, and saved columns renamed |
 | `test_output_layout` | Output in a low window: the player bar and the frame info stay under the preview, never on it |
-| `test_exr_preview` | the EXR preview shows the format: a smaller bbox in its place on black, an overscan bbox cut to the format |
+| `test_exr_preview` | the EXR preview shows the format: a smaller bbox in its place on black, an overscan bbox cut to the format; the right-click switch to the bbox alone |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a crash never turns the card red (also while it renders), red with a broken frame |
 | `test_ffmpeg_fetch` | ffmpeg fetched on the first start from a release served locally: the newest LGPL build, only the programs and DLLs kept, nothing left on a wrong SHA-256, asked once together with numpy, the PC's own ffmpeg first; macOS (both zips) and Linux (the .tar.xz, programs in bin/, libraries in lib/) as well |
