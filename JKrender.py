@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.71 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.72 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.71"
+APP_VERSION = "0.99.72"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -6763,8 +6763,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _output_tab(self):
         """Frames list for image sequences; one movie file with its details for MOV / MP4 / MXF."""
         self.out_pages = QtWidgets.QStackedWidget()
-        self.out_pages.addWidget(self._frames_page())
-        self.out_pages.addWidget(self._movie_page())
+        for page in (self._frames_page(), self._movie_page()):
+            # In a low window the pane is lower than what the page needs (preview, player bar, frame info, list): the page
+            # then scrolls instead of the player bar and the info being drawn over the picture.
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidget(page)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.out_pages.addWidget(scroll)
         return self.out_pages
 
     def _movie_page(self):
@@ -6884,10 +6890,11 @@ class MainWindow(QtWidgets.QMainWindow):
         right = QtWidgets.QVBoxLayout()
         self.preview = ZoomView()  # zooms like the movie player
         self.preview.set_text("Click a frame to see it")
-        # Small minimum and an ignored size hint: in a low panel the picture shrinks instead of
-        # being drawn over the frame info under it.
+        # Small minimum, and it takes what is left: in a low panel the picture shrinks instead of being drawn over the
+        # frame info under it. Not "Ignored": with the frame info's word wrap, Qt then counted 0 px for the picture
+        # and the player bar and the info landed on it (0.99.72).
         self.preview.setMinimumSize(200, 120)
-        self.preview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Ignored)
+        self.preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.preview.zoomed_in.connect(lambda: self._preview_frame is not None and self._show_frame(self._preview_frame))
         self.preview_info = QtWidgets.QLabel("")
         self.preview_info.setObjectName("dim")

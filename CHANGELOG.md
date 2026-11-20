@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.72 — 2026-11-20
+
+- Output in a low window: the player bar (previous, play, next, the slider) and the frame info were drawn over the picture. The preview took "Ignored" as its size policy, and with the frame info's word wrap Qt counted 0 px for it. Now the picture takes what is left, never less than its minimum, and the Output page scrolls when the pane is lower or narrower than it needs. `test_output_layout` checks it at three window sizes.
+
 ## 0.99.71 — 2026-11-19
 
 - Render after Stop of an *All frames again* run asks to **Go on (N left)**, and that is the default: the frames the stopped run had not reached are rendered too. Before, only *Only missing* was offered (and the default); it took the old versions still on disk for done, so the render "finished in 0:00" with most of the shot still the old one.
