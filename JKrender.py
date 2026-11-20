@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.74 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.75 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.74"
+APP_VERSION = "0.99.75"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -1116,20 +1116,42 @@ def check_pixels(paths):
 
 
 def _exr_rgb(path):
+    """RGB of an EXR on its format (display window): a bbox (data window) smaller than the format sits where it is on
+    black, one larger than the format (overscan) is cut to it. Before 0.99.75 the bbox alone filled the preview."""
     import numpy as np
     import OpenEXR
 
     with OpenEXR.File(path) as f:
         ch = f.channels()
+        a = None
         for key in ("RGBA", "RGB"):
             if key in ch:
-                a = np.asarray(ch[key].pixels, dtype=np.float32)
-                return a[:, :, :3]
-        names = [k for c in "RGB" for k in ch if k == c or k.endswith("." + c)]
-        if len(names) >= 3:
-            return np.stack([np.asarray(ch[k].pixels, dtype=np.float32) for k in names[:3]], -1)
-        a = np.asarray(next(iter(ch.values())).pixels, dtype=np.float32)
-        return np.repeat(a[:, :, None], 3, axis=2) if a.ndim == 2 else a[:, :, :3]
+                a = np.asarray(ch[key].pixels, dtype=np.float32)[:, :, :3]
+                break
+        if a is None:
+            names = [k for c in "RGB" for k in ch if k == c or k.endswith("." + c)]
+            if len(names) >= 3:
+                a = np.stack([np.asarray(ch[k].pixels, dtype=np.float32) for k in names[:3]], -1)
+            else:
+                a = np.asarray(next(iter(ch.values())).pixels, dtype=np.float32)
+                a = np.repeat(a[:, :, None], 3, axis=2) if a.ndim == 2 else a[:, :, :3]
+        try:
+            header = f.header()
+            (dx0, dy0), (dx1, dy1) = header["dataWindow"]
+            (fx0, fy0), (fx1, fy1) = header["displayWindow"]
+        except Exception:
+            return a
+    dx0, dy0, fx0, fy0, fx1, fy1 = (int(v) for v in (dx0, dy0, fx0, fy0, fx1, fy1))
+    fw, fh = fx1 - fx0 + 1, fy1 - fy0 + 1
+    if (dx0, dy0) == (fx0, fy0) and a.shape[1] == fw and a.shape[0] == fh:
+        return a  # the bbox is the format
+    out = np.zeros((fh, fw, 3), dtype=np.float32)
+    ox, oy = dx0 - fx0, dy0 - fy0  # where the bbox starts on the format
+    x0, y0 = max(0, ox), max(0, oy)
+    x1, y1 = min(fw, ox + a.shape[1]), min(fh, oy + a.shape[0])
+    if x1 > x0 and y1 > y0:
+        out[y0:y1, x0:x1] = a[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+    return out
 
 
 def preview_image(path, max_w, max_h):

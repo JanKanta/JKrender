@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.75 — 2026-11-20
+
+- The Output preview and its frame player show an EXR on its format (display window), not on its bbox (data window). A bbox smaller than the format sits in its place on black instead of being stretched over the whole preview; a bbox larger than the format (overscan) is cut to it. Movies were always whole frames. `test_exr_preview` checks both cases.
+
 ## 0.99.74 — 2026-11-20
 
 - System: the columns Render and Write are now **Script** and **File**: the script a process renders and the file it writes. A column order or hidden columns saved before come back under the new names. `test_movies` checks both.
