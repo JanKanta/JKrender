@@ -23,7 +23,7 @@ and skips itself while any Nuke is open. `JKRENDER_SOURCE=<folder>` runs the tes
 | `test_schedule` | at the end of a render a split chunk reaches every idle process in the same tick |
 | `test_script_test` | Test this script: setups, the same frames for each, Add / Edit test, both rounds, a winner, Use these settings |
 | `test_settings` | defaults, saving, Reset, settings moved from older versions, a movie shows 1 process, the slate is the frame before the Framerange |
-| `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the Write column in System |
+| `test_movies` | movies like other renders, within the places of Processes, one process each with every thread; the File column in System, and saved columns renamed |
 | `test_output_layout` | Output in a low window: the player bar and the frame info stay under the preview, never on it |
 | `test_process_menu` | the process menu: one process less while paused, while closing for a limit, while waiting to come back |
 | `test_robust` | a Nuke process crashing mid-chunk, JKrender going down and coming back, a second JKrender handing over, Czech letters in paths, a crash never turns the card red (also while it renders), red with a broken frame |

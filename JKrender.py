@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JKrender 0.99.73 — one Nuke render, split into chunks across several Nuke processes.
+"""JKrender 0.99.74 — one Nuke render, split into chunks across several Nuke processes.
 
 Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
 
@@ -53,7 +53,7 @@ try:
 except ImportError:
     psutil = None
 
-APP_VERSION = "0.99.73"
+APP_VERSION = "0.99.74"
 HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
 OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
 SETTINGS_FILE = HOME_DIR / "settings.json"
@@ -100,8 +100,8 @@ NUKE_PORTS = range(54340, 54350)  # where open Nukes listen (LISTEN_PORTS in JKr
 SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
 # Windows Subsystem for Linux: the NVIDIA driver there lists no processes, so GPU and VRAM per process stay empty
 IS_WSL = sys.platform.startswith("linux") and "microsoft" in (os.uname().release if hasattr(os, "uname") else "").lower()
-SYSTEM_WIDTHS = {"Process": 60, "Render": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
-SYSTEM_ORDER = ["Process", "Render", "Write", "PID", "State", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Last frame", "Avg frame",
+SYSTEM_WIDTHS = {"Process": 60, "Script": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
+SYSTEM_ORDER = ["Process", "Script", "File", "PID", "State", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Last frame", "Avg frame",
                 "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
 FRESH_HOLD = 10  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
 RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
@@ -231,6 +231,8 @@ def read_settings():
             if key == "system_order" and "VRAM" not in names and "GPU" in names:
                 names.insert(names.index("GPU") + 1, "VRAM")
             settings[key] = names
+        if isinstance(names, list) and ("Render" in names or "Write" in names):  # 0.99.74: the columns are Script and File
+            settings[key] = [{"Render": "Script", "Write": "File"}.get(n, n) for n in names]
     if settings.get("fresh_after_chunk") not in ("short", "always"):  # 0.99.41: no Never; the memory rules need it
         settings["fresh_after_chunk"] = "short"
     setups = settings.get("test_setups")
@@ -7112,8 +7114,8 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addWidget(self.cores)
         self.worker_table = QtWidgets.QTableWidget(0, 19)
         self.worker_table.setHorizontalHeaderLabels(
-            ["Process", "Render", "PID", "State", "Chunk", "Frame", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Avg frame",
-             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame", "Write"])
+            ["Process", "Script", "PID", "State", "Chunk", "Frame", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Avg frame",
+             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame", "File"])
         self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
         self._worker_rows = []
@@ -7143,8 +7145,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.worker_table.setColumnWidth(names.index(name), width)
         self._header_defaults = {"system": head.saveState()}
         order = list(self.settings.get("system_order", SYSTEM_ORDER))
-        if "Write" not in order:  # saved before it was there: after Render
-            order.insert(order.index("Render") + 1 if "Render" in order else 1, "Write")
+        if "File" not in order:  # saved before it was there: after Script
+            order.insert(order.index("Script") + 1 if "Script" in order else 1, "File")
         arrange(order, set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
         head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
         head.sectionMoved.connect(lambda *_: self._save_column_order())

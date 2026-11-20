@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.99.74 — 2026-11-20
+
+- System: the columns Render and Write are now **Script** and **File**: the script a process renders and the file it writes. A column order or hidden columns saved before come back under the new names. `test_movies` checks both.
+
 ## 0.99.73 — 2026-11-20
 
 - A render is named by the file it writes (shot_010_comp_v004.####.exr), not by its Write node (RENDER_EXR.Write3): under the script name on its card, in the Write column of System, in a process's State ("→ move to ...") and in "already rendering here". The card's tooltip still gives the Write node and the whole path. `test_movies` and `test_process_menu` check it.

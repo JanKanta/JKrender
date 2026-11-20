@@ -1,5 +1,5 @@
 """Movies: each a process of its own with every thread, beside the places of Processes (0.99.55); an image sequence keeps
-all its places when a movie starts, with Reload after Frame and Chunk; System rows; the Write column in System, with the file each render writes."""
+all its places when a movie starts, with Reload after Frame and Chunk; System rows; the File column in System, with the file each render writes."""
 from common import *
 
 jk, app = start({"processes": 2, "threads": 2, "ram": 2, "max_renders": 1, "chunk_auto": False, "chunk_size": 4})
@@ -32,14 +32,23 @@ check("with every thread: -m %d" % cpu, cmd[cmd.index("-m") + 1] == str(cpu), cm
 check("only movies: W01, W02, W03", sorted(w.id for e in mov for w in e.workers.values() if w.state != "gone") == [1, 2, 3],
       sorted(w.id for e in mov for w in e.workers.values()))
 
-say("System: a Write column after Render, shown")
+say("System: a File column after Script, shown (Write and Render before 0.99.74)")
 t = win.worker_table
 head = t.horizontalHeader()
 names = [t.horizontalHeaderItem(c).text() for c in range(t.columnCount())]
-col = names.index("Write")
+col = names.index("File")
 check("shown", not t.isColumnHidden(col))
-check("right after Render", head.visualIndex(col) == head.visualIndex(names.index("Render")) + 1,
-      (head.visualIndex(col), head.visualIndex(names.index("Render"))))
+old = jk.SETTINGS_FILE.read_text(encoding="utf-8") if jk.SETTINGS_FILE.exists() else None
+jk.SETTINGS_FILE.write_text(json.dumps({"system_order": ["Process", "Render", "Write", "State"], "system_hidden": ["Write", "PID"]}), encoding="utf-8")
+got = jk.read_settings()
+check("saved columns from before 0.99.74 come back as Script and File", got["system_order"] == ["Process", "Script", "File", "State"]
+      and got["system_hidden"] == ["File", "PID"], (got["system_order"], got["system_hidden"]))
+if old is None:
+    jk.SETTINGS_FILE.unlink()
+else:
+    jk.SETTINGS_FILE.write_text(old, encoding="utf-8")
+check("right after Script", head.visualIndex(col) == head.visualIndex(names.index("Script")) + 1,
+      (head.visualIndex(col), head.visualIndex(names.index("Script"))))
 win._slow_tick()
 pump(2)
 writes = {t.item(r, col).text() for r in range(t.rowCount()) if t.item(r, col) and t.item(r, 1) and t.item(r, 1).text()}
