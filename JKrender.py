@@ -9805,6 +9805,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview.set_text("Click a frame to see it")
         self.preview_info.setText("")
         self.frames_model.refilter()
+        # the bar repaints on its own only while rendering or when a check reports: after a Stop nothing is left to report,
+        # so it kept the colours of the deleted frames
+        self.frame_map.update()
+        self.gantt.update()
         self._sync_controls()
         self._refresh_cards()
         self._slow_tick()

@@ -17,6 +17,7 @@ and skips itself while any Nuke is open (`JKRENDER_TESTS_BESIDE_NUKE=1` runs it 
 | Test | What it checks |
 |---|---|
 | `test_disk_checks` | a render opening with frames whole, missing, cut off, empty; Check frames says the same; frames checked when a render ends, then the pixels; Stop |
+| `test_delete_frames` | Delete after Render, Stop, Render, Stop: every frame and chunk not rendered again, and the frame bar redrawn |
 | `test_render_again` | Render again on one and on several renders, finished or stopped: Only missing, All frames again, Cancel; card numbers by place, no gaps |
 | `test_memory` | Reload Nuke at and Kill at for RAM and VRAM: closing, coming back, a full card, a card so full no frame finishes, processes stalled on a full card just under the limit, the biggest process reloading for a place that waits 15 s, Reload Nuke after 30 s, the State text |
 | `test_fresh_nuke` | Reload Nuke: Never, When memory is full, After every chunk; same places, State, timeline |

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Delete after a Stop: the frame bar kept the colours of the deleted frames until something else redrew it (it redraws on its own only while rendering or when a check reports). It now redraws at once, the Workers timeline too.
+
 ## 1.0.32 — 2026-11-27
 
 - **Movies are checked frame by frame:** black, one-colour and frozen frames (the same as the one before) are found by frame number and shown as errors, as in a sequence. A slow shot with grain is not taken for frozen.
