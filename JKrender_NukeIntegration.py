@@ -1,0 +1,665 @@
+"""Nuke-side companion for JKrender.
+
+JKrender > Render Selected Write(s) saves a snapshot of the script, writes a job file and opens a
+JKrender window for that render. The window and its Nuke processes are separate from this Nuke,
+so you keep working (and saving) while it renders.
+
+Install: copy the JKrender folder into ~/.nuke and add  nuke.pluginAddPath("./JKrender")  to
+~/.nuke/init.py; the folder's menu.py adds the menu. The window runs in Nuke's own Python; on the
+first start JKrender offers to fetch numpy and OpenEXR for the EXR preview into lib/. Each render's
+snapshot, job file and logs go to the log folder next to JKrender.py.
+"""
+
+import datetime
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import nuke
+
+HERE = Path(__file__).resolve().parent
+NUKE_DIR = Path.home() / ".nuke"
+FALLBACK_RENDERS_DIR = Path.home() / ".nuke" / "JKrender" / "log"  # when the folder next to JKrender.py is read-only
+CONFIG_PATH = NUKE_DIR / "jkrender_path.txt"  # location of JKrender.py
+PYTHON_CACHE = NUKE_DIR / "jkrender_python.txt"  # external Python that has PySide6
+SETTINGS_FILE = NUKE_DIR / "JKrender" / "settings" / "settings.json"  # JKrender's (HOME_DIR there): pass_env is read
+DEFAULT_APP = Path.home() / "JKrender" / "JKrender.py"
+WRITE_CLASSES = ("Write", "Write2", "DeepWrite")
+LISTEN_PORTS = range(47340, 47350)  # under 49152: Windows keeps ranges above it for Hyper-V and WSL (NUKE_PORTS in JKrender.py)
+HOST = "127.0.0.1"
+
+
+# ----------------------------------------------------------------------------
+# What to render
+# ----------------------------------------------------------------------------
+def _is_disabled(node):
+    try:
+        return bool(node["disable"].value())
+    except Exception:
+        return False
+
+
+def _write_nodes():
+    nodes = nuke.selectedNodes()
+    # A selected Group stands for the Writes inside it.
+    for group in [n for n in nodes if isinstance(n, nuke.Group)]:
+        try:
+            nodes += nuke.allNodes(group=group, recurseGroups=True)
+        except Exception:
+            pass
+    seen = set()
+    writes = []
+    for n in nodes:
+        if n.Class() in WRITE_CLASSES and n.fullName() not in seen:
+            seen.add(n.fullName())
+            writes.append(n)
+    disabled = [n for n in writes if _is_disabled(n)]
+    writes = [n for n in writes if not _is_disabled(n)]
+    unnumbered = [n for n in writes if _no_frame_number(n)]
+    if unnumbered:
+        nuke.message("No frame number in the file path:\n\n%s\n\nEvery frame would overwrite this one file, so only the last "
+                     "frame would stay. Add #### (or %%04d) before the extension, like name.####.exr.%s"
+                     % ("\n".join("%s:  %s" % (n.fullName(), _knob(n, "file")) for n in unnumbered),
+                        "\n\nThe other Writes render." if len(unnumbered) < len(writes) else ""))
+        writes = [n for n in writes if n not in unnumbered]
+        if not writes:
+            return []
+    if not writes:
+        if disabled:
+            nuke.message("The Write node(s) are disabled:\n\n" + "\n".join(n.fullName() for n in disabled))
+        else:
+            nuke.message("Select a Write node first.")
+    return writes
+
+
+SCRIPT_EXTS = (".nk", ".nknc", ".nkind")  # Nuke, Nuke Non-commercial, Nuke Indie
+MOVIE_TYPES = ("mov", "mp4", "m4v", "mxf", "avi", "mkv", "webm", "gif", "ffmpeg")
+FRAME_NUMBER = re.compile(r"#+|%0?\d*d|\$F\d*|\[frame\]", re.I)
+
+
+def no_frame_number(path, file_type, first, last):
+    """An image sequence of more than one frame whose path has no frame number (####, %04d, $F4, [frame]):
+    every frame would be written over the same file. A movie is one file, a single frame needs no number."""
+    ext = os.path.splitext(path or "")[1].lower().lstrip(".")
+    if not path or (file_type or "").lower() in MOVIE_TYPES or ext in MOVIE_TYPES or first == last:
+        return False
+    return not FRAME_NUMBER.search(os.path.basename(path))
+
+
+def _no_frame_number(node):
+    try:
+        if _knob(node, "use_limit"):
+            first, last = int(_knob(node, "first")), int(_knob(node, "last"))
+        else:
+            first, last = int(nuke.root()["first_frame"].value()), int(nuke.root()["last_frame"].value())
+        return no_frame_number(str(_knob(node, "file")), str(_knob(node, "file_type")), first, last)
+    except Exception:
+        return False
+
+
+def _nuke_mode():
+    """"nc" in Nuke Non-commercial, "indie" in Nuke Indie, "" otherwise: the worker Nuke needs the same mode
+    (--nc / --indie), or it asks for a licence this machine may not have."""
+    env = getattr(nuke, "env", {}) or {}
+    if env.get("nc"):
+        return "nc"
+    if env.get("indie"):
+        return "indie"
+    return ""
+
+
+def _script_path():
+    path = nuke.root().name()
+    if not path or path == "Root" or not path.lower().endswith(SCRIPT_EXTS):
+        nuke.message("Save the Nuke script before rendering it with JKrender.")
+        return None
+    try:
+        modified = bool(nuke.root().modified())
+    except Exception:
+        modified = False
+    if modified:
+        if not nuke.ask("The script has unsaved changes.\n\nSave it and render?"):
+            return None
+        try:
+            nuke.scriptSave()
+        except Exception as exc:
+            nuke.message("Could not save the script:\n%s" % exc)
+            return None
+    return nuke.root().name()
+
+
+def _knob(node, name):
+    try:
+        k = node.knob(name)
+        return k.value() if k is not None else ""
+    except Exception:
+        return ""
+
+
+def _write_info(node):
+    try:
+        output = nuke.filename(node) or node["file"].value()
+    except Exception:
+        output = node["file"].value()
+    return {
+        "name": node.fullName(),
+        "output": output,
+        "file_type": str(_knob(node, "file_type")),
+        "datatype": str(_knob(node, "datatype")),
+        "compression": str(_knob(node, "compression")),
+        "channels": str(_knob(node, "channels")),
+        "colorspace": str(_knob(node, "colorspace") or _knob(node, "ocioColorspace")),
+        "views": list(nuke.views()) if hasattr(nuke, "views") else ["main"],
+        "limit": [int(_knob(node, "first")), int(_knob(node, "last"))] if _knob(node, "use_limit") else None,
+        "width": _size(node, "width"),
+        "height": _size(node, "height"),
+        "movie": _movie_settings(node),
+    }
+
+
+def _size(node, which):
+    try:
+        return int(node.width() if which == "width" else node.height())
+    except Exception:
+        return None
+
+
+def _movie_settings(node):
+    """What the movie writer should produce, so JKrender can check the finished file against it."""
+    codec = str(_knob(node, "mov64_codec") or "")
+    if not codec:
+        return None
+    code = codec.split("\t")[0].strip()
+    if code in ("AVdn",):
+        profile = _knob(node, "mov64_dnxhd_codec_profile")
+    elif code in ("avc1", "h264"):
+        profile = _knob(node, "mov_h264_codec_profile")
+    else:
+        profile = _knob(node, "mov_prores_codec_profile")
+    return {
+        "codec": code,
+        "profile": str(profile or ""),
+        "fps": _knob(node, "mov64_fps"),
+        "write_timecode": bool(_knob(node, "mov64_write_timecode")),
+        "container": str(_knob(node, "mov64_format") or ""),
+    }
+
+
+def _pass_env():
+    """Name prefixes of the variables a pipeline keeps its context in, from JKrender's settings (pass_env, as
+    ["STUDIO_"]). Nothing when unset or unreadable."""
+    try:
+        value = json.loads(SETTINGS_FILE.read_text(encoding="utf-8")).get("pass_env")
+    except Exception:
+        return ()
+    if isinstance(value, str):
+        value = value.replace(",", " ").split()
+    try:
+        return tuple(str(p).strip().upper() for p in value or () if str(p).strip())
+    except TypeError:
+        return ()
+
+
+def _session_env():
+    """Search paths, and the pipeline's variables named in JKrender's pass_env setting, so the render starts like this
+    session. No keys or tokens."""
+    env = {key: os.environ.get(key, "") for key in ("NUKE_PATH", "PYTHONPATH", "OCIO")}
+    prefixes = _pass_env()
+    for key, value in os.environ.items():
+        name = key.upper()
+        if prefixes and name.startswith(prefixes) and not any(w in name for w in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            env[key] = value
+    return env
+
+
+def _nuke_executable():
+    """The Nuke program the worker processes run: nuke.EXE_PATH (on macOS inside Nuke*.app/Contents/MacOS), else
+    Python's executable when that is Nuke."""
+    exe = getattr(nuke, "EXE_PATH", "") or os.sys.executable
+    exe = os.path.abspath(exe)
+    return exe if "nuke" in Path(exe).name.lower() else ""
+
+
+def _make_job(writes, renders_dir):
+    script = _script_path()
+    if not script:
+        return None
+    root = nuke.root()
+    infos = [_write_info(n) for n in writes]
+    if all(i["limit"] for i in infos):
+        first = min(i["limit"][0] for i in infos)
+        last = max(i["limit"][1] for i in infos)
+    else:
+        first, last = int(root["first_frame"].value()), int(root["last_frame"].value())
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    label = re.sub(r"[^A-Za-z0-9_.-]+", "_", "%s_%s" % (Path(script).stem, writes[0].fullName()))
+    folder = renders_dir / ("%s_%s" % (stamp, label))
+    folder.mkdir(parents=True, exist_ok=True)
+    snapshot = folder / ("snapshot_" + Path(script).name)
+    shutil.copy2(script, snapshot)  # you can keep working and saving; the render uses this copy
+    try:
+        fmt = root.format()
+        format_text = "%dx%d %s" % (fmt.width(), fmt.height(), fmt.name() or "")
+    except Exception:
+        format_text = ""
+    job = {
+        "version": 1,
+        "script": script,
+        "snapshot": str(snapshot).replace("\\", "/"),
+        "writes": infos,
+        "first": first,
+        "last": last,
+        "nuke_exe": _nuke_executable(),
+        "nuke_mode": _nuke_mode(),
+        "nuke_version": getattr(nuke, "NUKE_VERSION_STRING", ""),
+        "fps": root["fps"].value(),
+        "format": format_text,
+        "width": infos[0].get("width"),
+        "height": infos[0].get("height"),
+        "env": _session_env(),
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    job_path = folder / "job.json"
+    job_path.write_text(json.dumps(job, indent=2), encoding="utf-8")
+    return job_path
+
+
+# ----------------------------------------------------------------------------
+# Launching the window (external Python with PySide6, never Nuke's own)
+# ----------------------------------------------------------------------------
+def _known_app():
+    """JKrender.py: next to this file when the whole folder is on Nuke's plugin path."""
+    for value in (os.environ.get("JKRENDER", ""), str(HERE / "JKrender.py"), _read(CONFIG_PATH), str(DEFAULT_APP)):
+        if value and Path(value).is_file():
+            return value
+    return ""
+
+
+def _app_path():
+    known = _known_app()
+    if known:
+        return known
+    path = nuke.getFilename("Locate JKrender.py", "*.py")
+    if path and Path(path).is_file():
+        try:
+            CONFIG_PATH.write_text(path, encoding="utf-8")
+        except Exception:
+            pass
+        return path
+    return ""
+
+
+def _read(path):
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _renders_dir(app=None):
+    """Render folders (snapshot, job, logs) go to the log folder next to JKrender.py."""
+    app = app or _known_app()
+    if app:
+        folder = Path(app).resolve().parent / "log"
+        try:
+            folder.mkdir(exist_ok=True)
+            probe = folder / ".write_test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return folder
+        except Exception:
+            pass
+    return FALLBACK_RENDERS_DIR
+
+
+def _nuke_python():
+    """Nuke's own Python with Nuke's PySide6 and psutil, so nothing has to be installed.
+
+    Returns (python, environment), or None when this Nuke does not ship them."""
+    exe = _nuke_executable()
+    if not exe:
+        return None
+    folder = Path(exe).parent
+    if os.name == "nt":
+        pythons = [folder / "python.exe"]
+    else:  # macOS: Nuke*.app/Contents/MacOS/python3(.x); Linux: next to the Nuke binary
+        pythons = [folder / "python3", folder / "python"] + sorted(folder.glob("python3.*"), reverse=True)
+    python_exe = next((p for p in pythons if p.is_file()), None)
+    roots = [folder, folder.parent / "Resources", folder.parent / "Frameworks"]
+    site = next((r / "pythonextensions" / "site-packages" for r in roots
+                 if (r / "pythonextensions" / "site-packages" / "PySide6").is_dir()), None)
+    if python_exe is None or site is None:
+        return None
+    env = dict(os.environ)
+    for key in ("PYTHONHOME", "PYTHONSTARTUP", "QML2_IMPORT_PATH", "PYSIDE_DESIGNER_PLUGINS"):
+        env.pop(key, None)
+    env["PYTHONPATH"] = str(site)
+    plugins = next((p for p in (folder / "qtplugins", folder.parent / "PlugIns", folder.parent / "Resources" / "qtplugins")
+                    if p.is_dir()), None)
+    if plugins:
+        env["QT_PLUGIN_PATH"] = str(plugins)
+    env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
+    if sys.platform == "darwin":
+        # PySide6 in Nuke*.app links Qt from Contents/Frameworks, which a Python started outside Nuke does not find alone
+        frameworks = str(folder.parent / "Frameworks")
+        env["DYLD_FRAMEWORK_PATH"] = os.pathsep.join(p for p in (frameworks, env.get("DYLD_FRAMEWORK_PATH", "")) if p)
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(p for p in (frameworks, str(folder), env.get("DYLD_LIBRARY_PATH", "")) if p)
+    return str(python_exe), env
+
+
+def _python_candidates():
+    candidates = []
+
+    def add(value):
+        if not value:
+            return
+        value = os.path.abspath(os.path.expandvars(os.path.expanduser(str(value))))
+        if os.path.isfile(value) and value not in candidates and "nuke" not in Path(value).name.lower():
+            candidates.append(value)
+
+    add(os.environ.get("JKRENDER_PYTHON", "").strip())
+    add(_read(PYTHON_CACHE))
+    add(_read(NUKE_DIR / "batch_gartner_python.txt"))
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            for exe in sorted((Path(local) / "Programs" / "Python").glob("Python*/python.exe"), reverse=True):
+                add(exe)
+        for exe in sorted(Path(os.environ.get("ProgramFiles", r"C:\Program Files")).glob("Python*/python.exe"), reverse=True):
+            add(exe)
+        names = ("python.exe", "python3.exe")
+    else:
+        for exe in ("/usr/local/bin/python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"):
+            add(exe)
+        names = ("python3", "python")
+    for name in names:
+        exe = shutil.which(name)
+        if exe and "windowsapps" not in exe.lower():
+            add(exe)
+    return candidates
+
+
+def _clean_env():
+    """Environment for the external Python without Nuke's own Python / Qt settings."""
+    env = dict(os.environ)
+    for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
+                "QML2_IMPORT_PATH", "PYSIDE_DESIGNER_PLUGINS"):
+        env.pop(key, None)
+    nuke_dir = os.path.dirname(os.path.abspath(os.sys.executable)).lower()
+    env["PATH"] = os.pathsep.join(
+        p for p in env.get("PATH", "").split(os.pathsep) if p and not os.path.abspath(p).lower().startswith(nuke_dir))
+    return env
+
+
+LAST_PYTHON_ERROR = {"text": ""}
+
+
+def _has_pyside6(python_exe, env):
+    """True when this Python imports PySide6's widgets and psutil. Why not is kept for the message."""
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        r = subprocess.run([python_exe, "-c", "import PySide6.QtWidgets, psutil"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, timeout=20, creationflags=flags, env=env)
+        if r.returncode == 0:
+            return True
+        lines = [l for l in r.stderr.decode("utf-8", "replace").strip().splitlines() if l.strip()]
+        LAST_PYTHON_ERROR["text"] = "%s: %s" % (python_exe, lines[-1] if lines else "exit code %d" % r.returncode)
+    except Exception as exc:
+        LAST_PYTHON_ERROR["text"] = "%s: %s" % (python_exe, exc)
+    return False
+
+
+def _launch(app, job_paths):
+    """Background thread, so Nuke never waits for the Python check. One launch carries every render."""
+    own = None if os.environ.get("JKRENDER_PYTHON") else _nuke_python()
+    own_error = ""
+    if own and not _has_pyside6(*own):
+        own_error, own = LAST_PYTHON_ERROR["text"], None
+    if own:
+        python_exe, env = own
+    else:
+        env = _clean_env()
+        python_exe = next((exe for exe in _python_candidates() if _has_pyside6(exe, env)), None)
+        if not python_exe:
+            nuke.executeInMainThread(nuke.message, args=(
+                "JKrender needs a Python with PySide6 and psutil.\n\n"
+                "Install them with:  python -m pip install PySide6 psutil\n"
+                "or set JKRENDER_PYTHON to that python executable."
+                + ("\n\nNuke's own Python said:\n%s" % own_error if own_error else ""),))
+            return
+        try:
+            PYTHON_CACHE.write_text(python_exe, encoding="utf-8")
+        except Exception:
+            pass
+    kwargs = {"cwd": str(Path(app).parent), "env": env}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen([python_exe, app] + [str(p) for p in job_paths], **kwargs)
+    except Exception as exc:
+        nuke.executeInMainThread(nuke.message, args=("Could not start JKrender:\n%s" % exc,))
+
+
+def render_selected():
+    writes = _write_nodes()
+    if not writes:
+        return
+    app = _app_path()
+    if not app:
+        return
+    renders_dir = _renders_dir(app)
+    # Every Write is its own render: its own card, range, chunks and output check in JKrender.
+    job_paths = []
+    for node in writes:
+        try:
+            job_path = _make_job([node], renders_dir)
+        except Exception as exc:
+            nuke.message("JKrender could not prepare %s:\n%s" % (node.fullName(), exc))
+            continue
+        if not job_path:
+            return  # the script was not saved
+        job_paths.append(job_path)
+    if job_paths:
+        threading.Thread(target=_launch, args=(app, job_paths), daemon=True).start()
+
+
+def open_renders_folder():
+    folder = _renders_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(str(folder))
+    else:
+        subprocess.Popen(["open" if os.sys.platform == "darwin" else "xdg-open", str(folder)])
+
+
+# ----------------------------------------------------------------------------
+# JKrender -> Nuke: Render clears the cache of open Nukes
+# ----------------------------------------------------------------------------
+_listener = None
+
+
+def _norm(path):
+    try:
+        return os.path.normcase(os.path.normpath(os.path.abspath(path or "")))
+    except Exception:
+        return path or ""
+
+
+def _clear_cache():
+    """JKrender's Render button: this Nuke gives the render its RAM and VRAM back. The disk cache stays.
+
+    The buffers are what fills the RAM (Cache > Clear Buffers, F12); nuke.clearRAMCache is only the playback cache."""
+    try:
+        from nuke import memory2  # not in every Nuke version: older ones clear the rest
+        buffers = memory2.clearUsage
+    except Exception:
+        buffers = None
+    for clear in (buffers, getattr(nuke, "clearRAMCache", None), getattr(nuke, "clearBlinkCache", None)):
+        if clear is None:
+            continue
+        try:
+            clear()
+        except Exception as exc:
+            print("JKrender: could not clear the cache:", exc)
+
+
+def _serve(server):
+    while True:
+        try:
+            conn, _ = server.accept()
+        except Exception:
+            time.sleep(0.2)
+            continue
+        try:
+            conn.settimeout(2.0)
+            data = b""
+            while True:
+                part = conn.recv(65536)
+                if not part:
+                    break
+                data += part
+                if len(data) > 1000000:
+                    raise ValueError("message too large")
+            msg = json.loads(data.decode("utf-8"))
+            if msg.get("command") == "clear_cache":
+                nuke.executeInMainThread(_clear_cache)
+                reply = "OK"
+            else:
+                reply = "OK " + _norm(nuke.root().name())
+        except Exception as exc:
+            reply = "ERROR: %s" % exc
+        try:
+            conn.sendall(str(reply).encode("utf-8", "replace"))
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def start_listener():
+    global _listener
+    if _listener is not None:
+        return
+    for port in LISTEN_PORTS:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            server.bind((HOST, port))
+            server.listen(4)
+        except OSError:
+            server.close()
+            continue
+        _listener = server
+        threading.Thread(target=_serve, args=(server,), daemon=True).start()
+        return
+
+
+# ----------------------------------------------------------------------------
+# Menu
+# ----------------------------------------------------------------------------
+def _python_version(python_exe, env):
+    """(major, minor) of another Python, or None."""
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        out = subprocess.run([python_exe, "-c", "import sys; print('%d %d' % sys.version_info[:2])"], capture_output=True,
+                             timeout=15, creationflags=flags, env=env)
+        major, minor = out.stdout.decode().split()
+        return int(major), int(minor)
+    except Exception:
+        return None
+
+
+def _window_python():
+    """The Python the JKrender window runs in, and its version: the libraries are fetched for that one.
+    Nuke 16 and later: Nuke's own. Nuke 15 and earlier ship PySide2: the window runs in another Python with PySide6
+    (the one used last, kept in jkrender_python.txt); before the first render there is none yet (None, None).
+    Before 0.99.77 the libraries were fetched for Nuke's own Python even then, which the window never used."""
+    if os.environ.get("JKRENDER_PYTHON") or not _nuke_python():
+        exe = os.environ.get("JKRENDER_PYTHON", "").strip() or _read(PYTHON_CACHE)
+        if exe and os.path.isfile(exe):
+            return exe, _python_version(exe, _clean_env())
+        return None, None
+    import jkrender_deps as deps
+    return deps.nuke_python(), tuple(sys.version_info[:2])
+
+
+def _offer_downloads():
+    """First start: offer, in one question, what JKrender can use but Nuke does not ship. numpy and OpenEXR for the EXR
+    preview; ffmpeg for checking and playing movies, when the PC has none of its own.
+
+    Each is asked once; saying no leaves a marker, and rendering works without them."""
+    import jkrender_deps as deps
+
+    if os.environ.get(deps.NO_FETCH_ENV):
+        return
+    jobs = []
+    python_exe, version = _window_python()
+    if python_exe and version and not deps.installed(version) and not os.path.exists(deps.declined_marker()):
+        target = deps.target_dir(version)
+        jobs.append(dict(what="numpy and OpenEXR", mb=deps.DOWNLOAD_MB, use="the EXR preview", target=target,
+                         marker=deps.declined_marker(),
+                         run=lambda t=target: deps.install(t, python_exe),
+                         by_hand=lambda t=target: deps.pip_command_text(t, python_exe)))
+    if deps.ffmpeg_needed() and not os.path.exists(deps.ffmpeg_declined_marker()):
+        target = deps.ffmpeg_target()
+        jobs.append(dict(what="ffmpeg", mb=deps.FFMPEG_MB, use="checking and playing movies (MOV, MP4, MXF)",
+                         target=target, marker=deps.ffmpeg_declined_marker(),
+                         run=lambda t=target: deps.fetch_ffmpeg(t),
+                         by_hand=lambda: {"win32": "winget install ffmpeg", "darwin": "brew install ffmpeg"}.get(
+                             sys.platform, "sudo apt install ffmpeg")))
+    if not jobs:
+        return
+    lines = "\n".join("- %s, about %d MB, for %s" % (j["what"], j["mb"], j["use"]) for j in jobs)
+    folders = "\n".join(j["target"] for j in jobs)
+    if not nuke.ask("JKrender can use what Nuke does not ship:\n\n%s\n\nDownload now? In the background, into:\n%s\n\n"
+                    "Rendering works without them." % (lines, folders)):
+        for j in jobs:
+            try:
+                os.makedirs(os.path.dirname(j["marker"]), exist_ok=True)
+                Path(j["marker"]).write_text("Delete this file to be asked again on the next Nuke start.\n", encoding="utf-8")
+            except OSError:
+                pass
+            print("JKrender: no %s. Delete %s to be asked again." % (j["what"], j["marker"]))
+        return
+
+    def fetch():
+        for j in jobs:
+            print("JKrender: downloading %s into %s" % (j["what"], j["target"]))
+            ok, result = j["run"]()
+            if ok:
+                print("JKrender: %s is in %s" % (j["what"], result))
+            else:
+                nuke.executeInMainThread(nuke.message, args=(
+                    "JKrender could not download %s.\n\n%s\n\nInstall it by hand with:\n%s"
+                    % (j["what"], result, j["by_hand"]()),))
+
+    threading.Thread(target=fetch, daemon=True).start()
+
+
+def install_menu():
+    menu = nuke.menu("Nuke").addMenu("JKrender")
+    menu.addCommand("Render Selected Write(s)", render_selected, "Ctrl+Alt+R")
+    menu.addCommand("Open Renders Folder", open_renders_folder)
+    if nuke.GUI:
+        try:
+            _offer_downloads()
+        except Exception as exc:
+            print("JKrender: downloads:", exc)
+        try:
+            start_listener()
+        except Exception as exc:
+            print("JKrender: Create Read listener not started:", exc)

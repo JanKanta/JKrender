@@ -1,0 +1,146 @@
+"""When things go wrong: a Nuke process crashes mid-chunk, JKrender itself goes down mid-render and comes back with its
+cards, a second JKrender hands its render to the one open, a project path with Czech letters."""
+import io
+import re
+import subprocess
+import threading
+from common import *
+
+if "--phase-a" in sys.argv:
+    # JKrender going down mid-render: render, then end without closing anything
+    jk, app = start({"processes": 2, "threads": 2, "ram": 2, "chunk_auto": False, "chunk_size": 2})
+    job = make_job("crashed", 1001, 1012, env={"FAKE_SECS": "0.5"})
+    win = jk.MainWindow(job)
+    win._start()
+    wait(lambda: sum(1 for fr in win.engine.frames.values() if fr.state == "done") >= 4, 60)
+    win._save_queue()
+    say("PHASE_A %d frames done" % sum(1 for fr in win.engine.frames.values() if fr.state == "done"))
+    os._exit(0)
+
+say("JKrender goes down mid-render, opens again: the card comes back stopped, Render goes on from the rest")
+r = subprocess.run([sys.executable, os.path.abspath(__file__), "--phase-a"], env=dict(os.environ), capture_output=True,
+                   text=True, encoding="utf-8", errors="replace", timeout=300)
+check("the first JKrender rendered and went down", "PHASE_A" in r.stdout, (r.stdout + r.stderr)[-400:])
+jk, app = start({"processes": 2, "threads": 2, "ram": 2, "chunk_auto": False, "chunk_size": 2}, clean=False)
+saved = jk.read_queue()
+check("its cards were saved", bool(saved and saved.get("renders")), saved)
+jk.end_leftovers(saved.get("pids") or [])
+restored = [c for c in saved.get("renders") or [] if os.path.isfile(c.get("job") or "")]
+win = jk.MainWindow(restored[0]["job"], restoring=True)
+going = win.restore(win.engine, restored[0])
+e = win.engine
+check("it was going when JKrender went down", going)
+check("the card comes back stopped", e.state == "stopped", e.state)
+check("the Log says it was interrupted", bool(log_lines(e, "Interrupted")))
+on_disk = sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped"))
+check("the frames on disk count", on_disk >= 4, on_disk)
+asked = []
+answer("Only missing", asked)
+win._start()
+check("Render asks: only missing or all again", len(asked) == 1, asked)
+wait(lambda: e.state == "done", 120)
+check("done, all 12 on disk", e.state == "done" and len(files(restored[0]["job"])) == 12, (e.state, len(files(restored[0]["job"]))))
+
+say("A Nuke process crashes mid-chunk: its chunk goes again, the render ends whole")
+job = make_job("sh010", 1001, 1012, env={"FAKE_CRASH_FRAME": "1005"})
+win.add_job(job, auto=False)
+e1 = win.manager.engines[-1]
+win.select(e1)
+win._start()
+wait(lambda: e1.crashes >= 1 or e1.state in ("done", "failed", "stopped"), 150)
+running = e1.state == "rendering"
+win._refresh_cards()
+check("right after the crash, still rendering: the card is not red", running and jk.C["failed"] not in win.cards[e1].styleSheet()
+      and "crashed 1 time" in win.cards[e1].toolTip(), (e1.state, win.cards[e1].toolTip()))
+wait(lambda: e1.state in ("done", "failed", "stopped"), 150)
+check("done", e1.state == "done", e1.state)
+check("all 12 on disk", len(files(job)) == 12, len(files(job)))
+check("it crashed once", os.path.exists(os.path.dirname(frame_path(job, 0)) + "/.fake_crashed_1005"))
+crash = [x[1] for x in e1.log if "W0" in x[1] and ("crash" in x[1].lower() or "exit" in x[1].lower() or "ended" in x[1].lower())]
+check("the Log says a process went down", bool(crash), [x[1] for x in e1.log][-12:])
+check("the places stay W01 and W02", sorted(e1.workers) == [1, 2], sorted(e1.workers))
+tips = [jk.Gantt._chunk_tip(e1, w, s[1], s[2], s[3], s[4], w.name) for w in e1.workers.values() for s in w.segments
+        if s[0] == "chunk" and s[3]]
+crashed = [t for t in tips if "Nuke crashed" in t]
+check("Workers tooltip of the crashed chunk: 'ended: Nuke crashed', which frames made it", len(crashed) == 1
+      and "ended: Nuke crashed" in crashed[0] and "went back to the queue" in crashed[0], tips)
+whole = [t for t in tips if "ended: every frame rendered" in t]
+check("a whole chunk: 'ended: every frame rendered' and what came next", whole and all("then: " in t for t in whole), whole[:2])
+wait(lambda: e1.verified(), 60)
+win._refresh_cards()
+card = win.cards[e1]
+check("done and every frame checked after the crash: the card is green", e1.verified() and jk.C["done"] in card.styleSheet(),
+      (e1.verified(), card.styleSheet()))
+check("its tooltip says Nuke crashed and the frames are fine", "crashed 1 time" in card.toolTip() and "passes the check" in card.toolTip(),
+      card.toolTip())
+some = e1.frames[min(e1.frames)]
+keep = some.checks
+some.checks = {}  # as with Check frames when a render ends off: nothing says the files are whole
+win._refresh_cards()
+check("a frame not checked after the crash: not red, the tooltip says Nuke crashed",
+      jk.C["failed"] not in card.styleSheet() and "crashed 1 time" in card.toolTip(), (card.styleSheet(), card.toolTip()))
+some.checks = keep
+some.state = "bad"
+win._refresh_cards()
+check("a broken frame: red", jk.C["failed"] in card.styleSheet() and "broken" in card.toolTip(), card.toolTip())
+some.state = "done"
+win._refresh_cards()
+ok_card = win.cards[e]
+check("a render with no error stays green", jk.C["done"] in ok_card.styleSheet() and not ok_card.toolTip(),
+      (ok_card.styleSheet(), ok_card.toolTip()))
+
+say("A second JKrender hands its render to the one open")
+win.listen()
+job2 = make_job("sh020", 1001, 1004)
+before = len(win.manager.engines)
+result = {}
+th = threading.Thread(target=lambda: result.update(left=jk.hand_to_running([job2])))
+th.start()
+wait(lambda: not th.is_alive() and len(win.manager.engines) > before, 20)
+check("handed over", result.get("left") == [], result)
+check("a new card in the open JKrender", len(win.manager.engines) == before + 1)
+check("it is the render sent", win.manager.engines[-1].job.get("script", "").endswith("sh020.nk"))
+
+say("Writes selected together in Nuke (1.0.4): picked together, one Render starts them all")
+jobs = [make_job("sh04%d" % i, 1001, 1004) for i in range(3)]
+before = len(win.manager.engines)
+result = {}
+th = threading.Thread(target=lambda: result.update(left=jk.hand_to_running(jobs)))
+th.start()
+wait(lambda: not th.is_alive() and len(win.manager.engines) >= before + 3, 20)
+pump(0.5)
+sent = win.manager.engines[before:]
+check("three cards", result.get("left") == [] and len(sent) == 3, (result, len(sent)))
+check("all three picked, the first shown", set(win._targets()) == set(sent) and win.engine is sent[0],
+      [e.name for e in win._targets()])
+check("Render says it acts on the three", "3 renders picked" in win.b_start.toolTip(), win.b_start.toolTip())
+before = len(win.manager.engines)
+one = str(make_job("sh050", 1001, 1004))
+th = threading.Thread(target=lambda: result.update(one=jk._send_to_running({"job": one})))
+th.start()
+wait(lambda: not th.is_alive() and len(win.manager.engines) > before, 20)
+check("one 'job' a message, as a JKrender before 1.0.4 sends it: still taken", result.get("one") is True, result)
+pump(0.5)
+check("a single send drops the picks: only it is shown", win._targets() == [win.manager.engines[-1]],
+      [e.name for e in win._targets()])
+
+say("A project path with Czech letters")
+folder = RUN + "/Práce/Žluťoučký kůň"
+job3 = make_job("sh030_čšř", 1001, 1006, folder=folder)
+win.add_job(job3, auto=False)
+e3 = win.manager.engines[-1]
+win.select(e3)
+win._start()
+wait(lambda: e3.state in ("done", "failed", "stopped"), 120)
+check("done", e3.state == "done", (e3.state, [x[1] for x in e3.log][-5:]))
+check("all 6 frames on disk", len(files(job3)) == 6, files(job3))
+
+say("Local ports under 49152 (1.0.6): Windows keeps ranges above it for Hyper-V and WSL, where nothing may listen")
+src = io.open(os.path.join(os.path.dirname(jk.__file__), "JKrender.py"), encoding="utf-8").read()
+own = int(re.search(r'APP_PORT = int\(os.environ.get\("JKRENDER_PORT"\) or (\d+)\)', src).group(1))
+nukes = re.search(r"LISTEN_PORTS = range\((\d+), (\d+)\)", io.open(os.path.join(os.path.dirname(jk.__file__),
+                  "JKrender_NukeIntegration.py"), encoding="utf-8").read())
+check("JKrender's port and the Nukes' ones are under 49152", own < 49152 and max(jk.NUKE_PORTS) < 49152, (own, jk.NUKE_PORTS))
+check("JKrender knocks where the Nukes listen", nukes and range(int(nukes.group(1)), int(nukes.group(2))) == jk.NUKE_PORTS,
+      nukes and nukes.groups())
+finish()

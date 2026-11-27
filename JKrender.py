@@ -1,0 +1,10030 @@
+#!/usr/bin/env python3
+"""JKrender 1.0.32 — one Nuke render, split into chunks across several Nuke processes.
+
+Started by the Nuke integration with a job file:  python JKrender.py <render folder>/job.json
+
+Every worker is one Nuke process that opens the script ONCE and then renders chunk after chunk,
+so a chunk costs no script load. Chunks are handed out as workers free up, so no worker sits idle
+while another still has a long list. Each finished frame is checked on disk (missing, empty,
+truncated EXR / PNG / JPEG / DPX, suspiciously small).
+"""
+
+import array
+import collections
+import concurrent.futures
+import hashlib
+import html as _html
+import copy
+import datetime
+import json
+import math
+import os
+import queue as pyqueue
+import re
+import shutil
+import tempfile
+import socket
+import statistics
+import struct
+import subprocess
+import sys
+import threading
+import time
+import wave
+from pathlib import Path
+
+# numpy and OpenEXR for the EXR preview, fetched into lib/ on the first Nuke start (see jkrender_deps).
+# Appended, so a Python that has its own copies keeps using them.
+try:
+    import jkrender_deps
+
+    for _lib in jkrender_deps.lib_dirs():
+        if os.path.isdir(_lib):
+            sys.path.append(_lib)
+except ImportError:
+    pass
+
+try:
+    from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
+except ImportError:
+    raise SystemExit("PySide6 is required. Install it with: python -m pip install PySide6 psutil")
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+APP_VERSION = "1.0.32"
+HOME_DIR = Path.home() / ".nuke" / "JKrender" / "settings"  # settings and state, per user, beside the program where Nuke installs it
+OLD_HOMES = (Path.home() / ".nuke" / "JKrender", Path.home() / ".jkrender")  # where they were in 0.93 (newer, so first), and before
+SETTINGS_FILE = HOME_DIR / "settings.json"
+TEST_DIR = HOME_DIR / "test"  # Test this script: its renders, deleted after each setup
+TEST_RESULTS = HOME_DIR / "test_results"  # and its tables, kept
+QUEUE_FILE = HOME_DIR / "queue.json"  # the cards while the window is open; still there on opening means it did not close properly
+WORKER_SCRIPT = Path(__file__).resolve().with_name("jkrender_worker.py")
+DONATION_FILE = Path(__file__).resolve().with_name("donation.json")  # what the Donation tab shows; empty ones do not
+AUTHOR = {"name": "Jan Kanta", "linkedin": "https://www.linkedin.com/in/jan-kanta-4a10b8133/",
+          "github": "https://github.com/JanKanta/JKrender"}
+
+
+def html_escape(v):
+    return _html.escape(str(v))
+
+# Movie containers are one file for the whole range, so they render in one piece on one worker.
+MOVIE_EXTS = {".mov", ".mp4", ".m4v", ".mxf", ".avi", ".mkv", ".webm", ".gif"}
+MAX_ATTEMPTS = 3  # a chunk is rendered up to 3 times (each retry on a fresh Nuke) before it counts as failed
+SPAWN_GAP = 0.3  # seconds between Nuke starts, so licence checkout and script loads do not all hit at once
+BESIDE_CACHE = 4  # GB a Nuke process takes besides its cache (measured: 12 GB with a full 8 GB cache)
+NUKE_ENV_KEYS = ("NUKE_PATH", "PYTHONPATH", "OCIO")
+SECRET_ENV_WORDS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+JKR_LINE = re.compile(r"JKR (BOOT|READY|START|FRAME|CHUNK|FAIL|ERROR|BYE|MEM|HOOKS|AFTERDONE|BEFORE|FRAMEHOOKS)\b ?(.*)$")
+SLOW_START = 15  # seconds of Nuke starting before the script opens that are worth a warning
+GAP_CUT = 30  # s with no process at all that the Workers timeline cuts out, leaving GAP_PX of space
+GAP_PX = 6  # 1.0.10: a plain space between the renders (an 18 px mark of two dashed lines before)
+HOOK_BLOCK = 8  # px: the narrowest a beforeRender / afterRender block on the Workers timeline is drawn
+SLOW_HOOK = 5  # seconds a render hook takes (beforeRender in a Nuke, a per-frame hook on one frame) worth a warning
+PROBLEMS = ("missing", "empty", "truncated", "unreadable")
+
+DEFAULT_SETTINGS = {"auto_start": False, "auto_next": False, "clear_cache_auto": False, "check_frames": True, "check_pixels": True, "check_on_open": True, "max_renders": 3, "ram_guard": True,
+                    "vram_guard": True, "reload_ram": 95, "reload_vram": 95, "reload_after": "frame", "kill_ram": 98, "kill_vram": 98,
+                    "chunk_auto": True, "use_gpu": True, "log_cleanup": True, "log_days": 15,
+                    "slate": True,
+                    "auto_chunk": True, "hide_old_done": True, "show_hooks": True, "end_sound": True, "fresh_after_chunk": "short",
+                    "preview_format": True, "pass_env": []}
+# pass_env: name prefixes of the variables a pipeline keeps its context in (["STUDIO_"], say). A render gets them from the
+# Nuke that sent it, as it gets NUKE_PATH, PYTHONPATH and OCIO. No switch in the window: settings.json only (1.0.32).
+# Reload Nuke (setting fresh_after_chunk): a process closes after its chunk and a new one opens the script again, with its
+# RAM and VRAM back at the start. Costs a script load per chunk; lets more processes fit when Nuke keeps memory it no longer needs.
+FRESH_MODES = (("short", "When memory is full"), ("always", "After every chunk"))  # no Never since 0.99.41
+FRESH_SHORT = {"short": "memory full", "always": "every chunk"}  # the Reload Nuke Rule column of Test this script
+RELOAD_AFTER = (("frame", "Frame"), ("chunk", "Chunk"))  # Settings > Reload after
+
+
+def rule_text(fresh, after):
+    """The Reload Nuke Rule column of Test this script: "memory full, frame", "memory full, chunk", "every chunk"."""
+    return FRESH_SHORT.get(fresh, fresh) + (", " + after if fresh == "short" else "")
+# Local ports under 49152 (1.0.6): Windows keeps ranges of 49152-65535 for Hyper-V and WSL, other ones at each start,
+# and nothing may listen in them. 54360 and 54340-54349 before.
+APP_PORT = int(os.environ.get("JKRENDER_PORT") or 47360)  # a second JKrender hands its render to the one already open, through this local port
+NUKE_PORTS = range(47340, 47350)  # where open Nukes listen (LISTEN_PORTS in JKrender_NukeIntegration)
+SYSTEM_HIDDEN = ["PID", "Frame", "Peak RAM"]  # System columns off until ticked in its header
+# Windows Subsystem for Linux: the NVIDIA driver there lists no processes, so GPU and VRAM per process stay empty
+IS_WSL = sys.platform.startswith("linux") and "microsoft" in (os.uname().release if hasattr(os, "uname") else "").lower()
+SYSTEM_WIDTHS = {"Process": 60, "Script": 225, "State": 273, "Cache": 92, "Frames": 62}  # the rest as Qt makes them
+SYSTEM_ORDER = ["Process", "Script", "File", "PID", "State", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Last frame", "Avg frame",
+                "Script load", "Uptime", "Chunk", "Chunks", "Frame", "Peak RAM"]  # how System comes, until you drag them
+FRESH_HOLD = 10  # seconds the RAM or VRAM has to stay at its Reload Nuke at % before processes get a fresh Nuke after their chunk
+# Processes held up together (_watch_shared_stall): STALL_TOGETHER of them finish a frame within STALL_WINDOW s, each
+# SLOW_TIMES x the usual frame time and STALL_EXTRA s more
+STALL_TOGETHER = 3
+STALL_WINDOW = 0.5
+SLOW_TIMES = 2.0
+STALL_EXTRA = 2.0
+RETURN_CHECK = 5  # seconds after a fall until a process may come back, and that its memory has to stay free first
+# A card so full the Nuke processes stall: from this VRAM % on (or the limit, if lower) JKrender looks for it, also under
+# the limit. Stalled = every process rendering a frame has used less than STALL_CPU of a core for STALL_CPU_SECS and 2 x the
+# usual frame time (they wait for the card), or no frame finished for 4 x the usual frame time (at least a minute).
+STALL_VRAM = 90.0
+# A place waiting WAIT_RELOAD s to come back because the RAM (or VRAM) is full: the process holding the most of it reloads
+# after its chunk, if it grew to LEAK_GROWTH x what it took after its first chunk (a leak; a script that simply needs it
+# would only grow back). One at a time, as Reload Nuke.
+WAIT_RELOAD = 5  # the 1.3 rule: State busy → reload (1.3 rule)
+RELOAD_SETTLE = 3  # s after a reload closed before its memory readings tell whether the fresh Nuke fits
+LEAK_GROWTH = 1.3
+STALL_CPU = 0.1
+STALL_CPU_SECS = 15
+STALL_GAP = 15  # s after a GPU frozen close before the next one
+STALL_FRAMES = 2.5  # no frame for this many times the usual frame time = the card froze
+STALL_MIN = 45.0  # and at least this many seconds
+MAX_RENDERS = 3  # renders that may share the PC at once (Settings > Max renders at once)
+# A render's end: notes as (start s, Hz, loudness, decay s). Made here so no sound file ships; a new design needs a new file name.
+SOUNDS = {"done_v4": (1.6, ((0.00, 523.25, 1.10, 0.07), (0.00, 1046.50, 0.50, 0.06), (0.11, 783.99, 1.20, 0.07), (0.11, 1567.98, 0.50, 0.06),
+                            (0.22, 130.81, 0.50, 0.30), (0.22, 261.63, 0.60, 0.38), (0.22, 659.25, 0.70, 0.42), (0.22, 783.99, 0.70, 0.42),
+                            (0.22, 1046.50, 0.85, 0.46), (0.22, 1318.51, 0.40, 0.34)), 0.9),
+          "error_v1": (1.0, ((0.00, 329.63, 0.80, 0.11), (0.00, 659.25, 0.12, 0.08),
+                             (0.17, 233.08, 0.90, 0.20), (0.17, 466.16, 0.14, 0.12)))}
+
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+def move_old_home():
+    """Settings, open cards, test tables and sounds from where they were (~/.jkrender before 0.93, ~/.nuke/JKrender in 0.93)
+    to HOME_DIR, once. Whatever is already there stays; old render folders (~/.jkrender/renders) are left where they are."""
+    for old in OLD_HOMES:
+        for name in ("settings.json", "queue.json", "test_results", "sounds"):
+            src, dst = old / name, HOME_DIR / name
+            try:
+                if src.exists() and not dst.exists():
+                    HOME_DIR.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(src), str(dst))
+            except Exception:
+                pass
+        shutil.rmtree(old / "test", ignore_errors=True)  # Test this script's renders, deleted after each setup anyway
+    try:
+        OLD_HOMES[1].rmdir()  # ~/.jkrender, only when nothing is left in it
+    except OSError:
+        pass
+
+
+def sound_file(name):
+    """The WAV of a sound, made the first time, with a short stereo echo."""
+    path = HOME_DIR / "sounds" / (name + ".wav")
+    if path.is_file():
+        return path
+    seconds, notes, level = (SOUNDS[name] + (0.7,))[:3]
+    rate = 44100
+    size = int(seconds * rate)
+    dry = [0.0] * size
+    for start, freq, gain, decay in notes:
+        first, step = int(start * rate), 2 * math.pi * freq / rate
+        attack, fade, shine = 0.005 * rate, decay * rate, decay * 0.3 * rate
+        for t in range(min(size - first, int(fade * 7))):
+            tone = math.sin(step * t) + 0.25 * math.sin(2 * step * t) * math.exp(-t / shine)
+            dry[first + t] += gain * min(1.0, t / attack) * math.exp(-t / fade) * tone
+    left, right = int(0.11 * rate), int(0.17 * rate)
+    frames = array.array("h")
+    wet = [(x + 0.22 * dry[i - left] * (i >= left), x + 0.22 * dry[i - right] * (i >= right)) for i, x in enumerate(dry)]
+    scale = level * 32767 / max(max(abs(a), abs(b)) for a, b in wet)
+    ending = 0.08 * rate
+    for i, (a, b) in enumerate(wet):
+        out = min(1.0, (size - 1 - i) / ending) * scale
+        frames.extend((int(a * out), int(b * out)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name("%s.%d.tmp" % (path.name, threading.get_ident()))  # the window's thread and the one making them ahead
+    with wave.open(str(temp), "wb") as f:
+        f.setnchannels(2)
+        f.setsampwidth(2)
+        f.setframerate(rate)
+        f.writeframes(frames.tobytes())
+    os.replace(temp, path)
+    return path
+
+
+def sound_player():
+    """The command that plays a WAV here, or None: afplay on macOS; on Linux paplay (PulseAudio and PipeWire, WSL too),
+    pw-play or aplay, whichever the PC has. Windows plays it itself (winsound)."""
+    if sys.platform == "darwin":
+        return ["afplay"]
+    if sys.platform.startswith("linux"):
+        for tool in ("paplay", "pw-play", "aplay"):
+            found = shutil.which(tool)
+            if found:
+                return [found, "-q"] if tool == "aplay" else [found]
+    return None
+
+
+def play_sound(name):
+    """Plays in the background, the window does not wait for it. Windows through winsound, macOS through afplay, Linux
+    through paplay / pw-play / aplay (sound_player); with none of them it just beeps."""
+    player = sound_player()
+    if player:
+        try:
+            subprocess.Popen(player + [str(sound_file(name))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception:
+            pass
+    try:
+        import winsound
+        winsound.PlaySound(str(sound_file(name)), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except Exception:
+        QtWidgets.QApplication.beep()
+
+
+def read_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    try:
+        settings.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    settings["ram_guard"] = settings["vram_guard"] = True  # Memory Limit is always on (0.99.21): no switch any more
+    settings.pop("script_ram", None)  # 0.99.26: nothing is remembered per script; every render measures for itself
+    settings.pop("test_frames", None)  # 0.99.43: no Frames per setup; Round 2 renders 8 frames a process
+    for key in ("system_order", "system_hidden"):  # 0.99.51: CPU used is CPU, and VRAM has a column of its own after GPU
+        names = settings.get(key)
+        if isinstance(names, list) and "CPU used" in names:
+            names = ["CPU" if n == "CPU used" else n for n in names]
+            if key == "system_order" and "VRAM" not in names and "GPU" in names:
+                names.insert(names.index("GPU") + 1, "VRAM")
+            settings[key] = names
+        if isinstance(names, list) and ("Render" in names or "Write" in names):  # 0.99.74: the columns are Script and File
+            settings[key] = [{"Render": "Script", "Write": "File"}.get(n, n) for n in names]
+    if settings.get("fresh_after_chunk") not in ("short", "always"):  # 0.99.41: no Never; the memory rules need it
+        settings["fresh_after_chunk"] = "short"
+    setups = settings.get("test_setups")
+    if isinstance(setups, list):  # Test this script setups saved with Never: When memory is full
+        settings["test_setups"] = [list(x[:3]) + ["short"] + list(x[4:]) if isinstance(x, (list, tuple)) and len(x) > 3
+                                   and x[3] == "off" else x for x in setups]
+    if "ram_limit" in settings or "vram_limit" in settings:  # 0.99.30: no Memory Limit; Reload Nuke at took its place
+        settings.pop("ram_limit", None)
+        settings.pop("vram_limit", None)
+        settings["reload_ram"] = settings["reload_vram"] = 95
+    return settings
+
+
+def write_settings(settings):
+    try:
+        HOME_DIR.mkdir(parents=True, exist_ok=True)
+        # whole or not at all: a file cut off by a crash would silently bring every setting back to its default
+        temp = SETTINGS_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        os.replace(temp, SETTINGS_FILE)
+    except Exception:
+        pass
+
+
+def read_queue():
+    try:
+        return json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def end_leftovers(pids):
+    """The Nuke processes of a JKrender that went down: they would keep the memory and write over the same files.
+    Only a Nuke with the very start time noted, never another process that got the same number."""
+    if not psutil:
+        return 0
+    ended = []
+    for pid, created in pids:
+        try:
+            proc = psutil.Process(pid)
+            if abs(proc.create_time() - created) < 1 and "nuke" in proc.name().lower():
+                proc.kill()
+                ended.append(proc)
+        except Exception:
+            pass
+    psutil.wait_procs(ended, timeout=10)  # Windows keeps their files locked until they are gone
+    return len(ended)
+
+
+def is_secret_env(name):
+    return any(w in name.upper() for w in SECRET_ENV_WORDS)
+
+
+def env_prefixes(value):
+    """The pass_env setting as a tuple of name prefixes: a list, or one string of them split by commas or spaces."""
+    if isinstance(value, str):
+        value = value.replace(",", " ").split()
+    try:
+        return tuple(str(p).strip().upper() for p in value or () if str(p).strip())
+    except TypeError:
+        return ()
+
+
+def passed_env(name, prefixes):
+    """A variable that goes with a job: its name starts with one of prefixes and says no key, token, secret or password."""
+    return bool(prefixes) and name.upper().startswith(prefixes) and not is_secret_env(name)
+
+
+def nuke_render_env(job_env, prefixes=()):
+    """This app's environment with the sending Nuke session's search paths and the variables of its pipeline (prefixes,
+    the pass_env setting). Its own ones of those go first, so one render never gets another session's context."""
+    env = dict(os.environ)
+    for name in list(env):
+        if name in NUKE_ENV_KEYS or passed_env(name, prefixes):
+            env.pop(name)
+    env.update({k: v for k, v in (job_env or {}).items() if v})
+    return env
+
+
+def disk_of(path):
+    """The disk a path is on, for the Log: its drive on Windows ("E:", or "//server/share"), else the mount point that
+    holds it ("/", "/mnt/renders", "/Volumes/RAID"; 1.0.25, before it named nothing on macOS and Linux). "" when unknown."""
+    if not path:
+        return ""
+    if sys.platform.startswith("win"):
+        return os.path.splitdrive(str(path))[0]
+    try:
+        p = os.path.abspath(str(path))
+        while not os.path.exists(p) and os.path.dirname(p) != p:  # the frames' folder may not be there yet
+            p = os.path.dirname(p)
+        while not os.path.ismount(p) and os.path.dirname(p) != p:
+            p = os.path.dirname(p)
+        return p
+    except (OSError, ValueError):
+        return ""
+
+
+class GpuPerProcess:
+    """GPU use and dedicated VRAM of every process, from the Windows counters Task Manager shows.
+
+    nvidia-smi cannot tell processes apart on Windows (WDDM), so this reads the "GPU Engine" and
+    "GPU Process Memory" counters through pdh.dll. sample() -> {pid: (percent, bytes)}."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self.ct, self.wt = ctypes, wintypes
+        self.pdh = ctypes.WinDLL("pdh")
+
+        class Fmt(ctypes.Structure):
+            _fields_ = [("status", wintypes.DWORD), ("value", ctypes.c_double)]
+
+        class Item(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR), ("fmt", Fmt)]
+
+        self.Item = Item
+        self.query = wintypes.HANDLE()
+        self.engine = wintypes.HANDLE()
+        self.memory = wintypes.HANDLE()
+        if self.pdh.PdhOpenQueryW(None, None, ctypes.byref(self.query)) & 0xFFFFFFFF:
+            raise OSError("PdhOpenQuery failed")
+        for path, handle in ((r"\GPU Engine(*)\Utilization Percentage", self.engine),
+                             (r"\GPU Process Memory(*)\Dedicated Usage", self.memory)):
+            if self.pdh.PdhAddEnglishCounterW(self.query, path, None, ctypes.byref(handle)) & 0xFFFFFFFF:
+                raise OSError("no GPU counters")
+        self.pdh.PdhCollectQueryData(self.query)
+
+    def _read(self, counter):
+        ct, wt = self.ct, self.wt
+        size, count = wt.DWORD(0), wt.DWORD(0)
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), None) & 0xFFFFFFFF \
+                != 0x800007D2:  # PDH_MORE_DATA: tells the size
+            return []
+        buf = (ct.c_byte * size.value)()
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), buf) & 0xFFFFFFFF:
+            return []
+        items = ct.cast(buf, ct.POINTER(self.Item))
+        return [(items[i].name, items[i].fmt.value) for i in range(count.value)]
+
+    def sample(self):
+        self.pdh.PdhCollectQueryData(self.query)
+        engines, out = {}, {}
+        for name, value in self._read(self.engine):  # pid_123_luid_..._eng_0_engtype_3D
+            m = re.match(r"pid_(\d+)_.*engtype_(.*)$", name or "")
+            if m:
+                key = (int(m.group(1)), m.group(2))
+                engines[key] = engines.get(key, 0.0) + value
+        for (pid, _), value in engines.items():  # like Task Manager: the busiest engine type
+            out[pid] = (max(out.get(pid, (0.0, 0))[0], min(100.0, value)), 0)
+        for name, value in self._read(self.memory):
+            m = re.match(r"pid_(\d+)_", name or "")
+            if m:
+                pid = int(m.group(1))
+                pct, used = out.get(pid, (0.0, 0))
+                out[pid] = (pct, used + value)
+        return out
+
+
+class NvidiaSmiPerProcess:
+    """GPU use and VRAM of every process on Linux, from nvidia-smi: `pmon` for the use (SM %), the compute apps for the
+    memory (Nuke's GPU nodes run on CUDA). WSL's driver lists no processes, so it is not used there.
+    sample() -> {pid: (percent or None, bytes or None)}."""
+
+    @staticmethod
+    def parse(pmon, apps):
+        out = {}
+        for line in (apps or "").splitlines():  # "12345, 2048"  (MiB)
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0].isdigit():
+                try:
+                    out[int(parts[0])] = (None, float(parts[1]) * 1024 ** 2)
+                except ValueError:
+                    pass
+        for line in (pmon or "").splitlines():  # "    0      12345     C     37     12  ..."  (gpu pid type sm mem ...)
+            parts = line.split()
+            if line.lstrip().startswith("#") or len(parts) < 4 or not parts[1].isdigit():
+                continue
+            try:
+                pct = float(parts[3])
+            except ValueError:
+                pct = 0.0  # "-": on the GPU, but it used none of it in this second
+            pid = int(parts[1])
+            old_pct, mem = out.get(pid, (None, None))
+            out[pid] = (max(pct, old_pct or 0.0), mem)  # one line per GPU: the busiest
+        return out
+
+    def sample(self):
+        apps = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                              capture_output=True, text=True, timeout=5).stdout
+        pmon = subprocess.run(["nvidia-smi", "pmon", "-c", "1", "-s", "u"], capture_output=True, text=True, timeout=8).stdout
+        return self.parse(pmon, apps)
+
+
+# A card with less memory of its own is the processor's graphics (a Ryzen's: 2 GB): Nuke does not render on it, so its memory
+# is not what the VRAM rules watch. A big APU set to hold more (Ryzen AI Max) counts.
+GPU_MIN_VRAM = 3 * 1024 ** 3
+
+
+def windows_gpu_adapters():
+    """The graphics adapters Windows has (DXGI), its software one left out: [{"name", "vendor", "dedicated" bytes, "luid"}],
+    the luid as the counters write it ("0x00000000_0x0000d1f5"). [] when it cannot tell."""
+    import ctypes
+    from ctypes import wintypes
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class Desc1(ctypes.Structure):  # DXGI_ADAPTER_DESC1
+        _fields_ = [("Description", ctypes.c_wchar * 128), ("VendorId", ctypes.c_uint), ("DeviceId", ctypes.c_uint),
+                    ("SubSysId", ctypes.c_uint), ("Revision", ctypes.c_uint), ("DedicatedVideoMemory", ctypes.c_size_t),
+                    ("DedicatedSystemMemory", ctypes.c_size_t), ("SharedSystemMemory", ctypes.c_size_t),
+                    ("AdapterLuid", LUID), ("Flags", ctypes.c_uint)]
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", ctypes.c_ulong), ("Data2", ctypes.c_ushort), ("Data3", ctypes.c_ushort),
+                    ("Data4", ctypes.c_ubyte * 8)]
+
+    def method(obj, index, *argtypes):  # a COM method by its place in the object's table
+        table = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(table[index])
+
+    iid = GUID(0x770AAE78, 0xF26F, 0x4DBA, (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87))  # IDXGIFactory1
+    factory = ctypes.c_void_p()
+    if ctypes.WinDLL("dxgi").CreateDXGIFactory1(ctypes.byref(iid), ctypes.byref(factory)) != 0 or not factory.value:
+        return []
+    out = []
+    try:
+        for i in range(16):
+            adapter = ctypes.c_void_p()
+            # IDXGIFactory1::EnumAdapters1 (12); DXGI_ERROR_NOT_FOUND past the last one
+            if method(factory, 12, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p))(factory, i, ctypes.byref(adapter)) != 0:
+                break
+            try:
+                d = Desc1()
+                if method(adapter, 10, ctypes.POINTER(Desc1))(adapter, ctypes.byref(d)) == 0 and not d.Flags & 2:  # GetDesc1
+                    out.append({"name": d.Description.strip(), "vendor": d.VendorId, "dedicated": int(d.DedicatedVideoMemory),
+                                "luid": "0x%08x_0x%08x" % (d.AdapterLuid.HighPart & 0xFFFFFFFF, d.AdapterLuid.LowPart)})
+            finally:
+                method(adapter, 2)(adapter)  # Release
+    finally:
+        method(factory, 2)(factory)
+    return out
+
+
+class WindowsGpuCard:
+    """The graphics card's load and memory from Windows itself, for a card of any maker (AMD, Intel Arc, NVIDIA), as Task
+    Manager shows them: the busiest of its engines, and its dedicated memory in use, from the counters; how much memory it
+    has, from DXGI. The card is the adapter with the most memory of its own, at least GPU_MIN_VRAM. 1.0.28: the
+    VRAM rules read only nvidia-smi before, so on an AMD card they did nothing. sample() -> [%, MB used, MB total]."""
+
+    def __init__(self, adapters=None):
+        import ctypes
+        from ctypes import wintypes
+        cards = [a for a in (windows_gpu_adapters() if adapters is None else adapters) if a["dedicated"] >= GPU_MIN_VRAM]
+        if not cards:
+            raise OSError("no graphics card with memory of its own")
+        self.card = max(cards, key=lambda a: a["dedicated"])
+        self.ct, self.wt = ctypes, wintypes
+        self.pdh = ctypes.WinDLL("pdh")
+
+        class Fmt(ctypes.Structure):
+            _fields_ = [("status", wintypes.DWORD), ("value", ctypes.c_double)]
+
+        class Item(ctypes.Structure):
+            _fields_ = [("name", wintypes.LPWSTR), ("fmt", Fmt)]
+
+        self.Item = Item
+        self.query, self.engine, self.memory = wintypes.HANDLE(), wintypes.HANDLE(), wintypes.HANDLE()
+        if self.pdh.PdhOpenQueryW(None, None, ctypes.byref(self.query)) & 0xFFFFFFFF:
+            raise OSError("PdhOpenQuery failed")
+        for path, handle in ((r"\GPU Engine(*)\Utilization Percentage", self.engine),
+                             (r"\GPU Adapter Memory(*)\Dedicated Usage", self.memory)):
+            if self.pdh.PdhAddEnglishCounterW(self.query, path, None, ctypes.byref(handle)) & 0xFFFFFFFF:
+                raise OSError("no GPU counters")
+        self.pdh.PdhCollectQueryData(self.query)
+
+    def _read(self, counter):
+        ct, wt = self.ct, self.wt
+        size, count = wt.DWORD(0), wt.DWORD(0)
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), None) & 0xFFFFFFFF \
+                != 0x800007D2:  # PDH_MORE_DATA: tells the size
+            return []
+        buf = (ct.c_byte * size.value)()
+        if self.pdh.PdhGetFormattedCounterArrayW(counter, 0x200, ct.byref(size), ct.byref(count), buf) & 0xFFFFFFFF:
+            return []
+        items = ct.cast(buf, ct.POINTER(self.Item))
+        return [(items[i].name, items[i].fmt.value) for i in range(count.value)]
+
+    @staticmethod
+    def combine(luid, engines, memory, total):
+        """[%, MB used, MB total] of the card with this luid, from the counters' (instance, value) pairs: an engine's use
+        is what every process ran on it, the card's the busiest engine's (Task Manager's GPU %)."""
+        mark, busy = "luid_%s" % luid.lower(), {}
+        for name, value in engines:
+            name = (name or "").lower()
+            if mark in name:
+                m = re.search(r"_eng_(\d+)", name)
+                key = m.group(1) if m else name
+                busy[key] = busy.get(key, 0.0) + value
+        used = sum(value for name, value in memory if mark in (name or "").lower())
+        return [min(100.0, max(busy.values()) if busy else 0.0), used / 1024 ** 2, total / 1024 ** 2]
+
+    def sample(self):
+        self.pdh.PdhCollectQueryData(self.query)
+        return self.combine(self.card["luid"], self._read(self.engine), self._read(self.memory), self.card["dedicated"])
+
+
+def amdgpu_card(root="/sys/class/drm"):
+    """Linux with an AMD card (the amdgpu driver): its device folder in sysfs, the one with the most VRAM, or None."""
+    best = None
+    for dev in sorted(Path(root).glob("card*/device")):
+        try:
+            vendor = (dev / "vendor").read_text().strip().lower()
+            total = int((dev / "mem_info_vram_total").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if vendor == "0x1002" and total >= GPU_MIN_VRAM and (best is None or total > best[1]):
+            best = (str(dev), total)
+    return best[0] if best else None
+
+
+def amdgpu_sample(dev):
+    """[%, MB used, MB total] of an AMD card on Linux, from what amdgpu writes in sysfs, or None (1.0.28)."""
+    try:
+        read = lambda name: int(Path(dev, name).read_text().strip())
+        return [float(read("gpu_busy_percent")), read("mem_info_vram_used") / 1024 ** 2,
+                read("mem_info_vram_total") / 1024 ** 2]
+    except (OSError, ValueError):
+        return None
+
+
+class AmdgpuPerProcess:
+    """GPU use and VRAM of the Nuke processes on Linux with an AMD card, from what the kernel says of each process's GPU
+    clients (/proc/<pid>/fdinfo, drm-driver amdgpu): the VRAM they hold, and how long their gfx and compute engines ran since
+    the last sample. sample(pids) -> {pid: (percent or None, bytes)} (1.0.28)."""
+
+    UNITS = {"": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
+
+    def __init__(self, proc_root="/proc"):
+        self.root = proc_root
+        self.last = {}  # pid -> (time, engine ns)
+
+    def read(self, pid):
+        clients = {}
+        folder = os.path.join(self.root, str(pid), "fdinfo")
+        for fd in os.listdir(folder):
+            try:
+                with open(os.path.join(folder, fd), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError:
+                continue
+            if "amdgpu" not in text:
+                continue
+            fields = {}
+            for line in text.splitlines():
+                key, _, value = line.partition(":")
+                fields[key.strip()] = value.strip()
+            if fields.get("drm-driver") != "amdgpu":
+                continue
+            vram = next((fields[k] for k in ("drm-resident-vram", "drm-memory-vram", "drm-total-vram") if k in fields), "0")
+            amount, _, unit = vram.partition(" ")
+            ns = sum(int(fields.get(k, "0 ns").split()[0]) for k in ("drm-engine-gfx", "drm-engine-compute"))
+            # one client open in several descriptors counts once
+            clients[fields.get("drm-client-id") or fd] = (int(amount or 0) * self.UNITS.get(unit.strip(), 1), ns)
+        return sum(v for v, _ in clients.values()), sum(n for _, n in clients.values())
+
+    def sample(self, pids, now=None):
+        now = time.time() if now is None else now
+        out = {}
+        for pid in pids:
+            try:
+                vram, ns = self.read(pid)
+            except (OSError, ValueError):
+                continue
+            prev = self.last.get(pid)
+            pct = min(100.0, max(0.0, (ns - prev[1]) / 1e9 / (now - prev[0]) * 100)) if prev and now > prev[0] else None
+            self.last[pid] = (now, ns)
+            out[pid] = (pct, vram)
+        return out
+
+
+def clean_render_folders(root, days, keep=()):
+    """Delete render folders (snapshot, job, logs) under root whose newest file is older than `days`.
+
+    Only folders JKrender made (they hold job.json) and none of the renders open now."""
+    cutoff = time.time() - days * 86400
+    keep = {os.path.normcase(os.path.abspath(str(k))) for k in keep}
+    deleted, freed = 0, 0
+    try:
+        folders = [d for d in Path(root).iterdir() if d.is_dir() and (d / "job.json").is_file()]
+    except OSError:
+        return 0, 0
+    for d in folders:
+        if os.path.normcase(os.path.abspath(str(d))) in keep:
+            continue
+        try:
+            files = [f for f in d.rglob("*") if f.is_file()]
+            newest = max([f.stat().st_mtime for f in files] + [d.stat().st_mtime])
+            if newest >= cutoff:
+                continue
+            size = sum(f.stat().st_size for f in files)
+            shutil.rmtree(d)
+            deleted += 1
+            freed += size
+        except OSError:
+            continue
+    return deleted, freed
+
+
+SNAPSHOT_PACK_AFTER = 3600  # s untouched before the script copy of a render that is not open is packed (1.0.29)
+
+
+def pack_snapshots(root, keep=(), older_than=SNAPSHOT_PACK_AFTER):
+    """Pack the script copies (snapshot_*) of render folders that are not open into .gz, about a fifth of their size
+    (1.0.29: a log folder of 337 MB held 313 MB of them, 42 % the same script sent with several Writes). Only folders
+    JKrender made (job.json), none of the renders open, none touched in the last hour. The packed file keeps the copy's
+    time, so the age the cleanup goes by stays the same. A render of such a folder unpacks it first (unpack_snapshot), so
+    nothing is lost, as Deadline archives a job. Returns (packed, bytes before, bytes after)."""
+    import gzip
+
+    keep = {os.path.normcase(os.path.abspath(str(k))) for k in keep}
+    cutoff = time.time() - older_than
+    packed = before = after = 0
+    try:
+        folders = [d for d in Path(root).iterdir() if d.is_dir() and (d / "job.json").is_file()]
+    except OSError:
+        return 0, 0, 0
+    for d in folders:
+        if os.path.normcase(os.path.abspath(str(d))) in keep:
+            continue
+        try:
+            files = [f for f in d.rglob("*") if f.is_file()]
+            folder = d.stat()
+            if max([f.stat().st_mtime for f in files] + [folder.st_mtime]) >= cutoff:
+                continue  # rendering, or just rendered: left alone
+            for f in d.glob("snapshot_*"):
+                if f.name.endswith((".gz", ".part")) or not f.is_file():
+                    continue
+                st = f.stat()
+                gz = f.with_name(f.name + ".gz")
+                part = f.with_name(f.name + ".gz.part")
+                with open(f, "rb") as src, gzip.open(part, "wb", compresslevel=6) as dst:
+                    shutil.copyfileobj(src, dst, 1 << 20)
+                os.utime(part, (st.st_atime, st.st_mtime))
+                os.replace(part, gz)
+                f.unlink()
+                packed += 1
+                before += st.st_size
+                after += gz.stat().st_size
+            os.utime(d, (folder.st_atime, folder.st_mtime))  # the folder's time too: the cleanup reads it
+        except OSError:
+            continue
+    return packed, before, after
+
+
+def unpack_snapshot(path):
+    """The script copy at path, unpacked from path.gz when pack_snapshots packed it (1.0.29). True when it is there."""
+    if not path:
+        return False
+    if os.path.isfile(path):
+        return True
+    gz = path + ".gz"
+    if not os.path.isfile(gz):
+        return False
+    import gzip
+
+    part = path + ".part"
+    try:
+        st = os.stat(gz)
+        with gzip.open(gz, "rb") as src, open(part, "wb") as dst:
+            shutil.copyfileobj(src, dst, 1 << 20)
+        os.utime(part, (st.st_atime, st.st_mtime))
+        os.replace(part, path)
+        os.remove(gz)
+    except OSError:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+    return os.path.isfile(path)
+
+
+def open_nukes():
+    """How many open Nukes listen. All ports at once, as the window waits for the answer and an empty port takes a moment."""
+    found = []
+
+    def knock(port):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                found.append(port)
+        except OSError:
+            pass
+
+    threads = [threading.Thread(target=knock, args=(port,), daemon=True) for port in NUKE_PORTS]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(0.4)
+    return len(found)
+
+
+def clear_open_nukes():
+    """Every open Nuke frees its buffers, playback cache and Blink cache, when you say yes to it on Render. In the background: a port
+    nobody listens on takes a moment to answer. A Nuke started before this version just ignores it."""
+    def send():
+        for port in NUKE_PORTS:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.3) as conn:
+                    conn.sendall(b'{"command": "clear_cache"}')
+                    conn.shutdown(socket.SHUT_WR)
+                    conn.recv(64)
+            except OSError:
+                pass
+
+    threading.Thread(target=send, daemon=True).start()
+
+
+def pct_limit(settings, name):
+    """The RAM or VRAM % JKrender keeps under: Reload Nuke at (Settings > Performance and Optimization), 95 % unless set.
+    Held FRESH_HOLD s over it, the process holding the most reloads after its chunk and starts again once it fits; a
+    place comes back only under it. (Until 0.99.29 a separate Memory Limit.)"""
+    return float(settings.get("reload_ram", 95) if name == "RAM" else settings.get("reload_vram", 95))
+
+
+def reload_hold(settings):
+    """Seconds the RAM or VRAM has to stay at Reload Nuke at before a process reloads (Settings > Reload Nuke after,
+    0.99.89); FRESH_HOLD unless set."""
+    try:
+        return max(0.1, float(settings.get("reload_hold", FRESH_HOLD)))  # the Settings box starts at 1 s
+    except (TypeError, ValueError):
+        return float(FRESH_HOLD)
+
+
+def pct_kill(settings, name):
+    """From this RAM or VRAM % on one process closes at once, mid-frame (Settings > Kill at, _kill_pick picks it): never
+    under Reload Nuke at, so the gentle way, the reload, always comes first."""
+    if name == "RAM":
+        return max(pct_limit(settings, name), float(settings.get("kill_ram", 98)))
+    return max(pct_limit(settings, name), float(settings.get("kill_vram", 98)))
+
+
+def pct_reload(settings, name):
+    """From this RAM or VRAM % on (held FRESH_HOLD s), Reload Nuke "When memory is full" reloads: Settings > Performance and
+    Optimization > Reload Nuke at. 90 % unless set."""
+    return pct_limit(settings, name)
+
+
+def apple_gpu():
+    """Apple silicon (macOS): (GPU use %, GPU memory in use in bytes) from the IOAccelerator statistics, or None.
+    The memory is unified, part of the RAM, so it only shows; the RAM rules already cover it."""
+    try:
+        out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return None
+    util = re.search(r'"Device Utilization %"\s*=\s*(\d+)', out)
+    used = re.search(r'"In use system memory"\s*=\s*(\d+)', out)
+    if not util:
+        return None
+    return float(util.group(1)), (float(used.group(1)) if used else None)
+
+
+# macOS: {pid: (footprint bytes, GPU bytes)} of the Nuke processes, sampled every 2 s by the window. RSS leaves out what
+# macOS compressed and the graphics buffers, so a Nuke of 1.5 GB showed 0.16 GB; the footprint is what Activity Monitor shows.
+MAC_MEM = {}
+MAC_GPU_CATEGORIES = ("IOAccelerator", "IOSurface", "OpenCL", "(graphics)", "Metal")
+
+
+def footprint_parse(data):
+    """footprint's JSON -> {pid: (footprint bytes, GPU bytes)}. GPU memory: the Metal, IOSurface and OpenCL categories,
+    what the GPU holds for the process; it is part of the footprint, as the GPU's memory is part of the RAM."""
+    out = {}
+    for proc in (data or {}).get("processes") or []:
+        try:
+            cats = proc.get("categories") or {}
+            gpu = sum(float(c.get("dirty") or 0) for name, c in cats.items() if any(k in name for k in MAC_GPU_CATEGORIES))
+            out[int(proc["pid"])] = (float(proc.get("footprint") or 0), gpu)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            pass
+    return out
+
+
+def mac_footprints(pids):
+    """macOS: footprint of these processes, one run of /usr/bin/footprint for all (about 0.1 s). {} when it fails."""
+    if not pids:
+        return {}
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="jkrender-footprint-")
+    os.close(fd)
+    try:
+        exe = "/usr/bin/footprint" if os.path.isfile("/usr/bin/footprint") else "footprint"
+        subprocess.run([exe, "-j", path, "-f", "bytes"] + [str(p) for p in pids],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        with open(path, encoding="utf-8") as f:
+            return footprint_parse(json.load(f))
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def process_ram(w):
+    """GB a Nuke process takes: on macOS its footprint (with what macOS compressed), elsewhere its RSS."""
+    mem = MAC_MEM.get(w.proc.pid) if sys.platform == "darwin" else None
+    return (mem[0] if mem else w.ps.memory_info().rss) / 1024 ** 3
+
+
+class AppleGpuPerProcess:
+    """GPU use of every process on Apple silicon (macOS), what Activity Monitor's GPU column shows: the GPU time each
+    process's Metal clients have used (AppUsage accumulatedGPUTime in ioreg, ns), over the time between two samples.
+    sample() -> {pid: GPU %}. There is no per-process GPU memory: the memory is unified, part of the RAM."""
+
+    def __init__(self):
+        self.last = None  # (time, {pid: ns})
+
+    @staticmethod
+    def parse(text):
+        """ioreg's text -> {pid: GPU ns used so far}, all Metal clients of a process added up."""
+        used = {}
+        for block in text.split("+-o ")[1:]:  # one Metal client each
+            m = re.search(r'"IOUserClientCreator"\s*=\s*"pid (\d+),', block)
+            if m:
+                pid = int(m.group(1))
+                used[pid] = used.get(pid, 0) + sum(int(x) for x in re.findall(r'"accumulatedGPUTime"\s*=\s*(\d+)', block))
+        return used
+
+    def sample(self, text=None, now=None):
+        if text is None:
+            text = subprocess.run(["ioreg", "-r", "-c", "AGXDeviceUserClient", "-d", "1", "-w", "0", "-l"],
+                                  capture_output=True, text=True, timeout=5).stdout
+        now = time.time() if now is None else now
+        used = self.parse(text)
+        out = {}
+        if self.last:
+            dt = max(0.1, now - self.last[0]) * 1e9
+            out = {pid: min(100.0, max(0.0, (ns - self.last[1].get(pid, ns)) / dt * 100)) for pid, ns in used.items()}
+        self.last = (now, used)
+        return out
+
+
+def apple_gpu_name():
+    """Apple silicon (macOS): "Apple M4 Pro, 20 GPU cores" from the IOAccelerator, or None."""
+    try:
+        out = subprocess.run(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except Exception:
+        return None
+    model = re.search(r'"model"\s*=\s*"([^"]+)"', out)
+    cores = re.search(r'"gpu-core-count"\s*=\s*(\d+)', out)
+    if not model:
+        return None
+    return model.group(1) + (", %s GPU cores" % cores.group(1) if cores else "")
+
+
+def hidden():
+    """Popen kwargs that stop Windows from opening a console window for each Nuke."""
+    if sys.platform.startswith("win"):
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000), "startupinfo": si}
+    return {}
+
+
+PROCESS_POWER_THROTTLING = 4  # ProcessPowerThrottling in Windows' PROCESS_INFORMATION_CLASS
+THROTTLE_SPEED, THROTTLE_TIMER = 0x1, 0x4  # PROCESS_POWER_THROTTLING_EXECUTION_SPEED, _IGNORE_TIMER_RESOLUTION
+
+
+def no_power_throttling(pid):
+    """Windows 10 and 11: tells Windows not to throttle this process (EcoQoS, Task Manager's "Efficiency mode"). Windows 11
+    moves work it takes for background work onto the efficiency cores of an Intel CPU (12th gen and up, Core Ultra) at a
+    low clock, and a Nuke process of JKrender has no window of its own; a render you started is no background work. On
+    other CPUs it only keeps the clock up. True when Windows took it (1.0.27)."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class State(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG), ("StateMask", wintypes.ULONG)]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.SetProcessInformation.restype = wintypes.BOOL
+        kernel.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        handle = kernel.OpenProcess(0x0200 | 0x1000, False, int(pid))  # PROCESS_SET_INFORMATION, _QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            # both off; Windows 10 knows only the speed, so that alone when it refuses the two
+            for mask in (THROTTLE_SPEED | THROTTLE_TIMER, THROTTLE_SPEED):
+                state = State(1, mask, 0)
+                if kernel.SetProcessInformation(handle, PROCESS_POWER_THROTTLING, ctypes.byref(state), ctypes.sizeof(state)):
+                    return True
+            return False
+        finally:
+            kernel.CloseHandle(handle)
+    except Exception:
+        return False
+
+
+def classify_error(text):
+    lines = [l.strip().lower() for l in (text or "").splitlines() if l.strip()]
+    err = [
+        l for l in lines
+        if any(w in l for w in ("error", "traceback", "exception", "failed", "cannot", "can't", "unable"))
+    ] or lines[-15:]
+
+    def has(*needles):
+        return any(n in l for l in err for n in needles)
+
+    if has("out of memory", "bad allocation", "bad_alloc", "cuda error"):
+        return "Out of memory"
+    if any(("cannot open" in l or "can't open" in l or "permission denied" in l) and "write" in l for l in err) or has(
+        "write error", "cannot write", "disk full", "no space left"
+    ):
+        return "Write error (output locked or not writable)"
+    if has("no such file", "file not found", "unable to open", "cannot open"):
+        return "Missing file"
+    if has("error interpreting this plugin"):
+        return "Startup script error (init.py / menu.py on NUKE_PATH)"
+    if has("unknown command", "plugin", "gizmo"):
+        return "Plugin / gizmo"
+    if any(("license" in l or "licence" in l) and any(w in l for w in ("error", "fail", "unavailable", "expired")) for l in err):
+        return "Licence"
+    return "Nuke error"
+
+
+def parse_frames(text):
+    """"1001-1100", "1001-1010, 1050", "1001 1005" -> sorted unique frame numbers."""
+    frames = set()
+    for part in re.split(r"[,\s]+", str(text or "").strip()):
+        m = re.match(r"^(-?\d+)\s*(?:-|:)\s*(-?\d+)$", part)
+        if m:
+            a, b = sorted((int(m.group(1)), int(m.group(2))))
+            frames.update(range(a, b + 1))
+        elif re.match(r"^-?\d+$", part):
+            frames.add(int(part))
+    return sorted(frames)
+
+
+def frames_problem(text, movie=False):
+    """What is wrong with a range typed by hand, or ""."""
+    count = 0
+    for part in re.split(r"[,\s]+", str(text or "").strip()):
+        m = re.match(r"^(-?\d+)(?:(?:-|:)(-?\d+))?$", part)
+        if not m:
+            return '"%s" is not a frame or a range. Write it like 1001-1100 or 1001-1010,1050.' % part
+        count += abs(int(m.group(2) or m.group(1)) - int(m.group(1))) + 1
+        if count > 200000:
+            return "That is too many frames."
+    if movie and "," in frames_to_spec(parse_frames(text)):
+        return "A movie needs one range without gaps."
+    return ""
+
+
+def frames_to_spec(frames):
+    out = []
+    run = []
+    for f in sorted(frames):
+        if run and f == run[-1] + 1:
+            run.append(f)
+            continue
+        if run:
+            out.append(str(run[0]) if len(run) == 1 else "%d-%d" % (run[0], run[-1]))
+        run = [f]
+    if run:
+        out.append(str(run[0]) if len(run) == 1 else "%d-%d" % (run[0], run[-1]))
+    return ",".join(out)
+
+
+def frame_path(pattern, frame):
+    path = re.sub(r"%(\d*)d", lambda m: str(frame).zfill(int(m.group(1) or 0)), pattern)
+    return re.sub(r"#+", lambda m: str(frame).zfill(len(m.group(0))), path)
+
+
+def fmt_secs(secs):
+    if secs is None:
+        return "—"
+    secs = int(round(secs))
+    h, rest = divmod(secs, 3600)
+    m, s = divmod(rest, 60)
+    return "%d:%02d:%02d" % (h, m, s) if h else "%d:%02d" % (m, s)
+
+
+def fmt_size(n):
+    if n is None:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return ("%d %s" if unit == "B" else "%.1f %s") % (n, unit)
+        n /= 1024.0
+
+
+_MACHINE = {}
+
+
+def machine_info():
+    """This PC, for the render report: no user or host name, only an id made from it."""
+    if _MACHINE:
+        return dict(_MACHINE)
+    import platform
+    cpu = platform.processor()
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            cpu = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
+    except Exception:
+        pass
+    if sys.platform == "darwin":
+        try:
+            cpu = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+                                 timeout=5).stdout.strip() or cpu
+        except Exception:
+            pass
+    os_name = "%s %s" % (platform.system(), platform.version())  # 10.0.22000 and up is Windows 11
+    if sys.platform.startswith("linux"):
+        cpu = linux_cpu_name() or cpu  # platform.processor() says only "x86_64"
+        try:
+            os_name = "Linux " + (platform.freedesktop_os_release().get("PRETTY_NAME") or platform.release())
+        except Exception:
+            os_name = "Linux " + platform.release()
+        if IS_WSL:
+            os_name += " (WSL)"
+    gpu, vram = None, None
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=5, **hidden()).stdout.strip().splitlines()[0]
+            gpu, vram = out.rsplit(",", 1)
+            gpu, vram = gpu.strip(), round(float(vram) / 1024, 1)
+        except Exception:
+            pass
+    if gpu is None and sys.platform.startswith("win"):
+        try:
+            cards = [a for a in windows_gpu_adapters() if a["dedicated"] >= GPU_MIN_VRAM]
+            if cards:
+                best = max(cards, key=lambda a: a["dedicated"])
+                gpu, vram = best["name"], round(best["dedicated"] / 1024 ** 3, 1)
+        except Exception:
+            pass
+    if gpu is None and sys.platform.startswith("linux"):
+        dev = amdgpu_card()
+        sample = amdgpu_sample(dev) if dev else None
+        if sample:
+            gpu, vram = "AMD (amdgpu)", round(sample[2] / 1024, 1)
+    if gpu is None and sys.platform == "darwin":
+        gpu = apple_gpu_name()  # unified memory: no VRAM of its own, vram_gb stays None
+    _MACHINE.update({
+        "id": hashlib.blake2b(platform.node().lower().encode("utf-8"), digest_size=6).hexdigest(),
+        "cpu": cpu, "threads": os.cpu_count(),
+        "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1) if psutil else None,
+        "gpu": gpu, "vram_gb": vram, "os": os_name})
+    return dict(_MACHINE)
+
+
+def linux_cpu_name(text=None):
+    """The CPU's name from /proc/cpuinfo ("AMD Ryzen 9 9950X 16-Core Processor"), or "" when it has none."""
+    try:
+        if text is None:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        return next((line.split(":", 1)[1].strip() for line in text.splitlines()
+                     if line.split(":", 1)[0].strip() == "model name" and ":" in line), "")
+    except Exception:
+        return ""
+
+
+_CPU_LAYOUT = {}
+
+
+def cpu_layout():
+    """What Windows says of the CPU: cores, threads, performance and efficiency cores (Intel 12th gen and up), physical
+    CPUs (a server can have two) and processor groups (Windows splits more than 64 threads into groups, and one process
+    runs in one group). Empty where it cannot tell."""
+    if _CPU_LAYOUT:
+        return dict(_CPU_LAYOUT)
+    out = {"threads": os.cpu_count() or 0}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        size = wintypes.DWORD(0)
+        kernel.GetLogicalProcessorInformationEx(0xFFFF, None, ctypes.byref(size))
+        buf = ctypes.create_string_buffer(size.value)
+        if kernel.GetLogicalProcessorInformationEx(0xFFFF, buf, ctypes.byref(size)):
+            raw, at, classes, packages, groups, logical = buf.raw, 0, {}, 0, 0, 0
+            while at + 8 <= size.value:
+                kind = int.from_bytes(raw[at:at + 4], "little")
+                step = int.from_bytes(raw[at + 4:at + 8], "little")
+                if step <= 0:
+                    break
+                if kind == 0:  # a core: its efficiency class (higher = faster), SMT flag
+                    cls = raw[at + 9]
+                    classes[cls] = classes.get(cls, 0) + 1
+                elif kind == 3:  # a physical CPU
+                    packages += 1
+                elif kind == 4:  # processor groups: how many, and the threads in each
+                    groups = int.from_bytes(raw[at + 10:at + 12], "little")
+                    for g in range(groups):
+                        # PROCESSOR_GROUP_INFO: MaximumProcessorCount BYTE, ActiveProcessorCount BYTE, Reserved[38], Mask
+                        logical += raw[at + 8 + 4 + 20 + g * 48 + 1]
+                at += step
+            out["cores"] = sum(classes.values()) or None
+            if len(classes) > 1:  # hybrid: the fastest class are the performance cores
+                fast = max(classes)
+                out["p_cores"], out["e_cores"] = classes[fast], sum(n for c, n in classes.items() if c != fast)
+            out["packages"] = packages or None
+            out["groups"] = groups or None
+            if logical:
+                out["threads"] = max(out["threads"], logical)
+    except Exception:
+        pass
+    if not out.get("cores") and psutil:
+        out["cores"] = psutil.cpu_count(logical=False)
+    _CPU_LAYOUT.update(out)
+    return dict(out)
+
+
+def script_id(path):
+    """The same id for every version and snapshot of one script (sh0050_v21 and sh0050_v22), and nothing of its name."""
+    stem = re.sub(r"[_.-]?v\d+$", "", Path(str(path or "")).stem.lower())
+    return hashlib.blake2b(stem.encode("utf-8"), digest_size=6).hexdigest()
+
+
+def node_classes(path):
+    """How many nodes of each class a .nk has (nodes inside groups too). Classes only, no node names."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    counts = collections.Counter(m.group(1) for m in re.finditer(r"^([A-Za-z][\w.]*) \{\s*$", text, re.M))
+    for skip in ("Root", "define_window_layout_xml"):
+        counts.pop(skip, None)
+    return dict(counts.most_common())
+
+
+def auto_plan(n_frames, movie):
+    """Workers, threads, RAM and chunk size for this machine.
+
+    Nuke uses many threads poorly on one frame, so several processes with 4 threads each get
+    much more out of a 16-64 thread CPU than one process with all of them."""
+    cpu = os.cpu_count() or 8
+    ram = psutil.virtual_memory().total / 1024 ** 3 if psutil else 32.0
+    if movie or n_frames <= 1:
+        return {"workers": 1, "threads": cpu, "ram": max(2, int(ram * 0.7)), "chunk": max(1, n_frames)}
+    workers = max(1, min(8, cpu // 4, n_frames, int(ram * 0.75 // 6) or 1))
+    return {
+        "workers": workers,
+        "threads": max(2, cpu // workers),
+        "ram": max(2, int(ram * 0.7 / workers)),
+        "chunk": max(1, min(10, math.ceil(n_frames / (workers * 4)))),
+    }
+
+
+# ----------------------------------------------------------------------------
+# Output check
+# ----------------------------------------------------------------------------
+EXR_LINES_PER_BLOCK = {0: 1, 1: 1, 2: 1, 3: 16, 4: 32, 5: 16, 6: 32, 7: 32, 8: 32, 9: 256}
+
+
+def _exr_complete(f, size):
+    """True / False for single-part scanline EXRs, None when the layout is not one this can check.
+
+    An EXR that was cut off (Nuke killed, disk full, sync client) has zeros or out-of-file
+    offsets in its block table, or its last block runs past the end of the file."""
+    data = f.read(min(size, 1 << 20))
+    version = struct.unpack("<I", data[4:8])[0]
+    if version & (0x200 | 0x800 | 0x1000):  # tiled, deep, multipart
+        return None
+    pos, attrs = 8, {}
+    while True:
+        end = data.index(b"\0", pos)
+        name = data[pos:end]
+        if not name:
+            pos = end + 1
+            break
+        tend = data.index(b"\0", end + 1)
+        n = struct.unpack("<i", data[tend + 1:tend + 5])[0]
+        attrs[name] = data[tend + 5:tend + 5 + n]
+        pos = tend + 5 + n
+    _, ymin, _, ymax = struct.unpack("<4i", attrs[b"dataWindow"])
+    lines = EXR_LINES_PER_BLOCK.get(attrs[b"compression"][0])
+    if lines is None:
+        return None
+    blocks = int(math.ceil((ymax - ymin + 1) / float(lines)))
+    f.seek(pos)
+    table = f.read(8 * blocks)
+    if len(table) < 8 * blocks:
+        return False
+    offsets = struct.unpack("<%dQ" % blocks, table)
+    if any(o == 0 or o >= size for o in offsets):
+        return False
+    last = max(offsets)
+    f.seek(last)
+    head = f.read(8)
+    if len(head) < 8:
+        return False
+    return last + 8 + struct.unpack("<iI", head)[1] <= size
+
+
+def check_file(path):
+    """(status, size, note). status: ok / missing / empty / truncated / unreadable."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return "missing", None, ""
+    if size == 0:
+        return "empty", 0, ""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        with open(path, "rb") as f:
+            head = f.read(16)
+            if ext == ".exr":
+                if head[:4] != b"\x76\x2f\x31\x01":
+                    return "unreadable", size, "not an EXR"
+                f.seek(0)
+                ok = _exr_complete(f, size)
+                if ok is False:
+                    return "truncated", size, "EXR block table incomplete"
+                return "ok", size, "" if ok else "header only (tiled / multipart / deep)"
+            if ext == ".png":
+                if head[:4] != b"\x89PNG":
+                    return "unreadable", size, "not a PNG"
+                f.seek(max(0, size - 12))
+                return ("ok", size, "") if b"IEND" in f.read() else ("truncated", size, "no IEND")
+            if ext in (".jpg", ".jpeg"):
+                if head[:2] != b"\xff\xd8":
+                    return "unreadable", size, "not a JPEG"
+                f.seek(max(0, size - 2))
+                return ("ok", size, "") if f.read() == b"\xff\xd9" else ("truncated", size, "no end marker")
+            if ext == ".dpx":
+                if head[:4] not in (b"SDPX", b"XPDS"):
+                    return "unreadable", size, "not a DPX"
+                f.seek(16)  # header field: total file size
+                raw = f.read(4)
+                total = struct.unpack(">I" if head[:4] == b"SDPX" else "<I", raw)[0]
+                return ("ok", size, "") if size >= total else ("truncated", size, "shorter than its header says")
+            if ext in (".tif", ".tiff"):
+                ok = head[:4] in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+")
+                return ("ok", size, "") if ok else ("unreadable", size, "not a TIFF")
+            magic = {
+                ".hdr": (b"#?RADIANCE", b"#?RGBE"),
+                ".cin": (b"\x80\x2a\x5f\xd7", b"\xd7\x5f\x2a\x80"),
+                ".sgi": (b"\x01\xda",), ".rgb": (b"\x01\xda",), ".rgba": (b"\x01\xda",), ".bw": (b"\x01\xda",),
+                ".psd": (b"8BPS",),
+                ".pic": (b"\x53\x80\xf6\x34",),
+                ".xpm": (b"/* XPM */",),
+            }.get(ext)
+            if magic and not any(head.startswith(m) for m in magic):
+                return "unreadable", size, "not a %s file" % ext[1:].upper()
+            # TGA, YUV, movie files and anything else: present and not empty is all this can tell.
+
+    except Exception as exc:
+        return "unreadable", size, str(exc)[:120]
+    return "ok", size, ""
+
+
+def _one_value(pixels, tolerance=0):
+    """The value of every channel if the whole image holds just one, else None. Every 8th pixel first: min and max of a whole
+    4K frame take 0.14 s, and nearly every frame shows at once that it is not one colour. A JPEG's compression leaves a little
+    noise even on one flat colour, hence the tolerance."""
+    import numpy as np
+
+    for image in (pixels[::8, ::8], pixels):
+        low, high = image.min(axis=(0, 1)), image.max(axis=(0, 1))
+        if not np.all(high.astype(np.int64) - low.astype(np.int64) <= tolerance) if tolerance else not np.all(low == high):
+            return None
+    return np.atleast_1d(low if not tolerance else (low.astype(np.int64) > tolerance) * low)
+
+
+class _Plane:
+    """One layer of an image, shaped like an OpenEXR channel: what _blank reads."""
+
+    def __init__(self, pixels):
+        self.pixels = pixels
+
+
+def _read_dpx(path):
+    """The pixels of a DPX file (H x W x channels, integers) and its properties, or (None, reason).
+    8, 10, 12 and 16 bit RGB, RGBA and luma, the packings Nuke writes; anything else is not judged."""
+    import numpy as np
+
+    with open(path, "rb") as f:
+        head = f.read(2048)
+        magic = head[:4]
+        if magic == b"SDPX":
+            end = ">"
+        elif magic == b"XPDS":
+            end = "<"
+        else:
+            return None, "not a DPX file"
+        u32 = lambda at: int(np.frombuffer(head, end + "u4", 1, at)[0])
+        u16 = lambda at: int(np.frombuffer(head, end + "u2", 1, at)[0])
+        width, height = u32(772), u32(776)
+        descriptor, bits, packing, encoding = head[800], head[803], u16(804), u16(806)
+        offset = u32(808) or u32(4)
+        channels = {50: 3, 51: 4, 6: 1}.get(descriptor)
+        if not channels or encoding != 0 or not width or not height:
+            return None, "DPX layout not read here (descriptor %d, encoding %d)" % (descriptor, encoding)
+        names = {3: "RGB", 4: "RGBA", 1: "Y"}[channels]
+        samples = width * channels
+        f.seek(offset)
+        if bits == 8:
+            line = -(-samples // 4) * 4
+            data = np.frombuffer(f.read(line * height), np.uint8).reshape(height, line)[:, :samples]
+        elif bits == 16 or (bits == 12 and packing == 1):
+            line = -(-samples // 2) * 2
+            data = np.frombuffer(f.read(line * height * 2), end + "u2").reshape(height, line)[:, :samples]
+            data = data >> 4 if bits == 12 else data
+        elif bits == 10 and packing in (1, 2):
+            words = -(-samples // 3)
+            raw = np.frombuffer(f.read(words * height * 4), end + "u4").reshape(height, words)
+            shifts = (22, 12, 2) if packing == 1 else (20, 10, 0)
+            data = np.stack([(raw >> s) & 0x3FF for s in shifts], axis=2).reshape(height, words * 3)[:, :samples]
+        else:
+            return None, "DPX %d bit with packing %d not read here" % (bits, packing)
+    if data.shape[0] != height:
+        return None, "the file is shorter than its picture"
+    pixels = np.ascontiguousarray(data.reshape(height, width, channels))
+    return pixels, {"size": "%dx%d" % (width, height), "channels": names, "bit depth": "%d bit" % bits}
+
+
+def _read_qt(path):
+    """The pixels of a PNG, JPEG or TIFF through Qt (H x W x channels) and its properties, or (None, reason)."""
+    import numpy as np
+
+    img = QtGui.QImage(path)
+    if img.isNull():
+        return None, "Qt could not read it"
+    deep = img.depth() > 32 or img.format() in (QtGui.QImage.Format_Grayscale16,)
+    gray = img.format() in (QtGui.QImage.Format_Grayscale8, QtGui.QImage.Format_Grayscale16)  # what the file is, not what it shows
+    if gray:
+        img = img.convertToFormat(QtGui.QImage.Format_Grayscale16 if deep else QtGui.QImage.Format_Grayscale8)
+        dtype, channels, names = (np.uint16 if deep else np.uint8), 1, "Y"
+    else:
+        alpha = img.hasAlphaChannel()
+        img = img.convertToFormat(QtGui.QImage.Format_RGBA64 if deep else QtGui.QImage.Format_RGBA8888)
+        dtype, channels, names = (np.uint16 if deep else np.uint8), 4, ("RGBA" if alpha else "RGB")
+    width, height = img.width(), img.height()
+    item = np.dtype(dtype).itemsize
+    raw = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(height, img.bytesPerLine())
+    pixels = raw[:, :width * channels * item].view(dtype).reshape(height, width, channels)
+    if names == "RGB":
+        pixels = pixels[:, :, :3]
+    pixels = np.array(pixels, copy=True)  # a copy: the view is of the QImage's memory, gone when it is
+    return pixels, {"size": "%dx%d" % (width, height), "channels": names, "bit depth": "%d bit" % (16 if deep else 8)}
+
+
+PIXEL_FORMATS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".dpx")
+
+
+def _blank(channels, tolerance=0):
+    """"empty", "black" or "one colour" for a frame like that, else None. A frame without RGB channels is not judged."""
+    rgb, alpha = [], None
+    for name, channel in channels.items():
+        pixels = channel.pixels
+        if name in ("RGB", "RGBA") and pixels.ndim == 3:
+            rgb.append(pixels[:, :, :3])
+            alpha = pixels[:, :, 3] if name == "RGBA" else alpha
+        elif name in ("R", "G", "B", "Y"):
+            rgb.append(pixels)
+        elif name == "A":
+            alpha = pixels
+    if not rgb:
+        return None
+    values = [_one_value(p, tolerance) for p in rgb]
+    if any(v is None for v in values):
+        return None
+    if any(v.any() for v in values):
+        return "one colour"
+    if alpha is None:
+        return "black"
+    one = _one_value(alpha, tolerance)
+    return "empty" if one is not None and not one.any() else "black"
+
+
+def _exr_beauty(f):
+    """The beauty of an open EXR, the layer without a name: (channels for _blank, [R, G, B pixels], the header of its part),
+    from whichever part holds it, or None when the file has none (only other layers: utility passes such as SmartVector,
+    depth, normals or motion). Since 1.0.26 the pixel check looks at RGB only: the other layers are the artist's business
+    (a depth of inf, SmartVector layers that differ from frame to frame by design)."""
+    parts = list(getattr(f, "parts", None) or [])
+    for i in range(max(1, len(parts))):
+        ch, header = (f.channels(i), f.header(i)) if parts else (f.channels(), f.header())
+        for key in ("RGBA", "RGB"):
+            c = ch.get(key)
+            if c is not None and c.pixels.ndim == 3 and c.pixels.shape[2] >= 3:
+                return {key: c}, [c.pixels[:, :, k] for k in range(3)], header
+        if all(k in ch for k in ("R", "G", "B")):  # stored apart (types that differ): not grouped
+            return {k: ch[k] for k in ("R", "G", "B", "A") if k in ch}, [ch[k].pixels for k in ("R", "G", "B")], header
+    return None
+
+
+def check_pixels(paths):
+    """What only the pixels can tell, for one frame: {"nan", "inf", "hash", "blank", "props"}, or {"error"}, or with
+    "no_rgb" for a frame of other layers only. RGB only (1.0.26): NaN and inf, black or one-colour frames and frames the same
+    as another are judged on R, G and B; the other layers of a multi-layer EXR (AOVs, utility passes) are not looked at.
+    The hash is of the pixels, not of the file: an EXR's header holds the time it was written, so two identical frames have
+    different files. PNG, JPEG and TIFF are read through Qt and DPX here; they hold whole numbers, so no NaN or inf. Other
+    formats: only frames that are the same file. What differs from the sequence: size, bit depth (of RGB), compression."""
+    digest = hashlib.blake2b(digest_size=16)
+    nan = inf = 0
+    blank, props = None, {}
+    exr_without_rgb = judged = 0
+    try:
+        for path in paths:
+            if path.lower().endswith(".exr"):
+                import numpy as np
+                import OpenEXR
+
+                with OpenEXR.File(path) as f:
+                    header = f.header()
+                    (x0, y0), (x1, y1) = header["displayWindow"]
+                    props = {"size": "%dx%d" % (x1 - x0 + 1, y1 - y0 + 1),
+                             "compression": str(header.get("compression", "")).split(".")[-1].replace("_COMPRESSION", "")}
+                    beauty = _exr_beauty(f)
+                    if beauty is None:
+                        exr_without_rgb += 1
+                        continue
+                    planes, rgb, part = beauty
+                    judged += 1
+                    props["bit depth"] = " ".join(sorted({str(p.dtype) for p in rgb}))
+                    blank = blank or _blank(planes)
+                    # where the pixels sit: a moving element with the same pixels in a moved bbox is not the same frame
+                    digest.update(repr(tuple(int(v) for xy in part["dataWindow"] for v in xy)).encode())
+                    for pixels in rgb:
+                        digest.update(np.ascontiguousarray(pixels).tobytes())
+                        if pixels.dtype.kind == "f":
+                            broken = ~np.isfinite(pixels)
+                            if broken.any():
+                                n = int(np.isnan(pixels).sum())
+                                nan += n
+                                inf += int(broken.sum()) - n
+            elif path.lower().endswith(PIXEL_FORMATS):
+                import numpy as np  # noqa: F401  (the readers need it)
+
+                pixels, info = (_read_dpx if path.lower().endswith(".dpx") else _read_qt)(path)
+                if pixels is None:
+                    return {"error": info}
+                judged += 1
+                props = {k: v for k, v in info.items() if k != "channels"}  # an alpha more or less is not RGB
+                digest.update(np.ascontiguousarray(pixels[:, :, :3]).tobytes())
+                names = {"RGB": ("R", "G", "B"), "RGBA": ("R", "G", "B", "A"), "Y": ("Y",)}[info["channels"]]
+                planes = {n: _Plane(pixels[:, :, i]) for i, n in enumerate(names)}
+                jpeg = path.lower().endswith((".jpg", ".jpeg"))
+                blank = blank or _blank(planes, tolerance=3 if jpeg else 0)
+            else:
+                judged += 1
+                with open(path, "rb") as f:
+                    digest.update(f.read())
+    except ImportError:
+        return {"error": "needs numpy (and OpenEXR for EXR)"}
+    except Exception as exc:
+        return {"error": str(exc)[:120]}
+    if exr_without_rgb and not judged:
+        return {"nan": 0, "inf": 0, "hash": None, "blank": None, "props": props, "no_rgb": True}
+    return {"nan": nan, "inf": inf, "hash": digest.hexdigest(), "blank": blank, "props": props}
+
+
+def _exr_rgb(path, on_format=True):
+    """RGB of an EXR on its format (display window): a bbox (data window) smaller than the format sits where it is on
+    black, one larger than the format (overscan) is cut to it. Before 0.99.75 the bbox alone filled the preview.
+    on_format=False: the bbox alone, so it fills the preview (a close look at a small element; right click on it)."""
+    import numpy as np
+    import OpenEXR
+
+    with OpenEXR.File(path) as f:
+        ch = f.channels()
+        a = None
+        for key in ("RGBA", "RGB"):
+            if key in ch:
+                a = np.asarray(ch[key].pixels, dtype=np.float32)[:, :, :3]
+                break
+        if a is None:
+            names = [k for c in "RGB" for k in ch if k == c or k.endswith("." + c)]
+            if len(names) >= 3:
+                a = np.stack([np.asarray(ch[k].pixels, dtype=np.float32) for k in names[:3]], -1)
+            else:
+                a = np.asarray(next(iter(ch.values())).pixels, dtype=np.float32)
+                a = np.repeat(a[:, :, None], 3, axis=2) if a.ndim == 2 else a[:, :, :3]
+        if not on_format:
+            return a
+        try:
+            header = f.header()
+            (dx0, dy0), (dx1, dy1) = header["dataWindow"]
+            (fx0, fy0), (fx1, fy1) = header["displayWindow"]
+        except Exception:
+            return a
+    dx0, dy0, fx0, fy0, fx1, fy1 = (int(v) for v in (dx0, dy0, fx0, fy0, fx1, fy1))
+    fw, fh = fx1 - fx0 + 1, fy1 - fy0 + 1
+    if (dx0, dy0) == (fx0, fy0) and a.shape[1] == fw and a.shape[0] == fh:
+        return a  # the bbox is the format
+    out = np.zeros((fh, fw, 3), dtype=np.float32)
+    ox, oy = dx0 - fx0, dy0 - fy0  # where the bbox starts on the format
+    x0, y0 = max(0, ox), max(0, oy)
+    x1, y1 = min(fw, ox + a.shape[1]), min(fh, oy + a.shape[0])
+    if x1 > x0 and y1 > y0:
+        out[y0:y1, x0:x1] = a[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+    return out
+
+
+def preview_image(path, max_w, max_h, on_format=True):
+    """QImage of a rendered frame; EXR is shown linear -> sRGB, clipped to 0-1, on its format (or its bbox alone)."""
+    if path.lower().endswith(".exr"):
+        try:
+            import numpy as np
+
+            a = _exr_rgb(path, on_format)
+        except ImportError:
+            raise RuntimeError("the EXR preview needs numpy and OpenEXR.\nRestart Nuke to download them.")
+        h, w = a.shape[:2]
+        step = max(1, int(math.ceil(max(w / max(1, max_w), h / max(1, max_h)))))
+        a = np.clip(np.nan_to_num(a[::step, ::step], nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+        a = np.where(a <= 0.0031308, a * 12.92, 1.055 * np.power(a, 1 / 2.4) - 0.055)
+        rgb = np.ascontiguousarray((a * 255.0 + 0.5).astype(np.uint8))
+        hh, ww = rgb.shape[:2]
+        return QtGui.QImage(rgb.tobytes(), ww, hh, 3 * ww, QtGui.QImage.Format_RGB888).copy()
+    image = QtGui.QImage(path)
+    if image.isNull():
+        raise RuntimeError("Qt cannot read this file type")
+    if image.width() <= max_w and image.height() <= max_h:
+        return image
+    return image.scaled(max_w, max_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+
+
+# ----------------------------------------------------------------------------
+# Movie files (one container for the whole range)
+# ----------------------------------------------------------------------------
+# Nuke's mov64_codec value -> the codec name ffprobe reports
+MOV_CODECS = {"appr": "prores", "ap4x": "prores", "ap4h": "prores", "apch": "prores", "apcn": "prores",
+              "apcs": "prores", "apco": "prores", "AVdn": "dnxhd", "avc1": "h264", "h264": "h264",
+              "mp4v": "mpeg4", "mp1v": "mpeg1video", "rle": "qtrle", "mjpa": "mjpeg", "jpeg": "mjpeg"}
+# Words of Nuke's ProRes profile -> ffprobe's profile name, most specific first
+PRORES_PROFILES = (("XQ", "4444 XQ"), ("4:4:4:4", "4444"), ("HQ", "HQ"), ("LT", "LT"), ("Proxy", "Proxy"),
+                   ("4:2:2", "Standard"))
+
+
+def find_tool(name):
+    """ffprobe / ffmpeg on PATH, or where WinGet puts them, else the one JKrender fetched into lib/ffmpeg."""
+    found = shutil.which(name)
+    if not found and sys.platform.startswith("win"):
+        link = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / (name + ".exe")
+        found = str(link) if link.is_file() else None
+    if not found and sys.platform == "darwin":  # Homebrew, which an app started from the Dock has not on its PATH
+        found = next((p for p in ("/opt/homebrew/bin/" + name, "/usr/local/bin/" + name) if os.path.isfile(p)), None)
+    if not found:
+        try:
+            import jkrender_deps
+
+            found = jkrender_deps.find_tool(name)
+        except ImportError:
+            pass
+    return found
+
+
+def _rate(text):
+    try:
+        a, b = str(text).split("/")
+        return float(a) / float(b) if float(b) else 0.0
+    except Exception:
+        try:
+            return float(text)
+        except Exception:
+            return 0.0
+
+
+def probe_movie(path):
+    """What ffprobe says about a movie file. "error" is set when it is missing or cannot be read."""
+    info = {"path": path, "error": None}
+    try:
+        info["size"] = os.path.getsize(path)
+        info["modified"] = os.path.getmtime(path)
+    except OSError:
+        info["error"] = "missing"
+        return info
+    exe = find_tool("ffprobe")
+    if not exe:
+        info["no_probe"] = True
+        return info
+    try:
+        run = subprocess.run([exe, "-v", "error", "-show_format", "-show_streams", "-of", "json", path],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, **hidden())
+    except OSError as exc:
+        # 1.0.24: ffprobe itself cannot start (Windows' Smart App Control or an antivirus blocks it, a broken copy): that
+        # says nothing about the movie, so it is not checked, as without ffprobe; it was "broken" and rendered again
+        info["no_probe"] = True
+        info["probe_error"] = "ffprobe could not run (%s): %s" % (exe, str(exc)[:160])
+        return info
+    except Exception as exc:  # it ran too long (60 s): the file, as before
+        info["error"] = "ffprobe failed: %s" % exc
+        return info
+    if run.returncode not in (0, 1) and not (run.stdout or "").strip(" {}\r\n\t"):
+        # it started but died before reading anything (a DLL missing: 0xC0000135, killed): the tool, not the movie
+        info["no_probe"] = True
+        info["probe_error"] = "ffprobe could not run (%s): exit code %s" % (exe, run.returncode)
+        return info
+    try:
+        data = json.loads(run.stdout or "{}")
+    except Exception as exc:
+        info["error"] = "ffprobe failed: %s" % exc
+        return info
+    streams = data.get("streams") or []
+    video = next((st for st in streams if st.get("codec_type") == "video"), None)
+    if run.returncode != 0 or video is None:
+        last = (run.stderr or "").strip().splitlines()
+        info["error"] = "not playable: %s" % (last[-1] if last else "no video stream (render not finished?)")
+        return info
+    fmt = data.get("format") or {}
+    tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    fps = _rate(video.get("r_frame_rate") or video.get("avg_frame_rate"))
+    duration = float(video.get("duration") or fmt.get("duration") or 0)
+    frames = int(video.get("nb_frames") or 0) or int(round(duration * fps))
+    timecode = tags.get("timecode") or (video.get("tags") or {}).get("timecode") or next(
+        ((st.get("tags") or {}).get("timecode") for st in streams if (st.get("tags") or {}).get("timecode")), None)
+    info.update({
+        "container": fmt.get("format_long_name") or fmt.get("format_name"),
+        "duration": duration, "bitrate": float(fmt.get("bit_rate") or 0), "frames": frames, "fps": fps,
+        "start": float(video.get("start_time") or 0),
+        "timecode": timecode, "encoder": tags.get("encoder") or (video.get("tags") or {}).get("encoder"),
+        "codec": video.get("codec_name"), "codec_long": video.get("codec_long_name"), "profile": video.get("profile"),
+        "width": video.get("width"), "height": video.get("height"), "sar": video.get("sample_aspect_ratio"),
+        "pix_fmt": video.get("pix_fmt"), "bits": video.get("bits_per_raw_sample"),
+        "range": video.get("color_range"), "matrix": video.get("color_space"),
+        "transfer": video.get("color_transfer"), "primaries": video.get("color_primaries"),
+        "field_order": video.get("field_order"),
+        "audio": [(st.get("codec_name"), st.get("channels"), st.get("sample_rate"))
+                  for st in streams if st.get("codec_type") == "audio"],
+    })
+    return info
+
+
+MOVIE_SAME_LEVELS = 8  # a frame whose pixels moved by more than this (of 255) in at most MOVIE_SAME_SHARE of them is
+MOVIE_SAME_SHARE = 0.0002  # the same as the one before: H.264 repeats a held frame with up to 17 levels in a few pixels
+MOVIE_SAME_MEAN = 0.1  # ... and only when its pixels moved by at most this many levels on average (1.0.15). A held frame:
+# 0 in ProRes, up to 0.05 in H.264; a slow shot with grain: 0.2 in H.264, 0.4 in ProRes, while its moved pixels can be as
+# few as a held frame's (684 of 8.3 million in a UHD ProRes).
+MOVIE_BLANK_LEVELS = 3  # a frame within this many levels (of 255) everywhere is blank, as a JPEG in the pixel check
+
+
+def movie_pixels(path, width, height, running=None):
+    """What the pixels of a movie say (1.0.13), as the pixel check of a sequence: {"count", "blank": {"black" / "one colour":
+    [indexes]}, "same": [indexes]} or {"error"}. ffmpeg decodes every frame to grey at full size: a frame of one value is
+    blank (black near 0); one that hardly differs from the frame before is the same as it (frozen). Indexes from 0.
+    The ffmpeg process goes into the list running, so a render about to write the file can stop it."""
+    exe = find_tool("ffmpeg")
+    if not exe:
+        return {"error": "ffmpeg not found"}
+    try:
+        import numpy as np
+    except ImportError:
+        return {"error": "needs numpy"}
+    size = int(width or 0) * int(height or 0)
+    if size <= 0:
+        return {"error": "no frame size"}
+    try:
+        proc = subprocess.Popen([exe, "-v", "error", "-nostdin", "-i", path, "-map", "0:v:0", "-f", "rawvideo",
+                                 "-pix_fmt", "gray", "-"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, **hidden())
+    except OSError as exc:
+        return {"error": str(exc)[:120]}
+    if running is not None:
+        running.append(proc)
+    blank, same, prev, n = {}, [], None, 0
+    try:
+        while True:
+            data = proc.stdout.read(size)
+            if len(data) < size:
+                break
+            a = np.frombuffer(data, np.uint8)
+            lo, hi = int(a.min()), int(a.max())
+            if hi - lo <= MOVIE_BLANK_LEVELS:
+                blank.setdefault("black" if hi <= MOVIE_BLANK_LEVELS else "one colour", []).append(n)
+            elif prev is not None:
+                d = np.maximum(a, prev) - np.minimum(a, prev)
+                if (np.count_nonzero(d > MOVIE_SAME_LEVELS) <= size * MOVIE_SAME_SHARE
+                        and float(d.mean()) <= MOVIE_SAME_MEAN):
+                    same.append(n)
+            prev, n = a, n + 1
+    finally:
+        proc.stdout.close()
+        code = proc.wait()
+    if not n:
+        return {"error": "ffmpeg read no frame (exit code %s)" % code}
+    return {"count": n, "blank": blank, "same": same}
+
+
+def movie_checks(info, expected, pixels=None):
+    """[(what, "ok" / "warn" / "bad", text)] for a probed movie against what the render should give. pixels: what the
+    pixel check found in it (Engine.movie_pixel_result): blank and frozen frames are errors (1.0.14), red as in a sequence."""
+    if info is None:
+        return []
+    if info.get("error"):
+        return [("File", "bad", info["error"])]
+    out = [("File", "ok", "%s on disk" % fmt_size(info.get("size")))]
+    if info.get("no_probe"):
+        out.append(("Details", "warn", info.get("probe_error")
+                    or "ffprobe not found; restart Nuke to be offered the download, or winget install ffmpeg"))
+        return out
+    want = expected.get("frames")
+    if want:
+        got = info.get("frames") or 0
+        out.append(("Frames", "ok" if got == want else "bad", "%d of %d" % (got, want)))
+    fps = expected.get("fps")
+    if fps:
+        ok = abs((info.get("fps") or 0) - fps) < 0.01
+        out.append(("FPS", "ok" if ok else "warn", "%.3g (expected %.3g)" % (info.get("fps") or 0, fps)))
+    if expected.get("width") and expected.get("height"):
+        ok = (info.get("width"), info.get("height")) == (expected["width"], expected["height"])
+        out.append(("Resolution", "ok" if ok else "warn", "%sx%s (script %dx%d)" % (
+            info.get("width"), info.get("height"), expected["width"], expected["height"])))
+    codec = MOV_CODECS.get((expected.get("codec") or "").strip().split("\t")[0])
+    if codec:
+        out.append(("Codec", "ok" if info.get("codec") == codec else "warn",
+                    "%s (Write: %s)" % (info.get("codec"), codec)))
+    if codec == "prores" and expected.get("profile"):
+        want_profile = next((p for word, p in PRORES_PROFILES if word in expected["profile"]), None)
+        if want_profile:
+            got = info.get("profile") or ""
+            out.append(("Profile", "ok" if got == want_profile else "warn",
+                        "%s (Write: %s)" % (got or "?", expected["profile"])))
+    if expected.get("timecode"):
+        out.append(("Timecode", "ok" if info.get("timecode") else "warn", info.get("timecode") or "none written"))
+    if pixels:
+        if pixels.get("error"):
+            out.append(("Pixels", "warn", "not checked: %s" % pixels["error"]))
+        for kind, frames in sorted((pixels.get("blank") or {}).items()):
+            out.append(("Black frames" if kind == "black" else "One-colour frames", "bad",
+                        "%d: %s" % (len(frames), frames_to_spec(frames))))
+        if pixels.get("same"):
+            out.append(("Frozen frames", "bad", "%d the same as the one before: %s" % (len(pixels["same"]),
+                                                                                   frames_to_spec(pixels["same"]))))
+        if not pixels.get("error") and not pixels.get("blank") and not pixels.get("same"):
+            out.append(("Pixels", "ok", "%d frames: no blank frame, none the same as the one before" % pixels["count"]))
+    return out
+
+
+def movie_seek(info, index):
+    """Where to seek for frame `index` (0-based).
+
+    ffmpeg returns the first frame that starts at or after the seek time, so aim a quarter frame
+    before the frame starts. Aiming at its middle shows the next frame, and nothing for the last one."""
+    return float(info.get("start") or 0) + max(0.0, index - 0.25) / info["fps"]
+
+
+def movie_frame(path, seconds, width):
+    """One frame of a movie as a QImage, via ffmpeg."""
+    exe = find_tool("ffmpeg")
+    if not exe:
+        raise RuntimeError("ffmpeg not found")
+    run = subprocess.run([exe, "-v", "error", "-ss", "%.3f" % max(0.0, seconds), "-i", path, "-frames:v", "1",
+                          "-vf", "scale=%d:-2" % width, "-f", "image2pipe", "-vcodec", "png", "-"],
+                         capture_output=True, timeout=60, **hidden())
+    image = QtGui.QImage.fromData(run.stdout)
+    if image.isNull():
+        raise RuntimeError((run.stderr or b"").decode("utf-8", "replace").strip()[-200:] or "no frame")
+    return image
+
+
+# ----------------------------------------------------------------------------
+# Render engine (runs in the GUI thread; only pipe readers and file checks use threads)
+# ----------------------------------------------------------------------------
+class Chunk:
+    def __init__(self, cid, frames, whole_range=False):
+        self.id = cid
+        self.name = "C%02d" % cid
+        self.frames = list(frames)  # frames still to render
+        self.all_frames = list(frames)
+        self.whole_range = whole_range
+        self.state = "queued"  # queued / rendering / done / failed
+        self.worker = None
+        self.attempts = 0
+        self.started = None
+        self.ended = None
+        self.error = ""
+
+    @property
+    def spec(self):
+        return frames_to_spec(self.all_frames)
+
+
+class Frame:
+    __slots__ = ("state", "worker", "secs", "started", "checks", "small", "chunk", "pixels", "same_as", "ran_in", "old",
+                 "attempts", "hooks")
+
+    def __init__(self):
+        self.attempts = 0  # times it failed this run, each in a fresh Nuke (see _requeue)
+        self.hooks = None  # seconds the Write's own beforeFrameRender / afterFrameRender took on it (JKR FRAMEHOOKS)
+        self.state = "queued"  # queued / rendering / done / failed / bad / skipped
+        self.worker = None
+        self.secs = None
+        self.started = None
+        self.checks = {}  # output index -> (status, size, note)
+        self.small = False
+        self.chunk = None
+        self.pixels = None  # check_pixels of the frame
+        self.same_as = None  # the first frame with exactly the same pixels
+        self.ran_in = None  # the chunk that rendered it; chunk is the one of the plan now
+        self.old = None  # rendered again: what is known of the frame still on disk until the new one replaces it
+
+    def copy(self):
+        twin = Frame()
+        for name in self.__slots__:
+            setattr(twin, name, getattr(self, name))
+        return twin
+
+
+class Worker:
+    def __init__(self, wid, proc, log_path, threads, ram):
+        self.id = wid
+        self.name = "W%02d" % wid
+        self.proc = proc
+        self.threads = threads
+        self.ram = ram
+        self.state = "loading"  # loading / idle / busy / quitting / gone
+        self.retire = False
+        self.chunk = None
+        self.frame = None
+        self.frame_started = None
+        self.spawned = time.time()
+        self.ready_at = None
+        self.load_secs = None
+        self.boot_secs = None  # from the start of the process until JKrender's code runs in it: licence, start-up scripts
+        self.frames_done = 0
+        self.frames_here = 0  # by this very Nuke; frames_done and frame_secs go on from the one it replaced
+        self.frame_secs = []
+        self.frame_ends = []  # when this very Nuke finished each frame (time.time()), for Test this script
+        self.segments = []  # [kind, label, t0, t1 or None, state]
+        self.seg_info = {}  # chunk segment start -> {"spec", "count", "frames", "end", "after"}: the Workers tooltip
+        self.tail = collections.deque(maxlen=200)
+        self.log = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)  # line by line: readable while it runs
+        self.log_path = log_path
+        self.cpu = 0.0
+        self.rss = 0.0
+        self.rss_peak = 0.0  # the most RAM it took
+        self.rss_base = None  # GB after its first chunk: what this script needs, the yardstick for leaks
+        self.vram_base = None  # MB of VRAM after its first chunk, the same yardstick for the graphics card
+        self.user_paused = False  # frozen from its right-click menu
+        self.cache = None  # (bytes Nuke's cache holds, its limit), reported after each frame
+        self.pinned = False  # started again by hand: the RAM guard closes the others first
+        self.user_leaving = False  # Close after this chunk: it closes even if a place comes free meanwhile
+        self.gpu = False  # started with --gpu
+        self.leave = False  # Work on another render: this one hands its place over first
+        self.handover = False  # its place goes to another render: it still renders one chunk, then closes
+        self.why_leaving = None  # "RAM full" while it closes after its chunk because the RAM holds the places down
+        self.reload_rule = None  # which rule reloads it, shown in State until it is back: "1.3 rule", "VRAM over 95 %"
+        self.closed_why = None  # why it closed, shown in State: "RAM 98 %", "VRAM 98 %", "GPU frozen", "reload", "by me"
+        self.hooks = 0  # afterRender hooks its Nuke holds for the end of the render (JKR HOOKS, see _after_due)
+        self.exit_code = None
+        try:
+            self.ps = psutil.Process(proc.pid) if psutil else None
+            if self.ps:
+                self.ps.cpu_percent(None)
+        except Exception:
+            self.ps = None
+        self.segments.append(["load", "loading", self.spawned, None, "loading"])
+
+    def send(self, line):
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+            return True
+        except Exception:
+            return False
+
+    def chunk_info(self):
+        """The record of its last chunk segment (see seg_info), or None."""
+        if self.segments and self.segments[-1][0] == "chunk":
+            return self.seg_info.get(self.segments[-1][2])
+        return None
+
+    def close_segment(self, state):
+        if self.segments and self.segments[-1][3] is None:
+            self.segments[-1][3] = time.time()
+            self.segments[-1][4] = state
+
+
+def queued_left_for(engine):
+    return any(c.state == "queued" and engine.in_scope(c) for c in engine.chunks)
+
+
+class RenderEngine:
+    def __init__(self, job, job_dir, settings):
+        self.job = job
+        self.dir = Path(job_dir)
+        self.log_dir = self.dir / "logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.settings = settings
+        self.events = pyqueue.Queue()
+        self.checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pixel_checker = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pixel_futures = []
+        self.pixels_run = 0  # results of a check that was stopped are not counted
+        self.pixels_pending = 0
+        self.pixels_total = 0
+        self.outputs = []  # [(write name, path pattern)]
+        for w in job.get("writes", []):
+            pattern = w.get("output") or ""
+            views = w.get("views") or ["main"]
+            if "%V" in pattern or "%v" in pattern:
+                for v in views:
+                    self.outputs.append((w["name"], pattern.replace("%V", v).replace("%v", v[:1])))
+            else:
+                self.outputs.append((w["name"], pattern))
+        self.movie = any(
+            os.path.splitext(w.get("output") or "")[1].lower() in MOVIE_EXTS
+            or (w.get("file_type") or "").lower() in ("mov", "ffmpeg", "mxf")
+            for w in job.get("writes", [])
+        )
+        self._small_dirty = False
+        self.frames_text = self.sent_frames()  # Framerange in Settings, each render its own; the slate frame comes on top
+        self.outside = {}  # frames on disk that this range leaves out: they stay in Output, nothing renders them
+        self.before = {}  # rendered frames of the plan before this one: found on disk again, they keep what is known of them
+        self.range_text = self.default_range()
+        frames = parse_frames(self.range_text)
+        plan = auto_plan(len(frames), self.movie)
+        self.workers_target = plan["workers"]
+        self.place_offset = 0  # Add process / Close after this chunk: this render keeps that many places more or fewer than an even share
+        self.threads = plan["threads"]
+        self.ram = plan["ram"]
+        self.chunk_size = plan["chunk"]
+        self.state = "ready"  # ready / starting / rendering / paused / finishing / done / failed / stopped
+        self.error = ""
+        self.after_state = None  # the afterRender hooks at the end of the render: None, "sent" (running), "done"
+        self.after_worker = None
+        self.after_error = ""
+        self.frames = {}
+        self.chunks = []
+        self.workers = {}
+        self.held, self.restart_ids = set(), []  # processes closed from their menu; ones to start again
+        self.refresh_ids = []  # closed after their chunk for a fresh Nuke: started again at once, in the same place
+        self.filling = True  # all its processes still to start (see _may_spawn)
+        self.size_seen = 0.0  # GB of the largest process of this run that has rendered a few frames
+        self.preferred_wids = []  # names moved here with Work on, taken by the next processes started
+        self.hand_wids = set()  # of those, the ones you started by hand: they go past the RAM and VRAM limits
+        self.scope = None  # set of frames: only these render (Render this frame / batch); None = everything
+        self.next_wid = 1
+        self.next_cid = 1
+        self.last_spawn = 0.0
+        self.started = None
+        self.rerun_at = None  # when the render was started again after an earlier run (Workers can hide that run's done chunks)
+        self.ended = None
+        self.paused_secs = 0.0
+        self.paused_at = None
+        self.ever_ready = False
+        self.load_failures = 0
+        self.crashes = 0
+        self.done_times = collections.deque(maxlen=400)
+        self.pauses = []  # [(start, end)] of every pause in this run
+        self.log = collections.deque(maxlen=40000)  # (worker name or "", text, level)
+        self.new_log = []
+        self.pending_checks = 0
+        self.manager = None  # RenderManager that shares Nuke processes between renders
+        self.number = 1
+        self.name = Path(job.get("script") or "render").stem  # e.g. shot_010_comp_v004
+        self.write_names = ", ".join(w["name"] for w in job.get("writes", []))
+        # what the render writes, by its file name (shot_010_comp_v004.####.exr): the name of the Write node says little
+        self.output_names = ", ".join(os.path.basename((w.get("output") or "").replace("\\", "/")) or w["name"]
+                                      for w in job.get("writes", []))
+        self.everything = False
+        self.run_all = False  # the last run renders every frame anew (All frames again, or going on with one after Stop)
+        self.resume_state = "ready"
+        self.movie_info = None  # probe_movie() of the movie file, for movie output
+        self.notice = None  # (text, "ok" / "warn" / "bad") for the banner while rendering
+        self.rebuild_plan()
+
+    # ---- planning -----------------------------------------------------------
+    def frame_list(self):
+        return sorted(self.frames)
+
+    def all_frames(self):
+        """The frames of the range and those on disk outside it, as Output lists them."""
+        return sorted(set(self.frames) | set(self.outside))
+
+    def frame_info(self, frame):
+        return self.frames.get(frame) or self.outside.get(frame)
+
+    def rebuild_plan(self, frames=None):
+        frames = parse_frames(self.range_text) if frames is None else frames
+        self.before = dict(self.outside)
+        self.before.update((f, fr) for f, fr in self.frames.items() if fr.state in ("done", "skipped", "bad"))
+        self.frames = {f: Frame() for f in frames}
+        self.chunks = []
+        self.next_cid = 1
+        self._chunk(frames)
+
+    def _chunk(self, frames):
+        frames = sorted(frames)
+        if not frames:
+            return []
+        if self.movie:
+            pieces = [frames]
+        else:
+            size = max(1, int(self.chunk_size))
+            pieces = [frames[i:i + size] for i in range(0, len(frames), size)]
+        made = []
+        for piece in pieces:
+            c = Chunk(self.next_cid, piece, whole_range=self.movie)
+            self.next_cid += 1
+            self.chunks.append(c)
+            made.append(c)
+            for f in piece:
+                self.frames[f].chunk = c.name
+        self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))  # the table lists them in frame order
+        return made
+
+    def preferred_chunk(self):
+        """Chunk size from Settings: Auto = about 4 chunks per Nuke process (at most 10 frames), or the size set."""
+        if self.movie:
+            return max(1, len(self.frames))
+        if self.settings.get("chunk_auto", True) or not self.settings.get("chunk_size"):
+            procs = self.manager.total if self.manager else (self.settings.get("processes") or 8)
+            return max(1, min(10, math.ceil(len(self.frames) / (max(1, procs) * 4))))
+        return max(1, int(self.settings["chunk_size"]))
+
+    def apply_chunk_setting(self):
+        """Renders that are not running take the chunk size from Settings."""
+        if self.movie or self.state not in ("ready", "stopped", "done", "failed"):
+            return
+        size = self.preferred_chunk()
+        if size != self.chunk_size:
+            self.set_chunk_size(size)
+
+    def set_chunk_size(self, size):
+        """New size for chunks nobody has started yet."""
+        self.chunk_size = max(1, int(size))
+        queued = [c for c in self.chunks if c.state == "queued" and c.attempts == 0]
+        frames = [f for c in queued for f in c.frames]
+        self.chunks = [c for c in self.chunks if c not in queued]
+        if not self.chunks:
+            self.next_cid = 1  # a new plan, so it starts at C01
+        self._chunk(frames)
+
+    def sent_frames(self):
+        """The range Nuke sent."""
+        return "%s-%s" % (self.job.get("first"), self.job.get("last"))
+
+    def default_range(self):
+        """This render's Frames, with the slate frame in front of them when Settings asks for one: the frame before the
+        first, 1001-1020 -> 1000-1020. The script's range leaves the slate out."""
+        text = self.frames_text
+        frames = parse_frames(text)
+        if self.settings.get("slate") and frames:
+            text = frames_to_spec([frames[0] - 1] + frames)
+        return text
+
+    def set_range(self, text):
+        if self.state not in ("ready", "stopped", "done", "failed"):
+            return False
+        frames = parse_frames(text)
+        if not frames:
+            return False
+        self.range_text = text
+        self.rebuild_plan(frames)
+        self.state = "ready"
+        return True
+
+    def output_files(self, frame):
+        return [frame_path(p, frame) for _, p in self.outputs]
+
+    # ---- control ------------------------------------------------------------
+    def nothing_to_render(self):
+        return not any(fr.state in ("queued", "failed", "bad") for fr in self.frames.values())
+
+    def done_if_on_disk(self):
+        """A render whose whole range is already on disk and passes the check shows as done (green card)
+        without rendering anything; Render again renders it all anew."""
+        if self.state == "ready" and self.frames and self.nothing_to_render():
+            self.state = "done"
+            self.note("The whole range is already rendered and passes the check: nothing to render", "ok")
+
+    def start(self, everything=False):
+        """everything=True renders the whole range again, including frames already on disk. everything="continue" goes on
+        with a stopped run that rendered every frame anew: the frames it had not rendered yet are rendered too, even
+        though an older version of them is on disk."""
+        cont = everything == "continue" and self.run_all and self.state in ("stopped", "failed")
+        everything = everything is True
+        self.place_offset = 0
+        if self.state in ("rendering", "starting", "finishing"):
+            return
+        self._stop_pixels()
+        self.filling = True  # all its processes still to start (see _may_spawn)
+        if self.manager is not None and self.manager.live_count() == 0:
+            self.manager.fresh_start()
+        self.size_seen = 0.0
+        self.crashes = self.load_failures = 0  # a new run: the last one's crashes must not stop it at its first
+        self.run_stats = {"starts": [], "rss_peak": 0.0, "vram_peak": 0.0, "ram_pct_peak": 0.0, "card_peak": 0.0, "live_peak": 0}
+        self.ever_ready = False
+        self.scope = None  # Render renders everything still to render
+        if everything:
+            self.rebuild_plan()
+        elif self.state in ("done", "failed", "stopped"):
+            todo = [f for f, fr in self.frames.items() if fr.state not in ("done", "skipped")]
+            if self.state == "done" or not todo:
+                self.rebuild_plan()
+            else:
+                for c in self.chunks:
+                    if c.state in ("failed", "rendering"):
+                        c.state, c.attempts, c.error = "queued", 0, ""
+                for f in todo:
+                    self.frames[f].state = "queued"
+        for f, fr in self.frames.items():
+            known = self.before.get(f)
+            if fr.state == "queued" and known is not None and known.state in ("done", "skipped", "bad"):
+                fr.old = known.copy()  # still on disk: Output keeps listing it until the new one is there
+                fr.old.old = None
+            if fr.state == "queued":  # a check from an earlier run says nothing about the frame about to be rendered
+                fr.checks, fr.small, fr.pixels, fr.same_as = {}, False, None, None
+                fr.attempts = 0  # a new run tries it anew
+                fr.hooks = None
+        if not everything:
+            for fr in self.frames.values():
+                if fr.state == "done":
+                    fr.state = "skipped"  # on disk already (an earlier run, before Stop, or found there): not this run's, dark green
+            if cont:
+                # what is on disk of the frames left is the old version the stopped run was replacing: render them too
+                self.note("Rendering every frame again goes on: %d frame(s) left"
+                          % sum(1 for fr in self.frames.values() if fr.state == "queued"), "ok")
+            else:
+                self.scan_disk(skip=True)  # frames already on disk and passing the check are never rendered twice
+        self.run_all = everything or cont
+        self.before = {}
+        if all(w.state == "gone" for w in self.workers.values()):
+            # Stop closed every Nuke; the new run starts its own processes from W01 on a fresh timeline.
+            self.workers = {}
+            self.next_wid = 1
+        self.held, self.restart_ids = set(), []
+        self.refresh_ids = []
+        self.error = ""
+        self.after_state, self.after_worker, self.after_error = None, None, ""
+        self._recent_frames, self._stall_last, self._stalls, self._stall_noted = None, 0.0, 0, False
+        self.state = "rendering"
+        self.rerun_at = time.time() if self.started else None
+        self.started = time.time()
+        self.ended = None
+        self.paused_secs = 0.0
+        self.paused_at = None
+        self.pauses = []
+        self.done_times.clear()
+        self.notice = None
+        if self.manager:
+            self.threads = self.manager.threads
+        self.note("Render started: %d frames in %d chunks, %d threads and %d GB per Nuke process"
+                  % (sum(len(c.frames) for c in self.chunks if c.state == "queued"),
+                     sum(1 for c in self.chunks if c.state == "queued"), self.threads, self.ram))
+        self._ram_seen = 0.0
+
+    def scan_disk(self, skip=False):
+        """Mark frames the Write already rendered as done, so only the rest gets rendered.
+
+        A frame counts when every output file exists and passes the check; a broken one
+        (empty, cut off) stays queued and is rendered again. skip=True when a render starts: what it finds
+        on disk is skipped by this run (dark green), not rendered by it."""
+        if self.movie:
+            return self._scan_movie()
+        todo = [f for f, fr in self.frames.items() if fr.state == "queued"]
+        checks = dict(zip(todo, self.checker.map(lambda f: [check_file(p) for p in self.output_files(f)], todo)))
+        found = broken = 0
+        for f in todo:
+            results = checks[f]
+            if all(r[0] == "ok" for r in results):
+                fr = self.frames[f]
+                known = self.before.get(f)
+                # on disk and not rendered by this render: on disk, skipped (dark green); one this render had rendered
+                # before (Framerange changed, frames deleted) stays done, unless a new run starts
+                rendered_here = not skip and known is not None and known.state == "done"
+                fr.state, fr.worker, fr.secs = ("done" if rendered_here else "skipped"), "on disk", None
+                fr.checks = dict(enumerate(results))
+                fr.old = None
+                if known is not None and known.state in ("done", "skipped"):
+                    fr.worker, fr.secs, fr.small, fr.pixels, fr.same_as, fr.ran_in = (
+                        known.worker, known.secs, known.small, known.pixels, known.same_as, known.ran_in)
+                found += 1
+            elif any(r[0] != "missing" for r in results):
+                self.frames[f].checks = {i: r for i, r in enumerate(results) if r[0] != "missing"}  # shows why
+                broken += 1
+        for c in self.chunks:
+            if c.state == "queued":
+                c.frames = [f for f in c.frames if self.frames[f].state == "queued"]
+                if not c.frames:
+                    c.state = "done"
+        self._small_dirty = True
+        if found:
+            self.note("%d of %d frames are already on disk and pass the check; they are skipped" % (found, len(self.frames)), "ok")
+        if broken:
+            self.note("!! %d frame(s) on disk are broken (empty or cut off) and will be rendered again" % broken, "err")
+        self._find_outside()
+        self.before = {}
+        return found
+
+    def _find_outside(self):
+        """What the range leaves out but is on disk: what Nuke sent, the slate frame, what was listed until now."""
+        near = set(parse_frames(self.sent_frames())) | set(self.outside) | set(self.before)
+        near.update(int(f) - 1 for f in (self.job.get("first"), (parse_frames(self.frames_text) or [None])[0]) if f is not None)
+        near -= set(self.frames)
+        near = sorted(near)
+        checks = dict(zip(near, self.checker.map(lambda f: [check_file(p) for p in self.output_files(f)], near)))
+        outside = {}
+        for f in near:
+            results = checks[f]
+            if all(r[0] == "missing" for r in results):
+                continue
+            fr = self.outside.get(f) or self.before.get(f) or Frame()
+            fr.worker = fr.worker or "on disk"
+            fr.state = "done" if all(r[0] == "ok" for r in results) else "bad"
+            fr.checks = {i: r for i, r in enumerate(results) if r[0] != "missing"}
+            outside[f] = fr
+        self.outside = outside
+
+    def pause(self):
+        """Freeze every Nuke right where it is, mid-frame. RAM stays in use, the CPU goes idle."""
+        if self.state == "rendering":
+            self.state = "paused"
+            self.paused_at = time.time()
+            n = self._freeze(True)
+            self.note("Paused: %d Nuke process(es) frozen mid-frame. Resume continues exactly where they stopped." % n)
+
+    def resume(self):
+        if self.state == "paused":
+            self._freeze(False)
+            self._end_pause()
+            self.state = "rendering"
+            self.note("Resumed")
+
+    def _end_pause(self):
+        if self.paused_at is not None:
+            now = time.time()
+            self.pauses.append((self.paused_at, now))
+            self.paused_secs += now - self.paused_at
+            self.paused_at = None
+
+    def _freeze(self, on):
+        n = 0
+        for w in self.workers.values():
+            if w.state == "gone" or not w.ps or (not on and w.user_paused):  # one paused by hand stays paused
+                continue
+            self._suspend(w, on)
+            n += 1
+        return n
+
+    @staticmethod
+    def _suspend(w, on):
+        try:
+            procs = [w.ps] + w.ps.children(recursive=True)
+        except Exception:
+            procs = [w.ps]
+        for proc in procs:
+            try:
+                proc.suspend() if on else proc.resume()
+            except Exception:
+                pass
+
+    def worker_state(self, w):
+        rule = getattr(w, "reload_rule", None)
+        if w.closed_why == "reload" and rule and w.state == "quitting":
+            return "quitting → reload (%s)" % rule  # closed, it is plain closed (reload) again
+        if w.state == "gone":
+            if w.closed_why == "by me":
+                return "closed by me"  # no brackets: you closed it, it is no reason JKrender had
+            return "closed (%s)" % w.closed_why if w.closed_why else "closed"
+        if w.state == "after":
+            return "paused (afterRender hooks)" if w.user_paused else "running afterRender hooks"
+        state = "paused" if w.user_paused else w.state
+        # where it goes after this chunk
+        if w.leave and getattr(w, "leave_to", None) is not None:
+            return "%s → move to %s" % (state, getattr(w.leave_to, "output_names", "") or "render %d" % w.leave_to.number)
+        fresh = self._fresh_due(w) if state == "busy" and not (w.retire or w.handover or w.leave) else ""
+        # when it goes (after the frame or the chunk) is in Settings > Reload after; the Log and the chunk's tooltip say it
+        if not fresh and state == "busy" and not (w.retire or w.handover or w.leave) and self._wait_due(w, peek=True):
+            return "busy → reload (1.3 rule)"
+        if fresh:
+            return "busy → reload" if fresh == "always" else "busy → reload (%s)" % fresh
+        if w.why_leaving and (w.handover or (w.retire and state == "busy")):
+            if w.why_leaving == "by me":
+                return "%s → closes by me" % state
+            return "%s → closes (%s)" % (state, w.why_leaving)
+        if w.handover or (w.retire and state == "busy"):
+            return "%s → another render" % state if self.manager and len(self.manager.engines) > 1 else "%s → closes" % state
+        return state
+
+    def user_close(self, w):
+        """Close one process from its menu. Its chunk goes back to the queue; it stays closed until Start again."""
+        if w.state == "gone":
+            return
+        self.held.add(w.id)
+        if w.user_paused:
+            self._suspend(w, False)
+            w.user_paused = False
+        self._kill(w, requeue=True, note="stopped")
+        self.note("%s closed by you; its chunk goes back to the queue" % w.name)
+
+    def user_close_after_chunk(self, w):
+        """One process less, without losing work, whatever it does now: a busy one finishes its chunk and closes (paused,
+        it goes on first), one with no chunk closes now, one already closing for a limit or for another render closes for
+        good, and a closed one (waiting to come back for memory, or closed) does not come back."""
+        if w.state == "after":  # it closes anyway once they are done
+            self.note("%s closes once the afterRender hooks are done" % w.name)
+            return
+        w.user_leaving = True
+        w.why_leaving = w.closed_why = "by me"  # State: busy → closes (by me), then closed (by me)
+        w.handover = w.leave = False
+        if w.state == "gone":  # Processes goes down with it, so its place is not taken again
+            self.held.discard(w.id)  # one you closed kept its place empty: that place goes with it
+            for ids in (self.restart_ids, getattr(self, "refresh_ids", []), self.preferred_wids):
+                while w.id in ids:
+                    ids.remove(w.id)
+            self.note("%s removed by you; it does not come back" % w.name)
+            return
+        if w.state == "quitting":
+            self.note("%s removed by you" % w.name)
+            return
+        if w.user_paused:
+            self._suspend(w, False)
+            w.user_paused = False
+        if w.state == "busy":
+            w.retire = True
+            self.note("%s closes after its chunk, by you" % w.name)
+        else:
+            self._quit(w, "by me")
+
+    def user_start_here(self, wid, src=None):
+        """Start again, in this render, a process that closed in render src (finished, stopped), under its name;
+        without src, a place no process has taken yet."""
+        if wid not in self.preferred_wids:
+            self.preferred_wids.append(wid)
+        self.hand_wids.add(wid)
+        self.note(("W%02d of render %d (%s) starts again here%s" % (wid, src.number, src.name, self._make_room_by_hand()))
+                  if src is not None else "W%02d starts here, started by you%s" % (wid, self._make_room_by_hand()),
+                  "warn" if self.manager and self.manager.free_slots() <= 0 else "ev")
+
+    def user_start(self, wid):
+        """Start a closed process again, under its own name."""
+        self.held.discard(wid)
+        if wid not in self.restart_ids:
+            self.restart_ids.append(wid)
+        self.note("W%02d starts again%s" % (wid, self._make_room_by_hand()),
+                  "warn" if self.manager and self.manager.free_slots() <= 0 else "ev")
+
+    def _make_room_by_hand(self):
+        """A process you start by hand goes past the RAM and VRAM limits: they let one more run, and do not close
+        one again for 90 s. What it says about that, for the log."""
+        m = self.manager
+        cap = m.live_count() + 1 + len(self.held) if m is not None else 0  # a place held for one you closed starts nothing
+        which = [n for n, c in (("RAM", m.ram_cap), ("VRAM", m.vram_cap)) if c is not None and c < cap] if m else []
+        if m is not None and m.free_slots() <= 0 and which:
+            m.started_by_hand = time.time() + 90
+            if m.ram_cap is not None and m.ram_cap < cap:
+                m.ram_cap = None if cap >= m.total else cap
+            if m.vram_cap is not None and m.vram_cap < cap:
+                m.vram_cap = None if cap >= m.total else cap
+            return "; the %s limit lets one more process run for it" % " and ".join(which)
+        if m is not None and m.free_slots() <= 0:
+            return (" once a place is free: all %d Nuke processes run (Settings > Processes)" % m.total)
+        if m is not None:
+            m.started_by_hand = time.time() + 90
+        return ""
+
+    def user_pause(self, w, on):
+        if not w.ps or w.state == "gone" or w.user_paused == on:
+            return
+        self._suspend(w, on)
+        w.user_paused = on
+        self.note("%s %s by you" % (w.name, "paused" if on else "resumed"))
+
+    def paused_between(self, a, b):
+        """Seconds of [a, b] the render spent paused."""
+        spans = list(self.pauses) + ([(self.paused_at, time.time())] if self.paused_at else [])
+        return sum(max(0.0, min(b, p1) - max(a, p0)) for p0, p1 in spans)
+
+    def forget_workers(self):
+        """Stop by hand: the stopped processes leave the Workers timeline and the System table.
+        Their logs stay on disk."""
+        if all(w.state == "gone" for w in self.workers.values()):
+            self.workers = {}
+            self.held, self.restart_ids = set(), []
+            self.refresh_ids = []
+
+    def stop(self, reason="Stopped by user"):
+        self.scope = None
+        self._end_pause()
+        for w in list(self.workers.values()):
+            self._kill(w, requeue=True, note="stopped")
+        self._clean_temp()
+        self.state = "stopped"
+        self.ended = time.time()
+        self.note(reason)
+        self.check_rendered()  # what it rendered before Stop
+
+    def check_rendered(self):
+        """Settings > Check frames when a render ends: each frame this run rendered, once, after the render (or Stop): is the
+        file there, not empty, whole and readable. Not while it renders, so nothing reads the disk next to Nuke writing."""
+        if self.movie or self.job.get("test_out") or not self.settings.get("check_frames", True):
+            return
+        for f, fr in self.frames.items():
+            if fr.state == "done" and fr.worker != "on disk" and not fr.checks:
+                self._submit_check(f)
+
+    def set_workers(self, n):
+        self.workers_target = max(0, int(n))
+        if self.state in ("rendering", "paused"):
+            self._balance_workers()
+
+    def in_scope(self, chunk):
+        return self.scope is None or any(f in self.scope for f in chunk.frames)
+
+    def rerender(self, frames, only=False):
+        """Render these frames again. only=True on a render that is not running renders just these frames
+        (Render this frame / batch); the other frames still to render wait for Render."""
+        frames = sorted(set(frames) & set(self.frames))
+        if not frames:
+            return
+        idle = self.state in ("ready", "done", "failed", "stopped")
+        if only and idle:
+            self.scope = set(frames)
+        for c in self.chunks:
+            if c.state == "queued":
+                c.frames = [f for f in c.frames if f not in frames]
+        for f in frames:
+            fr = self.frames[f]
+            if fr.state in ("done", "skipped", "bad"):
+                fr.old = fr.copy()  # still on disk: Output keeps listing it until the new one is there
+                fr.old.old = None
+            fr.state, fr.secs, fr.checks, fr.small, fr.worker, fr.pixels, fr.same_as = "queued", None, {}, False, None, None, None
+        self.chunks = [c for c in self.chunks if c.state != "queued" or c.frames]
+        made = self._chunk(frames)
+        self.note("Queued %d frame(s) again in %d chunk(s)%s" % (len(frames), len(made),
+                                                                 ": only these render" if self.scope else ""))
+        if self.state in ("ready", "done", "failed", "stopped", "finishing"):
+            if idle:  # a new run: its own clock
+                self.crashes = self.load_failures = 0
+                self.run_stats = {"starts": [], "rss_peak": 0.0, "vram_peak": 0.0, "ram_pct_peak": 0.0, "card_peak": 0.0, "live_peak": 0}
+                self.rerun_at = time.time() if self.started else None
+                self.started, self.paused_secs, self.paused_at, self.pauses = time.time(), 0.0, None, []
+                self.done_times.clear()
+                self.notice = None
+            self.state = "rendering"
+            self.started = self.started or time.time()
+            self.ended = None
+
+    def requeue_chunk(self, chunk):
+        if chunk.state == "rendering":
+            return
+        self.rerender(chunk.all_frames)
+
+    # ---- workers ------------------------------------------------------------
+    def _process_size(self):
+        """Threads and Cache of one Nuke process. A movie cannot be split, so its one process gets every
+        thread; its cache is the Cache setting like any other process, so several renders never ask for
+        most of the RAM each."""
+        if self.movie:
+            return auto_plan(1, True)["threads"], self.ram
+        return self.threads, self.ram
+
+    def _worker_args(self):
+        """What the worker opens: the script (its snapshot), the original's path, the Write names."""
+        names = "|".join(w["name"] for w in self.job.get("writes", []))
+        script = self.job.get("snapshot") or self.job.get("script")
+        original = self.job.get("script") if self.job.get("snapshot") else ""
+        if self.job.get("snapshot"):
+            unpack_snapshot(script)  # packed while the render was not open (1.0.29): back for Nuke to open
+        return script, original, names
+
+    def _command(self, gpu=False):
+        script, original, names = self._worker_args()
+        threads, ram = self._process_size()
+        # Nuke in terminal mode renders GPU nodes (Kronos, ZDefocus, ...) on the CPU unless told --gpu
+        gpu = ["--gpu", "0"] if gpu else []
+        # sent from Nuke Non-commercial or Indie: the worker runs in the same mode, with that licence (.nknc / .nkind)
+        mode = {"nc": ["--nc"], "indie": ["--indie"]}.get(self.job.get("nuke_mode") or "", [])
+        return [
+            self.job.get("nuke_exe") or "Nuke"] + mode + [
+            "-i", "-m", str(threads), "-c", "%dG" % ram] + gpu + [
+            "-t", str(WORKER_SCRIPT), script, original, names,
+        ]
+
+    def _spawn(self):
+        # A process that had to close (RAM guard, recycled) is replaced under its own number and on its
+        # own timeline row, so the render keeps the same W01-W08 instead of W09, W10...
+        running = {i for e in (self.manager.engines if self.manager else [self])
+                   for i, x in e.workers.items() if x.state != "gone"}
+        wanted = [i for i in self.preferred_wids if i not in running]  # Work on: the name the user moved here
+        # never a number that runs in another render meanwhile (W03 closed here, W03 already started in render 1)
+        restart = [i for i in getattr(self, "restart_ids", []) + getattr(self, "refresh_ids", [])
+                   if i in self.workers and self.workers[i].state == "gone" and i not in running]
+        # one you removed lends its name last: the ones waiting to come back keep theirs
+        gone = restart or sorted((i for i, x in self.workers.items()
+                                  if x.state == "gone" and i not in getattr(self, "held", ()) and i not in running),
+                                 key=lambda i: (getattr(self.workers[i], "user_leaving", False), i))
+        old = self.workers[gone[0]] if gone else None
+        if wanted:
+            self.preferred_wids.remove(wanted[0])
+            old = self.workers.get(wanted[0]) if wanted[0] in self.workers else None
+        by_hand = bool(old and old.id in getattr(self, "restart_ids", []))
+        if old and old.id in getattr(self, "refresh_ids", []):
+            self.refresh_ids.remove(old.id)
+        if by_hand:
+            self.restart_ids.remove(old.id)
+        if wanted and wanted[0] in self.hand_wids:
+            self.hand_wids.discard(wanted[0])
+            by_hand = True
+        if old:
+            wid = old.id
+        elif wanted:
+            wid = wanted[0]
+        else:
+            wid = self.manager.take_wid(self) if self.manager else self.next_wid
+            self.next_wid = max(self.next_wid, wid) + 1
+        use_gpu = bool(self.settings.get("use_gpu", True))
+        cmd = self._command(gpu=use_gpu)
+        kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                      text=True, encoding="utf-8", errors="replace", bufsize=1)
+        kwargs.update(hidden())
+        kwargs["env"] = nuke_render_env(self.job.get("env"), env_prefixes(self.settings.get("pass_env")))
+        kwargs["env"]["PYTHONUNBUFFERED"] = "1"  # what start-up scripts print comes when they print it: its time in the log is true
+        # the same, as UTF-8: Nuke reads its command line in the Windows code page, so a path such as
+        # "D:/Práce/Žluťoučký kůň/..." arrived broken and every Nuke stopped while opening the script
+        kwargs["env"]["JKRENDER_ARGS"] = json.dumps(self._worker_args())
+        if self.job.get("test_out"):
+            kwargs["env"]["JKRENDER_TEST_OUT"] = self.job["test_out"]
+        script_dir = Path(self.job.get("script") or "").parent
+        if script_dir.is_dir():
+            kwargs["cwd"] = str(script_dir)
+        log_path = self.log_dir / ("worker_%02d.log" % wid)
+        try:
+            proc = subprocess.Popen(cmd, **kwargs)
+        except Exception as exc:
+            self.error = "Could not start Nuke: %s" % exc
+            self.note("!! " + self.error, "err")
+            self.state = "failed"
+            return None
+        unthrottled = no_power_throttling(proc.pid)  # Windows: never in "Efficiency mode" (1.0.27)
+        w = Worker(wid, proc, log_path, *self._process_size())
+        w.log.write("=== %s | %s ===\n" % (datetime.datetime.now().isoformat(), subprocess.list2cmdline(cmd)))
+        if sys.platform.startswith("win"):
+            w.log.write("JKrender: Windows power throttling (Efficiency mode) %s for this process\n"
+                        % ("off" if unthrottled else "left as Windows sets it: it refused"))
+        w.gpu = use_gpu
+        if old:
+            # its timeline goes on, with this script load on it too (a grey block, like the first one)
+            load = w.segments[-1]
+            load[1] = "again: %s" % old.closed_why if old.closed_why else "again"
+            ended = old.segments[-1][3] if old.segments else None
+            if ended and 0 <= load[2] - ended < 30:
+                load[2] = ended  # from when the old one finished: closing it and starting this one is the reload too
+            w.segments, w.frames_done, w.frame_secs = old.segments + [load], old.frames_done, old.frame_secs
+            w.seg_info = dict(old.seg_info)  # the tooltips of its earlier chunks stay
+            w.frame_ends = list(old.frame_ends)  # one lane: Test this script counts its frames across the restart
+        w.pinned = by_hand
+        w.fresh = bool(old and old.closed_why == "reload")  # in place of one closed to reload
+        self.workers[wid] = w
+        self.last_spawn = time.time()
+        threading.Thread(target=self._reader, args=(w,), daemon=True).start()
+        self.note("%s %s (pid %d, %d threads, %d GB)"
+                  % (w.name, "started again" if old else "started", proc.pid, w.threads, w.ram))
+        return w
+
+    def _reader(self, w):
+        try:
+            for line in w.proc.stdout:
+                self.events.put(("line", w, line, time.time()))  # when it came, not when the window got to it
+        except Exception as exc:
+            self.events.put(("line", w, "[output read error: %s]\n" % exc))
+        finally:
+            try:
+                w.proc.wait(timeout=30)
+            except Exception:
+                pass
+            self.events.put(("exit", w, w.proc.returncode))
+
+    def _kill(self, w, requeue, note):
+        if w.state == "gone":
+            return
+        self._after_lost(w, "closed (%s)" % note, seg="stopped")
+        info = w.chunk_info()
+        if info is not None and w.segments[-1][3] is None:
+            why = {"VRAM limit": "VRAM full", "RAM limit": "RAM full"}.get(w.closed_why, w.closed_why)
+            info["end"] = "stopped mid-chunk%s" % (": %s" % why if why else (" (%s)" % note if note else ""))
+        try:
+            w.proc.kill()
+        except Exception:
+            pass
+        if w.frame is not None:
+            self._delete_partial(w.frame, w.frame_started)
+            if w.frame in self.frames and self.frames[w.frame].state == "rendering":
+                self.frames[w.frame].state = "queued"
+        if w.chunk is not None and requeue:
+            self._requeue(w.chunk, count_attempt=False)
+        w.close_segment(note)
+        w.state = "gone"
+        w.chunk = None
+        w.frame = None
+
+    def _delete_partial(self, frame, since):
+        for p in self.output_files(frame):
+            try:
+                if since is None or os.path.getmtime(p) >= since - 1:
+                    os.remove(p)
+                    self.note("Deleted half-written %s" % os.path.basename(p))
+            except OSError:
+                pass
+
+    def _clean_temp(self):
+        """Nuke writes each frame to a temp file (e.g. -3181466249204226848.tmp) next to the output and
+        renames it when done. A killed Nuke leaves it behind. Only call this when no Nuke is running."""
+        for w in self.workers.values():
+            try:
+                w.proc.wait(timeout=5)  # Windows keeps the file locked until the process is gone
+            except Exception:
+                pass
+        since = (self.started or time.time()) - 5
+        removed = 0
+        for folder in {os.path.dirname(p) for _, p in self.outputs}:
+            try:
+                names = os.listdir(folder)
+            except OSError:
+                continue
+            for name in names:
+                if re.match(r"^-?\d+\.tmp$", name):
+                    path = os.path.join(folder, name)
+                    try:
+                        if os.path.getmtime(path) >= since:
+                            os.remove(path)
+                            removed += 1
+                    except OSError:
+                        pass
+        if removed:
+            self.note("Removed %d temp file(s) Nuke left in the output folder" % removed)
+
+    def _requeue(self, chunk, count_attempt=True, error="", frame=None):
+        """Back to the queue without the frames it rendered. count_attempt: it failed (a frame threw three times in one
+        Nuke, or Nuke crashed). Tries are counted per frame (0.99.82): the frame that failed, or the next one to render
+        when Nuke went between frames. A frame that failed MAX_ATTEMPTS times, each in a fresh Nuke, is given up alone,
+        in a chunk of its own; the rest of the chunk renders on. A movie is one execute: its chunk counts as a whole."""
+        chunk.frames = [f for f in chunk.frames if self.frames[f].state not in ("done", "skipped")]
+        for f in chunk.frames:
+            if self.frames[f].state == "rendering":
+                self.frames[f].state = "queued"
+        chunk.worker = None
+        if count_attempt:
+            chunk.error = error or chunk.error
+        if not chunk.frames:
+            chunk.state = "done"
+            return
+        chunk.state = "queued"
+        if not count_attempt:
+            return
+        if chunk.whole_range:
+            chunk.attempts += 1
+            if chunk.attempts >= MAX_ATTEMPTS:
+                chunk.state = "failed"
+                for f in chunk.frames:
+                    self.frames[f].state = "failed"
+                self.note("!! %s failed %d times and is given up: %s" % (chunk.name, chunk.attempts, chunk.error), "err")
+            return
+        if frame not in chunk.frames:
+            frame = chunk.frames[0]
+        fr = self.frames[frame]
+        fr.attempts += 1
+        if fr.attempts < MAX_ATTEMPTS:
+            chunk.attempts = max(self.frames[f].attempts for f in chunk.frames)
+            return
+        rest = [f for f in chunk.frames if f != frame]
+        later = ""
+        if rest:
+            self._split_chunk(chunk, [frame], rest)
+            other = next(c for c in self.chunks if c.id == self.next_cid - 1)
+            other.attempts = max(self.frames[f].attempts for f in rest)
+            later = "; the rest of %s renders on as %s" % (chunk.name, other.name)
+        chunk.state, chunk.attempts = "failed", fr.attempts
+        fr.state = "failed"
+        self.note("!! frame %d failed %d times, each in a fresh Nuke, and is given up: %s%s"
+                  % (frame, fr.attempts, chunk.error, later), "err")
+
+    def _live(self):
+        return [w for w in self.workers.values()
+                if w.state in ("loading", "idle", "busy") and not w.retire and not w.handover]
+
+    def need(self):
+        """Nuke processes this render could use right now."""
+        if self.state == "paused":  # frozen processes keep their place
+            return sum(1 for w in self.workers.values() if w.state != "gone")
+        if self.state != "rendering":
+            return 0
+        busy = sum(1 for w in self._live() if w.state == "busy")
+        return busy + sum(1 for c in self.chunks if c.state == "queued" and self.in_scope(c))
+
+    def is_tail(self):
+        """Rendering its last chunks: nothing left to hand out, so the next render may start loading."""
+        return self.state == "rendering" and not any(c.state == "queued" and self.in_scope(c) for c in self.chunks)
+
+    def _may_spawn(self):
+        m = self.manager
+        if m is None:
+            return True
+        if self.movie:
+            # a movie has a process of its own, beside the places of Processes: it starts at once, unless the memory
+            # has no room (the first process always starts)
+            return m.live_count() + m.movie_count() == 0 or not m.memory_over()
+        if m.free_slots() <= 0:
+            return False
+        refresh = [i for i in getattr(self, "refresh_ids", []) if i in self.workers and self.workers[i].state == "gone"]
+        if refresh and not (self.restart_ids or self.hand_wids):
+            # A reload for memory: the fresh Nuke starts once the memory has room. Its readings lag a moment behind the
+            # close, so look RELOAD_SETTLE s after it; still over Reload Nuke at then, its place waits like one closed
+            # for memory and comes back when it fits.
+            seen = self.__dict__.setdefault("_refresh_gone", {})
+            now = time.time()
+            first = min(seen.setdefault(i, now) for i in refresh)
+            if now - first < RELOAD_SETTLE:
+                return False
+            # the last one always starts again: with none running the render would stand still for good
+            over = m.memory_over() if m.live_count() > 0 else []
+            if over:
+                for i in refresh:
+                    self.refresh_ids.remove(i)
+                    seen.pop(i, None)
+                    self.workers[i].closed_why = "reload"
+                m._fell()
+                for name in over:
+                    m._hold_down(name, m._mem_now()[name] or 0.0)
+                self.note("%s waits to start again: %s over Reload Nuke at" % (
+                    ", ".join(self.workers[i].name for i in refresh), " and ".join(over)), "warn")
+                return False
+            for i in refresh:
+                seen.pop(i, None)
+            return True
+        if self.restart_ids or self.hand_wids or refresh:
+            return True  # a fresh Nuke takes the place and the memory the one before it just left
+        if self.filling:
+            # Render starts all its processes straight away, also ones it has a place for only later (the renders share
+            # the places). The rule for coming back starts when one falls: _fell, _on_exit.
+            self.filling = len(self._live()) + 1 < m.total
+            return True
+        why = m.no_room(self)
+        if why and time.time() - getattr(self, "_no_room_noted", 0) > 60:
+            self._no_room_noted = time.time()
+            self.note("One more Nuke process would not fit (%s): %d run, more start when there is room"
+                      % (why, m.live_count()), "warn")
+        return not why
+
+    def _balance_workers(self):
+        live = self._live()
+        extra = len(live) - self.workers_target
+        if extra > 0:
+            # Hand the places over gently, so no work is thrown away: an idle one closes now; a busy one
+            # finishes its chunk first; one still opening the script opens it, renders one chunk, then closes.
+            # Busy ones before loading ones (they are free sooner), the last one started first.
+            # Over the RAM or VRAM limit the last one started closes first whatever it does, and one still opening
+            # the script closes now: it has the least work to lose and is about to take more memory.
+            m = self.manager
+            vram = m is not None and m.vram_bound()
+            limit = vram or (m is not None and m.ram_cap is not None)
+            if limit:
+                # one at a time, so State shows "closes (RAM limit)" on the one process that goes, not on several
+                if any(x.why_leaving in ("RAM full", "VRAM full") and (x.retire or x.handover) and x.state != "gone"
+                       for x in self.workers.values()):  # _live() leaves out the ones already closing
+                    return
+                extra = 1
+            for w in sorted(live, key=lambda w: (not w.leave, w.pinned, -w.spawned) if limit else
+                            (not w.leave, {"idle": 0, "busy": 1, "loading": 2}[w.state], w.pinned, -w.spawned))[:extra]:
+                why = None if w.leave or not limit else ("VRAM full" if vram else "RAM full")
+                w.why_leaving = w.closed_why = why
+                if w.state == "busy":
+                    w.retire = True
+                elif w.state == "loading" and not why:
+                    w.handover = True
+                else:
+                    self._quit(w, "not needed")
+        elif extra < 0:
+            # Room again (another render done, the RAM limit up): ones still to close after their chunk stay.
+            for w in [w for w in self.workers.values()
+                      if w.state in ("loading", "idle", "busy") and (w.retire or w.handover) and not w.user_leaving][:-extra]:
+                w.retire = w.handover = False
+                w.why_leaving = w.closed_why = None
+
+    def _fresh_due(self, w=None):
+        """Fresh Nuke after every chunk (Settings): Always, or When memory is short, that is when the RAM or VRAM has been
+        at its Reload Nuke at % for FRESH_HOLD s, one process at a time: the next only once the last fresh one rendered its
+        first frame, and only if memory is still short then. Never with no chunk left to hand out: the new one would have nothing to do.
+        What it is for: "always", or what is short ("RAM 91 %", "VRAM 93 %", both); "" when not due."""
+        mode = self.settings.get("fresh_after_chunk", "short")
+        if mode not in ("short", "always") or self.movie:
+            return ""
+        if not any(c.state == "queued" and self.in_scope(c) for c in self.chunks):
+            return ""
+        if mode == "always":
+            return "always"
+        m = self.manager
+        if m is None or m.refreshing():
+            return ""  # one at a time: the others go on with their next chunk meanwhile
+        short = m.memory_short()
+        if short and w is not None and m.reload_pick(short) is not w:
+            return ""  # only the one picked reloads, and only it shows "busy → reload" in State
+        return short
+
+    def _leave_after_frame(self, w, f):
+        """Reload after: Frame. A process leaving its render (its place goes to another render, Work on, closing because the
+        memory holds the places down) goes right after the frame it just finished and wrote, not after its whole chunk; the
+        rest of the chunk goes back to the queue. Close after this chunk (by me) still waits for the chunk. True when it went."""
+        c = w.chunk
+        if (c is None or not (w.retire or w.handover or w.leave) or w.user_leaving or self.movie
+                or self.settings.get("reload_after", "frame") != "frame"):
+            return False
+        if not any(x != f and self.frames.get(x) is not None and self.frames[x].state not in ("done", "skipped")
+                   for x in c.frames):
+            return False  # its last frame: the chunk's end handles it
+        if w.leave and getattr(w, "leave_to", None) is not None:
+            why = "goes on to %s" % (getattr(w.leave_to, "output_names", "") or "render %d" % w.leave_to.number)
+        elif w.why_leaving:
+            why = "closes (%s)" % w.why_leaving
+        else:
+            why = "its place goes to another render" if self.manager and len(self.manager.engines) > 1 else "not needed"
+        self.note("%s %s after frame %d, the rest of %s goes back to the queue" % (w.name, why, f, c.name))
+        info = w.chunk_info()
+        self._kill(w, requeue=True, note="retired")
+        if info is not None:
+            info["end"] = "stopped after frame %d: %s" % (f, why)
+            info["after"] = why
+        return True
+
+    def _reload_after_frame(self, w, f):
+        """A reload for memory (Reload Nuke at, the 1.3 rule) does not wait for the end of the chunk: the process goes right
+        after the frame it just finished and wrote, so no work is lost, and the rest of its chunk goes back to the queue for
+        the others. Its last frame of the chunk: the chunk's end handles it. After every chunk stays after the chunk."""
+        c = w.chunk
+        if c is None or w.retire or w.handover or w.leave or self.movie or self.settings.get("reload_after", "frame") != "frame":
+            return
+        if not any(x != f and self.frames.get(x) is not None and self.frames[x].state not in ("done", "skipped")
+                   for x in c.frames):
+            return
+        fresh = self._fresh_due(w) if self.settings.get("fresh_after_chunk", "short") == "short" else ""
+        why = fresh or self._wait_due(w)
+        if not why:
+            return
+        rule = fresh or "1.3 rule"
+        m = self.manager
+        vram_now = m.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 if m is not None and w.gpu else 0.0
+        w.closed_why = "reload"
+        w.reload_rule = rule
+        self.refresh_ids.append(w.id)
+        self.note("%s reloads after frame %d (%s), the rest of %s goes back to the queue; it took %.1f GB RAM%s" % (
+            w.name, f, why if not fresh else fresh, c.name, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
+        info = w.chunk_info()
+        self._kill(w, requeue=True, note="reload")
+        if info is not None:
+            info["end"] = "stopped after frame %d for a reload (%s)" % (f, rule)
+            info["after"] = "reload after this frame"
+
+    def _wait_due(self, w, peek=False):
+        """A place of the renders waits for memory and w, its chunk done, is the one to reload for it (the 1.3 rule, see
+        wait_reload). peek: for State, nothing changes."""
+        m = self.manager
+        why = ""
+        if m is not None and not self.movie and any(c.state == "queued" and self.in_scope(c) for c in self.chunks):
+            why = m.wait_reload(w, peek=peek)
+        if not peek:
+            self._wait_why = why
+        return why
+
+    def _quit(self, w, why):
+        w.retire = True
+        if w.state == "loading":
+            self._kill(w, requeue=False, note="retired")
+            self.note("%s closed (%s)" % (w.name, why))
+            return
+        w.state = "quitting"
+        w.quit_at = time.time()
+        info = w.chunk_info()
+        if info is not None and info["after"] is None:
+            info["after"] = "closed: %s" % why
+        w.close_segment("done")
+        w.send("QUIT")
+        self.note("%s closing (%s)" % (w.name, why))
+
+    def _note_frame_hooks(self):
+        """At the end of a render: what the Write's own beforeFrameRender / afterFrameRender took, frame by frame."""
+        for kind in ("beforeFrameRender", "afterFrameRender"):
+            secs = [fr.hooks[kind] for fr in self.frames.values() if fr.hooks and kind in fr.hooks]
+            if secs:
+                self.note("%s on the Write: %d frames, %.2f s a frame on average, %.2f s the longest" % (
+                    kind, len(secs), sum(secs) / len(secs), max(secs)), "warn" if max(secs) >= SLOW_HOOK else "ev")
+
+    def _watch_shared_stall(self, w, secs, now):
+        """Several Nuke processes held up at the same moment (0.99.90): STALL_TOGETHER or more finish a frame within
+        STALL_WINDOW s of each other, each SLOW_TIMES x the usual frame time (and STALL_EXTRA s more). Each Nuke renders on
+        its own, so only something they share holds them up together: as a rule the disk, writing the frames (or reading
+        the plates). The second time in a render the Log says so, once: more processes will not make it faster."""
+        if getattr(w, "frames_here", 0) < 2:
+            return  # a Nuke's first frame is slow anyway (plates, caches), and the first ones start together
+        if getattr(self, "_recent_frames", None) is None:
+            self._recent_frames, self._stall_last, self._stalls, self._stall_noted = collections.deque(maxlen=300), 0.0, 0, False
+        recent = self._recent_frames
+        recent.append((now, secs))
+        if len(recent) < 8 or self._stall_noted:
+            return
+        usual = statistics.median(x for _, x in recent)
+        slow = max(SLOW_TIMES * usual, usual + STALL_EXTRA)
+        if secs < slow or now - self._stall_last < 3.0:
+            return
+        together = [x for t, x in recent if now - t <= STALL_WINDOW and x >= slow]
+        busy = sum(1 for x in self.workers.values() if x.state in ("busy", "idle"))
+        if len(together) < STALL_TOGETHER or busy < STALL_TOGETHER:
+            return
+        self._stall_last = now
+        self._stalls += 1
+        if self._stalls < 2:
+            return
+        self._stall_noted = True
+        drive = disk_of(self.outputs[0][1]) if self.outputs else ""
+        self.note("! Nuke processes waited at the same moment and finished their frames together (%d or more at once, "
+                  "%d times so far, %.1f s a frame instead of the usual %.1f s): something they share held them up, as a rule the disk%s. "
+                  "More processes will not make this render faster; a faster disk will (an NVMe drive, or less data a frame)."
+                  % (len(together), self._stalls, sum(together) / len(together), usual,
+                     " the frames are written to (%s), or the one the plates are read from" % drive if drive else ""), "warn")
+
+    # ---- the afterRender hooks, once for the whole render (RenderHooks in jkrender_worker.py) ----------------
+    def _after_due(self, w):
+        """This Nuke just rendered the last chunk, every chunk in scope rendered and none failed, and it holds
+        afterRender hooks. Never in Test this script."""
+        return (getattr(w, "hooks", 0) > 0 and getattr(self, "after_state", None) is None and not self.job.get("test_out")
+                and self.state in ("rendering", "paused")
+                and not any(c.state in ("rendering", "failed") or (c.state == "queued" and self.in_scope(c))
+                            for c in self.chunks))
+
+    def _run_after(self, w):
+        info = w.chunk_info()
+        if info is not None and info["after"] is None:
+            info["after"] = "the afterRender hooks, once for the whole render"
+        w.state = "after"
+        self.after_state, self.after_worker = "sent", w
+        w.segments.append(["after", "afterRender", time.time(), None, "rendering"])
+        if not w.send("AFTER"):
+            self._kill(w, requeue=False, note="not reached")
+            return
+        self.note("%s runs the afterRender hooks (%d), once for the whole render" % (w.name, w.hooks))
+
+    def _after_done(self, w, rest):
+        if getattr(self, "after_worker", None) is not w or self.after_state != "sent":
+            return
+        try:
+            ran, failed = int(rest[0]), int(rest[1])
+        except (IndexError, ValueError):
+            ran, failed = 0, 0
+        self.after_state = "done"
+        w.close_segment("failed" if failed else "done")
+        if failed:
+            self.after_error = "%d of %d afterRender hook(s) failed: %s" % (failed, ran + failed, " ".join(rest[2:]))
+            self.note("!! %s: %s. Its log has the traceback" % (w.name, self.after_error), "err")
+        else:
+            self.note("%s ran the afterRender hooks (%d)" % (w.name, ran), "ok")
+        w.state = "idle"
+        self._quit(w, "render finished")
+
+    def _after_lost(self, w, why, seg="crashed"):
+        """The process running the afterRender hooks went before they were done."""
+        if getattr(self, "after_worker", None) is w and getattr(self, "after_state", None) == "sent":
+            self.after_state = "done"
+            self.after_error = "the afterRender hooks did not finish: %s" % why
+            w.close_segment(seg)
+            self.note("!! %s: %s" % (w.name, self.after_error), "err")
+
+    # ---- event handling -----------------------------------------------------
+    def note(self, text, level="ev"):
+        entry = ("", "%s  %s" % (datetime.datetime.now().strftime("%H:%M:%S"), text), level)
+        self.log.append(entry)
+        self.new_log.append(entry)
+        try:  # the Log tab's events, kept next to the workers' logs
+            with open(self.dir / "jkrender.log", "a", encoding="utf-8") as f:
+                f.write(entry[1] + "\n")
+        except Exception:
+            pass
+
+    def _end_stuck(self):
+        """A process told to quit that is still there after 8 s (Nuke can take long to let go of the GPU) is ended, so it
+        does not hold a place another process is waiting for, or the memory once the render is through."""
+        now = time.time()
+        for w in self.workers.values():
+            if w.state == "quitting" and now - getattr(w, "quit_at", now) > 8:
+                try:
+                    w.proc.kill()
+                except Exception:
+                    pass
+                w.quit_at = now + 3600
+                self.note("%s did not quit within 8 s and was ended" % w.name, "warn")
+
+    def tick(self):
+        changed = False
+        for _ in range(5000):
+            try:
+                ev = self.events.get_nowait()
+            except pyqueue.Empty:
+                break
+            changed = True
+            kind = ev[0]
+            if kind == "line":
+                self._on_line(ev[1], ev[2], ev[3] if len(ev) > 3 else None)
+            elif kind == "exit":
+                self._on_exit(ev[1], ev[2])
+            elif kind == "check":
+                self._on_check(*ev[1:])
+            elif kind == "pixels":
+                self._on_pixels(*ev[1:])
+            elif kind == "movie_pixels":
+                self._on_movie_pixels(*ev[1:])
+            elif kind == "note":  # from a background thread of the window
+                self.note(*ev[1:])
+        self._end_stuck()
+        if self._small_dirty:
+            self._flag_small()
+        if self.state in ("rendering", "paused"):
+            self._schedule()
+            changed = True
+        elif self.state == "finishing" and self.pending_checks <= 0 and getattr(self, "after_state", None) != "sent":
+            self._finish()  # once the frame checks and the afterRender hooks are done
+            changed = True
+        for w in self.workers.values():
+            if w.state != "gone" and w.ps:
+                try:
+                    w.rss = process_ram(w)
+                    w.rss_peak = max(w.rss_peak, w.rss)
+                    if w.frames_here >= 2:
+                        self.size_seen = max(self.size_seen, w.rss)
+                except Exception:
+                    pass
+        stats = getattr(self, "run_stats", None)
+        if stats is not None and self.state in ("rendering", "finishing"):
+            m = self.manager
+            live = [w for w in self.workers.values() if w.state != "gone"]
+            stats["live_peak"] = max(stats["live_peak"], len(live))
+            stats["rss_peak"] = max([stats["rss_peak"]] + [w.rss for w in live])
+            if m is not None:
+                stats["vram_peak"] = max([stats["vram_peak"]] + [m.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 3 for w in live])
+                stats["ram_pct_peak"] = max(stats["ram_pct_peak"], m.ram_percent())
+                if m.vram:
+                    stats["card_peak"] = max(stats["card_peak"], m.vram[1] / 1024.0)
+        return changed
+
+    def _on_line(self, w, line, at=None):
+        if w is None:
+            return
+        # every line of a process's log with the time it came, so a slow start shows where it waited
+        w.log.write(datetime.datetime.fromtimestamp(at or time.time()).strftime("%H:%M:%S.%f")[:-3] + "  " + line)
+        if w.state == "gone":  # last words of a closed process; its replacement may already use its name
+            return
+        w.tail.append(line)
+        m = JKR_LINE.search(line.rstrip("\r\n"))
+        if not m:
+            text = line.rstrip()
+            if text and text != ".":
+                low = text.lower()
+                level = "err" if any(x in low for x in ("error", "traceback", "exception")) else (
+                    "warn" if "warning" in low else "")
+                entry = (w.name, text, level)
+                self.log.append(entry)
+                self.new_log.append(entry)
+            return
+        kind, rest = m.group(1), m.group(2).split()
+        now = time.time()
+        if kind == "BOOT":
+            moment = at or now
+            w.boot_secs = moment - w.spawned - self.paused_between(w.spawned, moment)
+        elif kind == "READY":
+            w.state = "idle"
+            w.ready_at = now
+            w.load_secs = now - w.spawned - self.paused_between(w.spawned, now)
+            w.close_segment("loaded")
+            self.ever_ready = True
+            try:
+                script = float(rest[0])
+            except (IndexError, ValueError):
+                script = None
+            if getattr(self, "run_stats", None) is not None:
+                self.run_stats["starts"].append((w.boot_secs, script, w.load_secs))
+            if w.boot_secs is None or script is None:
+                self.note("%s ready in %.1f s" % (w.name, w.load_secs))
+            else:
+                slow = w.boot_secs >= SLOW_START
+                self.note("%s ready in %.1f s: Nuke started in %.1f s, script opened in %.2f s%s" % (
+                    w.name, w.load_secs, w.boot_secs, script,
+                    ". A slow start: licence and start-up scripts; the process log has the time of each line" if slow else ""),
+                    "warn" if slow else "ev")
+            if w.retire:
+                self._quit(w, "not needed")
+        elif kind == "START":
+            f = int(rest[0])
+            w.frame, w.frame_started = f, now
+            if f in self.frames:
+                self.frames[f].state = "rendering"
+                self.frames[f].worker = w.name
+                self.frames[f].started = now
+        elif kind == "BEFORE":
+            # the beforeRender hooks this Nuke ran before its first frame (the worker runs them itself, see RenderHooks)
+            try:
+                ran, secs = int(rest[0]), float(rest[1])
+            except (IndexError, ValueError):
+                ran, secs = 0, 0.0
+            self.note("%s ran the beforeRender hooks (%d) in %.2f s" % (w.name, ran, secs),
+                      "warn" if secs >= SLOW_HOOK else "ev")
+            label = "beforeRender %.2f s" % secs
+            last = w.segments[-1] if w.segments else None
+            if last is not None and last[0] == "chunk" and last[3] is None:
+                # between the script load and the frames: from the chunk handed out to the hooks done; the chunk's
+                # block starts after them and stays the last segment (its record moves with its start)
+                start = last[2]
+                info = w.seg_info.pop(start, None)
+                last[2] = max(start, now)
+                if info is not None:
+                    w.seg_info[last[2]] = info
+                w.segments.insert(len(w.segments) - 1, ["before", label, start, last[2], "done"])
+            else:
+                w.segments.append(["before", label, now - secs, now, "done"])
+        elif kind == "FRAMEHOOKS":
+            fr = self.frames.get(int(rest[0])) if rest and rest[0].lstrip("-").isdigit() else None
+            if fr is not None:
+                fr.hooks = {}
+                for part in rest[1:]:
+                    name, _, value = part.partition("=")
+                    try:
+                        fr.hooks[name] = float(value)
+                    except ValueError:
+                        pass
+        elif kind == "MEM":
+            try:
+                w.cache = (int(rest[0]), int(rest[1]))
+            except (IndexError, ValueError):
+                pass
+        elif kind == "FRAME":
+            f, secs = int(rest[0]), float(rest[1])
+            secs = max(0.0, secs - self.paused_between(now - secs, now))  # Nuke's clock ran on while frozen
+            w.frame = None
+            w.frames_done += 1
+            w.frames_here += 1
+            w.frame_secs.append(secs)
+            self._watch_shared_stall(w, secs, now)
+            w.frame_ends.append(now)
+            self.last_frame_at = now
+            if self.state == "rendering" or self.state == "paused":
+                self.done_times.append(self.elapsed())  # render clock, so a pause does not drag the speed down
+            info = w.chunk_info()
+            if info is not None and w.segments[-1][3] is None:
+                info["frames"].append(f)
+            fr = self.frames.get(f)
+            if fr is not None:
+                fr.state, fr.secs, fr.worker = "done", secs, w.name
+                fr.ran_in = w.chunk.name if w.chunk else None
+                if self.job.get("test_out"):  # Test this script counts its frames by this; a render checks them when it ends
+                    self._submit_check(f)
+            if w.chunk and w.chunk.whole_range:
+                nxt = f + 1
+                if nxt in self.frames:
+                    w.frame, w.frame_started = nxt, now
+                    self.frames[nxt].state = "rendering"
+                    self.frames[nxt].worker = w.name
+            if not self._leave_after_frame(w, f):
+                self._reload_after_frame(w, f)
+        elif kind == "CHUNK":
+            c = w.chunk
+            if c is not None:
+                c.state = "done"
+                c.ended = now
+                c.frames = []
+            info = w.chunk_info()
+            if info is not None:
+                info["end"] = "rendered"
+            w.close_segment("done")
+            w.chunk = None
+            w.frame = None
+            w.state = "idle"
+            # Recycle a process whose RAM keeps growing (a leak), not one that a heavy script simply needs:
+            # closing it after every chunk only costs a script load each time.
+            if w.rss_base is None:
+                w.rss_base = w.rss
+                if w.rss > w.ram * 1.3 and not getattr(self, "_ram_noted", False):
+                    self._ram_noted = True
+                    self.note("%s uses %.1f GB RAM after its first chunk, more than the %d GB Cache set. "
+                              "That is fine; Nuke takes more than its cache for heavy scripts. Use fewer processes if the PC runs short."
+                              % (w.name, w.rss, w.ram), "warn")
+            m = self.manager
+            vram_now = m.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 if m is not None and w.gpu else 0.0
+            if vram_now and w.vram_base is None:
+                w.vram_base = vram_now
+                self._vram_seen = max(getattr(self, "_vram_seen", 0.0), vram_now)
+            if self._after_due(w):
+                self._run_after(w)  # the render's last chunk: this Nuke runs the afterRender hooks, then closes
+            elif w.retire or w.handover:
+                self._quit(w, "its place goes to another render" if self.manager and len(self.manager.engines) > 1
+                           else "not needed")
+            elif self._wait_due(w):
+                w.closed_why = "reload"
+                w.reload_rule = "1.3 rule"
+                self.refresh_ids.append(w.id)
+                self._quit(w, "1.3 rule, reloads after its chunk: %s" % self._wait_why.split(": ", 1)[-1])
+            elif self._fresh_due(w):
+                fresh = self._fresh_due(w)
+                w.closed_why = "reload"
+                w.reload_rule = "after every chunk" if fresh == "always" else fresh
+                self.refresh_ids.append(w.id)
+                self._quit(w, "reloads after its chunk%s, it took %.1f GB RAM%s" % (
+                    "" if fresh == "always" else " (%s)" % fresh, w.rss, ", %.1f GB VRAM" % (vram_now / 1024) if vram_now else ""))
+        elif kind == "FAIL":
+            c = w.chunk
+            frame = int(rest[1]) if len(rest) > 1 else None
+            msg = " ".join(rest[2:])
+            reason = classify_error("".join(w.tail))
+            self.note("!! %s frame %s failed on %s: %s (%s)" % (c.name if c else "?", frame, w.name, msg, reason), "err")
+            if frame in self.frames:
+                self.frames[frame].state = "queued"
+            info = w.chunk_info()
+            if info is not None:
+                info["end"] = "frame %s failed: %s" % (frame, (msg or reason)[:120])
+            w.close_segment("failed")
+            w.chunk = None
+            w.frame = None
+            w.state = "idle"
+            if c is not None:
+                self._requeue(c, error="%s: %s" % (reason, msg), frame=frame)
+            # The retry gets a fresh Nuke: whatever broke stays with this one.
+            self._quit(w, "after a failed frame")
+            self._stop_if_nothing_renders()
+        elif kind == "ERROR":
+            w.error = " ".join(rest)
+        elif kind == "HOOKS":
+            try:
+                w.hooks = int(rest[0])
+            except (IndexError, ValueError):
+                pass
+        elif kind == "AFTERDONE":
+            self._after_done(w, rest)
+        elif kind == "BYE":
+            pass
+
+    def _stop_if_nothing_renders(self):
+        """Frame after frame has been given up (each failed three times) and not one frame has come out of this run: a
+        missing file or the like, which every frame would meet again. Without this each frame takes three fresh Nukes,
+        hundreds on a long render."""
+        failed = [c for c in self.chunks if c.state == "failed"]
+        lost = sum(len(c.frames) for c in failed)
+        if lost >= 3 and not self.done_times and self.state == "rendering":
+            self.error = "%d frames failed and no frame rendered: %s" % (lost, failed[0].error)
+            self.stop("Render stopped: " + self.error)
+            self.state = "failed"
+
+    def _on_exit(self, w, code):
+        if w is None:
+            return
+        w.exit_code = code
+        try:
+            w.log.close()
+        except Exception:
+            pass
+        if w.state == "gone":
+            return
+        tail = "".join(w.tail)
+        if getattr(self, "after_worker", None) is w and getattr(self, "after_state", None) == "sent":
+            self._after_lost(w, "Nuke exited (code %s): %s" % (code, classify_error(tail)))
+            w.state = "gone"
+            return
+        was_loading = w.state == "loading"
+        expected = w.state == "quitting"
+        if w.chunk is not None:
+            if w.frame is not None:
+                self._delete_partial(w.frame, w.frame_started)
+            self._requeue(w.chunk, error=classify_error(tail) + " (Nuke exited, code %s)" % code, frame=w.frame)
+        info = w.chunk_info()
+        if info is not None and w.segments[-1][3] is None and not expected:
+            info["end"] = "Nuke crashed (exit code %s): its half-written frame deleted" % code
+        w.close_segment("done" if expected else "crashed")
+        w.state = "gone"
+        w.chunk = None
+        w.frame = None
+        if expected:
+            return
+        if was_loading:
+            self.load_failures += 1
+            # the worker's own error first: Nuke's log may also name a missing file the script does not need
+            reason = getattr(w, "error", None) or classify_error(tail)
+            self.note("!! %s exited while opening the script (code %s): %s" % (w.name, code, reason), "err")
+            if not self.ever_ready and self.load_failures >= min(2, max(1, self.workers_target)):
+                self.error = "Nuke could not open the script: %s. See the %s log." % (reason, w.name)
+                self.stop("Render stopped: " + self.error)
+                self.state = "failed"
+        else:
+            self.crashes += 1
+            self.filling = False
+            self.note("!! %s exited unexpectedly (code %s): %s" % (w.name, code, classify_error(tail)), "err")
+            if self.crashes > 3 * max(1, self.workers_target) + 3:
+                self.error = "Nuke keeps crashing (%d times). See the worker logs." % self.crashes
+                self.stop("Render stopped: " + self.error)
+                self.state = "failed"
+
+    # ---- movie output ---------------------------------------------------------
+    def movie_path(self):
+        return self.outputs[0][1] if self.outputs else ""
+
+    def movie_expected(self):
+        w = (self.job.get("writes") or [{}])[0]
+        mov = w.get("movie") or {}
+        return {"frames": len(self.frames), "fps": float(mov.get("fps") or self.job.get("fps") or 0),
+                "width": self.job.get("width"), "height": self.job.get("height"),
+                "codec": mov.get("codec"), "profile": mov.get("profile"), "timecode": mov.get("write_timecode")}
+
+    def movie_pixel_result(self):
+        """What the pixel check found in the movie, while the file on disk is the one it read; else None."""
+        found, info = getattr(self, "movie_pixels", None), self.movie_info
+        if not found or not info or found["stamp"] != (info.get("size"), info.get("modified")):
+            return None
+        return found
+
+    def movie_verdict(self, pixels=True):
+        """"ok", "warn", "bad" or None (nothing checked yet). pixels=False: the file alone, for whether it counts as rendered;
+        blank or frozen frames make it red, but rendering it again would give the same frames, as in a sequence."""
+        checks = movie_checks(self.movie_info, self.movie_expected(), self.movie_pixel_result() if pixels else None)
+        if not checks:
+            return None
+        states = [c[1] for c in checks]
+        return "bad" if "bad" in states else ("warn" if "warn" in states else "ok")
+
+    def probe(self):
+        self.movie_info = probe_movie(self.movie_path())
+        return self.movie_info
+
+    def _scan_movie(self):
+        """A finished, playable movie with the right frame count counts as rendered."""
+        info = self.probe()
+        if info.get("error") == "missing":
+            self.movie_info = None
+            return 0
+        if self.movie_verdict(pixels=False) == "bad" or info.get("no_probe"):
+            if info.get("error"):
+                self.note("!! %s on disk is not usable (%s); it will be rendered again"
+                          % (os.path.basename(self.movie_path()), info["error"]), "err")
+            return 0
+        for fr in self.frames.values():
+            fr.state, fr.worker = "done", "on disk"
+        for c in self.chunks:
+            c.frames, c.state = [], "done"
+        self.note("%s is already on disk and complete; it counts as done" % os.path.basename(self.movie_path()), "ok")
+        return len(self.frames)
+
+    def _submit_check(self, frame):
+        if self.movie:
+            return  # one file for the whole range: it is probed when the render ends
+        for i, p in enumerate(self.output_files(frame)):
+            self.pending_checks += 1
+            fut = self.checker.submit(check_file, p)
+            # cancelled when the render closes: nothing to report (result() would raise in the callback)
+            fut.add_done_callback(lambda fu, f=frame, i=i: fu.cancelled() or self.events.put(("check", f, i, fu.result())))
+
+    def _on_check(self, frame, idx, result):
+        self.pending_checks -= 1
+        fr = self.frames.get(frame)
+        if fr is None:
+            return
+        if result[0] == "missing" and fr.state not in ("done", "skipped"):
+            # not rendered yet and not on disk: "not on disk", as the check when a render opens says. A frame rendered or
+            # found on disk that is gone now is reported below.
+            fr.checks.pop(idx, None)
+        else:
+            fr.checks[idx] = result
+        if result[0] in PROBLEMS and fr.state in ("done", "skipped"):
+            fr.state = "bad"
+            self.note("!! frame %d: %s %s %s" % (frame, result[0], os.path.basename(self.output_files(frame)[idx]), result[2]), "err")
+        self._small_dirty = True
+
+    def check_all_pixels(self):
+        """Settings > Check pixels when a render ends, and the button: NaN and inf in every frame, and frames that are
+        exactly the same anywhere in the sequence. In the background, whatever else goes on. A movie: blank frames and
+        frames the same as the one before (1.0.13), see movie_pixels."""
+        if self.pixels_pending:
+            return
+        if self.movie:
+            self._check_movie_pixels()
+            return
+        # not a frame the file check found missing or empty: there are no pixels to read (1.0.26; a render that wrote nothing
+        # gave a line "Unable to open" for each of its 292 frames)
+        frames = [f for f, fr in sorted(self.frames.items()) if fr.state in ("done", "skipped", "bad")
+                  and not (fr.checks and all(c[0] in ("missing", "empty") for c in fr.checks.values()))]
+        self.pixels_pending = self.pixels_total = len(frames)
+        self.pixels_run += 1
+        self.pixel_futures = []
+        for f in frames:
+            try:
+                fut = self.pixel_checker.submit(check_pixels, self.output_files(f))
+            except RuntimeError:  # closing
+                self.pixels_pending = 0
+                return
+            self.pixel_futures.append(fut)
+            fut.add_done_callback(lambda fu, f=f, run=self.pixels_run: fu.cancelled() or self.events.put(("pixels", run, f, fu.result())))
+
+    def _check_movie_pixels(self):
+        info = self.movie_info
+        if not info or info.get("error") or info.get("no_probe") or not info.get("width"):
+            return
+        stamp = (info.get("size"), info.get("modified"))
+        self.pixels_pending, self.pixels_total = 1, len(self.frames)
+        self.pixels_run += 1
+        self.movie_decoders = []
+        try:
+            fut = self.pixel_checker.submit(movie_pixels, self.movie_path(), info["width"], info["height"], self.movie_decoders)
+        except RuntimeError:  # closing
+            self.pixels_pending = 0
+            return
+        self.pixel_futures = [fut]
+        fut.add_done_callback(lambda fu, run=self.pixels_run: fu.cancelled()
+                              or self.events.put(("movie_pixels", run, stamp, fu.result())))
+
+    def _on_movie_pixels(self, run, stamp, result):
+        if run != self.pixels_run:
+            return
+        self.pixels_pending = 0
+        order = sorted(self.frames)  # the movie's frames in order, the slate first when it has one
+
+        def numbers(indexes):
+            return [order[i] for i in indexes if i < len(order)]
+
+        self.movie_pixels = {"stamp": stamp, "error": result.get("error"), "count": result.get("count", 0),
+                             "blank": {kind: numbers(ix) for kind, ix in (result.get("blank") or {}).items()},
+                             "same": numbers(result.get("same") or [])}
+        found = self.movie_pixels
+        if found["error"]:
+            self.note("! Pixels not checked in the movie: %s" % found["error"], "warn")
+        for kind, frames in sorted(found["blank"].items()):
+            self.note("!! %d frame(s) %s: %s. Fine if it is meant to be." % (len(frames), kind, frames_to_spec(frames)), "err")
+        if found["same"]:
+            self.note("!! %d frame(s) the same as the one before: %s. Fine if it is meant to hold."
+                      % (len(found["same"]), frames_to_spec(found["same"])), "err")
+        if not found["error"] and not found["blank"] and not found["same"]:
+            self.note("Pixels checked in %d frames of the movie: no blank frame, none the same as the one before"
+                      % found["count"], "ok")
+        if self.state in ("done", "failed") and getattr(self, "run_stats", None) is not None:
+            QtCore.QTimer.singleShot(0, self.write_report)
+
+    def _stop_pixels(self):
+        """A render starts: no reading frames next to it, some of them about to be written. When it ends the check runs on all of them.
+        A movie's ffmpeg is stopped: it would hold the file Nuke is about to write."""
+        for proc in getattr(self, "movie_decoders", []):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        if not self.pixels_pending:
+            return
+        for fut in self.pixel_futures:
+            fut.cancel()
+        self.pixels_pending = 0
+        self.pixels_run += 1
+        for fr in self.frames.values():
+            fr.pixels, fr.same_as = None, None
+        self.note("Pixel check stopped: a render started")
+
+    def _on_pixels(self, run, frame, result):
+        if run != self.pixels_run:
+            return
+        self.pixels_pending -= 1
+        if frame in self.frames:
+            self.frames[frame].pixels = result
+        if self.pixels_pending > 0:
+            return
+        if self.state in ("done", "failed") and getattr(self, "run_stats", None) is not None:
+            QtCore.QTimer.singleShot(0, self.write_report)  # after the results below are in: the report gets the pixel problems
+        first, broken, same, errors, blank, differs, no_rgb = {}, [], [], {}, {}, {}, []
+        # what most frames have: a frame with something else was rendered another way
+        usual = {}
+        for fr in self.frames.values():
+            for key, value in ((fr.pixels or {}).get("props") or {}).items():
+                usual.setdefault(key, collections.Counter())[value] += 1
+        usual = {key: counts.most_common(1)[0][0] for key, counts in usual.items()}
+        slate = self.slate_frames()  # the slate often holds the first frame: not a frame the same as another
+        bare_slate = []  # ... but exactly the first frame, nothing on it: the script may have no slate (0.99.79)
+        for f, fr in sorted(self.frames.items()):
+            fr.same_as = None
+            if not fr.pixels:
+                continue
+            if "error" in fr.pixels:
+                # one line for one reason: the file's name taken out, so 292 frames that cannot be opened are one line
+                errors.setdefault(re.sub(r"'[^']*'|\"[^\"]*\"", "the file", fr.pixels["error"]), []).append(f)
+                continue
+            if fr.pixels["nan"] or fr.pixels["inf"]:
+                broken.append(f)
+            fr.pixels["differs"] = ["%s %s, the rest %s" % (key, value, usual[key]) for key, value in fr.pixels["props"].items() if value != usual[key]]
+            if fr.pixels["differs"]:
+                differs[f] = fr.pixels["differs"]
+            if fr.pixels.get("no_rgb"):  # other layers only (1.0.26): its size and compression are compared, nothing else
+                no_rgb.append(f)
+                continue
+            if fr.pixels["blank"]:
+                blank.setdefault(fr.pixels["blank"], []).append(f)
+            elif f in slate:
+                firsts = [x for x in sorted(self.frames) if x not in slate]
+                nxt = self.frames.get(firsts[0]) if firsts else None
+                if nxt is not None and nxt.pixels and nxt.pixels.get("hash") == fr.pixels["hash"]:
+                    bare_slate.append((f, firsts[0]))
+                    fr.same_as = firsts[0]  # shown like a frame the same as another: in Output, Problems and the tile
+            elif fr.pixels["hash"] in first:
+                fr.same_as = first[fr.pixels["hash"]]
+                same.append(f)
+            else:
+                first[fr.pixels["hash"]] = f
+        if broken:
+            self.note("!! NaN or inf pixels in %d frame(s): %s" % (len(broken), frames_to_spec(broken)), "err")
+        if same:
+            self.note("!! %d frame(s) exactly the same as an earlier one: %s. Fine if it is meant to hold." % (len(same), frames_to_spec(same)), "err")
+        for kind, frames in blank.items():
+            self.note("!! %d frame(s) %s: %s. Fine if it is meant to be." % (len(frames), kind, frames_to_spec(frames)), "err")
+        alike = {}  # frames that differ the same way: one line (1.0.26)
+        for f, notes in sorted(differs.items()):
+            alike.setdefault("; ".join(notes), []).append(f)
+        for text, frames in alike.items():
+            self.note("!! %s differ%s from the sequence: %s" % (
+                "frame %d" % frames[0] if len(frames) == 1 else "%d frames (%s)" % (len(frames), frames_to_spec(frames)),
+                "s" if len(frames) == 1 else "", text), "err")
+        for f, first_frame in bare_slate:
+            self.note("! slate frame %d is exactly the same as frame %d: nothing on it, maybe no slate in the script" % (f, first_frame), "warn")
+        for text, frames in errors.items():
+            self.note("! Pixels not checked in %d frame(s) (%s): %s" % (len(frames), frames_to_spec(frames), text), "warn")
+        if no_rgb:
+            self.note("Pixels: %d frame(s) hold no RGB, only other layers (%s), so their pixels are not judged; size and "
+                      "compression still are" % (len(no_rgb), frames_to_spec(no_rgb)), "ev")
+        judged = self.pixels_total - len(no_rgb) - sum(len(v) for v in errors.values())
+        if not broken and not same and not errors and not blank and not differs and not bare_slate and judged > 0:
+            self.note("Pixels checked in %d frames (RGB): no NaN, no inf, no blank frame, none the same as another, all alike"
+                      % judged, "ok")
+
+    def slate_frames(self):
+        """The slate frame this render has on top of its Framerange (none, or one)."""
+        return set(self.frames) - set(parse_frames(self.frames_text))
+
+    def _flag_small(self):
+        """A frame far smaller than the median of its sequence is often black or half empty. Not the slate:
+        a card with a few lines of text is small by nature, and it does not count in the median either."""
+        self._small_dirty = False
+        slate = self.slate_frames()
+        shot = [fr for f, fr in self.frames.items() if f not in slate]
+        medians = {}
+        for idx in range(len(self.outputs)):
+            sizes = [fr.checks[idx][1] for fr in shot if fr.checks.get(idx, ("",))[0] == "ok"]
+            if len(sizes) >= 5:
+                medians[idx] = statistics.median(sizes)
+        for f, fr in self.frames.items():
+            fr.small = f not in slate and any(c[0] == "ok" and i in medians and c[1] < 0.4 * medians[i] for i, c in fr.checks.items())
+
+    def verify_all(self):
+        if self.movie:
+            self.probe()
+            return
+        for f in self.frames:
+            self._submit_check(f)
+
+    def size_gb(self):
+        """GB one Nuke process of this render takes: the largest seen this run once one has rendered a few frames;
+        before that its cache and what a process takes besides it. A process just loaded is far smaller than it will be."""
+        return self.size_seen or self.ram + BESIDE_CACHE
+
+    def _schedule(self):
+        now = time.time()
+        for w in list(self.workers.values()):
+            if w.state in ("loading", "idle", "busy") and w.ps:
+                try:
+                    w.cpu = w.ps.cpu_percent(None) / 100.0
+                except Exception:
+                    pass
+        if self.state == "rendering":
+            # Chunks go out in frame order; a retried one goes first, so a problem shows up again quickly.
+            # The queue is read again for each idle process: the rest of a chunk split at the end of a render is queued
+            # at once, and the next idle process takes it in this same tick instead of waiting for the next ones.
+            for w in [w for w in self.workers.values() if w.state == "idle" and not w.retire]:
+                queued = sorted((c for c in self.chunks if c.state == "queued" and self.in_scope(c)),
+                                key=lambda c: (c.attempts == 0, min(c.frames)))
+                if not queued:
+                    break
+                self._dispatch(w, self._tail_split(queued[0]))
+            live = self._live()
+            busy = sum(1 for w in live if w.state == "busy")
+            loading = sum(1 for w in live if w.state in ("loading", "idle"))
+            queued_left = sum(1 for c in self.chunks if c.state == "queued" and self.in_scope(c))
+            want = min(self.workers_target - len(getattr(self, "held", ())), busy + queued_left)
+            if (len(live) < want and now - self.last_spawn >= SPAWN_GAP and loading < queued_left + 1
+                    and self._may_spawn()):
+                self._spawn()
+            self._balance_workers()
+            # Nothing left to hand out: close idle workers right away so their RAM is free.
+            if not queued_left:
+                for w in [w for w in self.workers.values() if w.state == "idle"]:
+                    self._quit(w, "no chunks left")
+        if self.state == "rendering" and not any(c.state == "rendering" or (c.state == "queued" and self.in_scope(c))
+                                                 for c in self.chunks):
+            self.state = "finishing"
+            self.check_rendered()  # _finish waits for these, then the pixel check runs
+            for w in list(self.workers.values()):
+                if w.state in ("idle", "loading"):
+                    self._quit(w, "render finished")
+
+    def _tail_split(self, chunk):
+        """Hand out at most remaining frames / (2 x processes) at a time.
+
+        Early on that is the whole chunk; towards the end chunks shrink down to single frames,
+        so every process finishes at about the same time instead of one working through a long
+        last chunk while the others wait. The rest of a split chunk goes back to the queue."""
+        if self.movie or chunk.attempts:
+            return chunk
+        if not self.settings.get("auto_chunk", True):
+            return chunk
+        remaining = sum(len(c.frames) for c in self.chunks if c.state == "queued")
+        procs = max(1, sum(1 for w in self.workers.values() if w.state in ("loading", "idle", "busy") and not w.retire))
+        size = max(1, int(math.ceil(remaining / (2.0 * procs))))
+        if len(chunk.frames) <= size:
+            return chunk
+        head, tail = chunk.frames[:size], chunk.frames[size:]
+        return self._split_chunk(chunk, head, tail)
+
+    def _split_chunk(self, chunk, head, tail):
+        rest = Chunk(self.next_cid, tail)
+        self.next_cid += 1
+        chunk.frames = head
+        chunk.all_frames = [f for f in chunk.all_frames if f not in set(tail)]
+        for f in tail:
+            self.frames[f].chunk = rest.name
+        self.chunks.append(rest)
+        self.chunks.sort(key=lambda c: (min(c.all_frames), c.id))
+        return chunk
+
+    def _dispatch(self, w, chunk):
+        chunk.state = "rendering"
+        chunk.worker = w.name
+        chunk.started = chunk.started or time.time()
+        w.chunk = chunk
+        w.state = "busy"
+        for f in chunk.frames:
+            self.frames[f].chunk = chunk.name
+        if chunk.whole_range:
+            line = "RANGE %s %d %d" % (chunk.name, min(chunk.frames), max(chunk.frames))
+        else:
+            line = "RENDER %s %s" % (chunk.name, frames_to_spec(chunk.frames))
+        seg = ["chunk", chunk.name, time.time(), None, "rendering"]
+        w.segments.append(seg)
+        w.seg_info[seg[2]] = {"spec": frames_to_spec(chunk.frames), "count": len(chunk.frames), "frames": [], "end": None,
+                              "after": None}
+        if not w.send(line):
+            self._requeue(chunk, count_attempt=False)
+            w.close_segment("failed")
+            w.chunk = None
+            w.state = "gone"
+
+    def _finish(self):
+        self.ended = time.time()
+        self._clean_temp()
+        if self.movie:
+            self.probe()
+            for what, state, text in movie_checks(self.movie_info, self.movie_expected()):
+                if state != "ok":
+                    self.note("%s %s: %s" % ("!!" if state == "bad" else "!", what, text),
+                              "err" if state == "bad" else "warn")
+            if self.movie_verdict(pixels=False) == "bad":
+                for fr in self.frames.values():
+                    fr.state = "bad"
+        failed = [c for c in self.chunks if c.state == "failed"]
+        bad = [f for f, fr in self.frames.items() if fr.state == "bad"]
+        only = self.scope
+        self.scope = None
+        if failed:
+            self.state = "failed"
+            self.error = "%d frame(s) failed: %s" % (sum(len(c.frames) for c in failed), failed[0].error)
+        elif only and any(fr.state == "queued" for fr in self.frames.values()):
+            self.state = "ready"  # just the picked frames were rendered; Render does the rest
+        else:
+            self.state = "done"
+        if not failed and not bad and not any(fr.state == "done" for fr in self.frames.values()):
+            # this run rendered nothing: every frame was on disk already (dark green)
+            self.note("Nothing to render: all %d frames are already on disk and pass the check" % len(self.frames), "ok")
+        else:
+            self.note("Render %s in %s. %d frames, %d bad on disk." % (
+                "finished" if not failed else "ended with failures", fmt_secs(self.elapsed()), len(self.frames), len(bad)),
+                "err" if failed or bad else "ok")
+        self.write_report()
+        self._note_frame_hooks()
+        if self.settings.get("check_pixels", True) and not self.job.get("test_out"):
+            self.check_all_pixels()
+
+    # ---- numbers ------------------------------------------------------------
+    def elapsed(self):
+        if not self.started:
+            return 0.0
+        end = self.ended or time.time()
+        paused = self.paused_secs + ((time.time() - self.paused_at) if self.state == "paused" and self.paused_at else 0)
+        return max(0.0, end - self.started - paused)
+
+    def counts(self):
+        c = collections.Counter(fr.state for fr in self.frames.values())
+        return c
+
+    def errors(self):
+        """What went wrong in this render, in a few words each; empty when nothing did. A process closed for RAM or VRAM
+        is not one: its chunk renders again. Nor is a Nuke that crashed: its half-written frame is deleted and its chunk
+        renders again; the card's tooltip says so (recovered)."""
+        c = self.counts()
+        out = []
+        if self.state == "failed":
+            out.append("the render failed%s" % (": " + self.error if getattr(self, "error", None) else ""))
+        if c["failed"]:
+            out.append("%d frame(s) Nuke did not render" % c["failed"])
+        if c["bad"]:
+            out.append("%d broken frame(s) on disk" % c["bad"])
+        nuke_errors = sum(1 for x in self.log if x[0] == "" and " failed on W" in x[1])
+        if nuke_errors and not c["failed"]:
+            out.append("Nuke reported %d error(s), see the Log" % nuke_errors)
+        if getattr(self, "after_error", ""):
+            out.append(self.after_error)
+        return out
+
+    def verified(self):
+        """Done, and every frame on disk passed the check when the render ended (a movie: it is complete and usable). A crash
+        before that cost only a chunk rendered again: its half-written frame was deleted, the rest went back to the queue."""
+        if self.state != "done":
+            return False
+        if self.movie:
+            return bool(self.movie_info) and self.movie_verdict(pixels=False) != "bad"
+        frames = list(self.frames.values())
+        return (bool(frames) and self.pending_checks <= 0 and all(fr.state != "bad" and fr.checks for fr in frames))
+
+    def recovered(self):
+        """For the card's tooltip: the crashes JKrender made good. They never turn the card red."""
+        if self.crashes and self.verified():
+            return ("Nuke crashed %d time(s); the chunk rendered again and every frame is on disk and passes the check"
+                    % self.crashes)
+        if self.crashes:
+            return "Nuke crashed %d time(s); its chunk went back to the queue and renders again" % self.crashes
+        return ""
+
+    def rate(self):
+        """Frames per second over the last minute (or since start)."""
+        now = self.elapsed()
+        recent = [t for t in self.done_times if now - t <= 60]
+        if len(recent) >= 3:
+            span = max(1.0, now - recent[0]) if len(recent) == len(self.done_times) else 60.0
+            return len(recent) / span
+        el = self.elapsed()
+        return (len(self.done_times) / el) if el > 0 and self.done_times else 0.0
+
+    def eta(self):
+        """Seconds left: the frames still to go at the current speed, but never less than the frames being rendered
+        still need, so the last frames, when fewer processes work, do not show 0 or nothing."""
+        c = self.counts()
+        left = c["queued"] + c["rendering"]
+        if not left:
+            return 0.0
+        r = self.rate()
+        by_rate = left / r if r > 0 else None
+        secs = self.frame_secs()[-40:]
+        avg = sum(secs) / len(secs) if secs else None
+        now = time.time()
+        running = [fr for fr in self.frames.values() if fr.state == "rendering" and fr.started]
+        in_flight = None
+        if avg and running:
+            in_flight = max(max(0.0, avg - (now - fr.started - self.paused_between(fr.started, now))) for fr in running)
+        known = [x for x in (by_rate, in_flight) if x is not None]
+        return max(1.0, max(known)) if known else None  # still rendering: never 0
+
+    def frame_secs(self):
+        return [fr.secs for fr in self.frames.values() if fr.secs is not None]
+
+    def run_secs(self):
+        """Frame times of this run. Frames from an earlier run keep theirs, which says nothing about its speed: against
+        this run's clock they showed 8 processes rendering 17 frames at once."""
+        return [fr.secs for fr in self.frames.values() if fr.secs is not None and fr.started and fr.started >= (self.started or 0)]
+
+    def write_report(self):
+        secs = self.frame_secs()
+        report = {
+            "state": self.state,
+            "error": self.error,
+            "started": self.started,
+            "ended": self.ended,
+            "elapsed": self.elapsed(),
+            "frames": len(self.frames),
+            "counts": dict(self.counts()),
+            "workers": self.workers_target,
+            "threads": self.threads,
+            "ram_gb": self.ram,
+            "chunk_size": self.chunk_size,
+            "chunks": len(self.chunks),
+            "frame_secs_sum": sum(secs),
+            "frame_secs_avg": (sum(secs) / len(secs)) if secs else None,
+            "bad_frames": [f for f, fr in self.frames.items() if fr.state == "bad"],
+        }
+        report.update(self._measure_report(secs))
+        try:
+            (self.dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _measure_report(self, secs):
+        """What a render tells about this PC and this kind of script: what Export render data hands to whoever
+        tunes the recommendations. No names or paths in it."""
+        stats = getattr(self, "run_stats", None) or {}
+        starts = stats.get("starts") or []
+        boot = [b for b, _, _ in starts if b is not None]
+        opened = [o for _, o, _ in starts if o is not None]
+        done = sum(1 for fr in self.frames.values() if fr.state == "done" and fr.worker != "on disk")
+        log = [x[1] for x in self.log]
+        job = self.job
+        return {
+            "report": 2, "jkrender": APP_VERSION, "nuke": job.get("nuke_version", ""),
+            "machine": machine_info(),
+            "settings": {k: self.settings.get(k) for k in ("use_gpu", "reload_ram", "reload_vram", "kill_ram", "kill_vram",
+                                                         "chunk_auto", "auto_chunk", "max_renders", "fresh_after_chunk")},
+            "script": {"id": script_id(job.get("script")), "width": job.get("width"), "height": job.get("height"),
+                       "movie": bool(self.movie), "nodes": node_classes(job.get("snapshot") or job.get("script"))},
+            "result": {
+                "rendered": done, "frames_per_min": round(60.0 * done / self.elapsed(), 2) if done and self.elapsed() else None,
+                "frame_secs_median": round(statistics.median(secs), 3) if secs else None,
+                "processes_peak": stats.get("live_peak"), "rss_peak_gb": round(stats.get("rss_peak", 0.0), 1),
+                "vram_peak_gb": round(stats.get("vram_peak", 0.0), 1), "ram_peak_pct": round(stats.get("ram_pct_peak", 0.0)),
+                "card_vram_peak_gb": round(stats.get("card_peak", 0.0), 1),
+                "closed_ram": sum(1 for t in log if "!! RAM" in t and "closed now" in t),
+                "closed_vram": sum(1 for t in log if "!! VRAM" in t and "closed now" in t),
+                "limit_steps": sum(1 for t in log if "Nuke processes until" in t),
+                "crashes": self.crashes, "starts": len(starts),
+                "nuke_start_avg": round(sum(boot) / len(boot), 1) if boot else None, "nuke_start_max": round(max(boot), 1) if boot else None,
+                "script_open_avg": round(sum(opened) / len(opened), 2) if opened else None,
+                "script_open_max": round(max(opened), 2) if opened else None,
+                "pixel_problems": sum(1 for fr in self.frames.values() if pixels_broken(fr) or fr.same_as is not None)
+                + sum(len(v) for v in (self.movie_pixel_result() or {}).get("blank", {}).values())
+                + len((self.movie_pixel_result() or {}).get("same", []))},
+        }
+
+    def shutdown(self):
+        for w in list(self.workers.values()):
+            if w.state != "gone":
+                self._kill(w, requeue=False, note="closed")
+        for proc in getattr(self, "movie_decoders", []):  # a movie's pixel check
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        self.checker.shutdown(wait=False, cancel_futures=True)
+        self.pixel_checker.shutdown(wait=False, cancel_futures=True)
+
+
+class RenderManager:
+    """Every render in the window shares one budget of Nuke processes.
+
+    Renders start one after another (Settings > Max renders at once allows up to 3 side by side).
+    A render on its last chunks no longer counts, so the next one starts loading while it finishes.
+    Free processes are dealt out in turns, oldest render first, so 8 become 8, 4+4 or 3+3+2.
+    A movie takes its turn like any other render: one process with every thread."""
+
+    def __init__(self, settings):
+        self.settings = settings
+        self.engines = []
+        self.waiting = []
+        plan = auto_plan(10 ** 6, False)
+        self.total = int(settings.get("processes") or plan["workers"])
+        self.threads = int(settings.get("threads") or plan["threads"])
+        self.ram = int(settings.get("ram") or plan["ram"])
+        self.pauses = []  # times when every render was paused: the timeline leaves them out
+        self.paused_at = None
+        self.ram_cap = None  # RAM guard's lower process count while memory is short
+        self._short_since = {}  # "RAM" / "VRAM": since when it has been at its Reload Nuke at % (Reload Nuke)
+        self._wait_since = {}  # "RAM" / "VRAM": since when a place has waited to come back for it
+        self._wait_start = {}  # the same, for the Log: when the wait began (the 1.3 rule restarts _wait_since)
+        self._under_at = {}  # "RAM" / "VRAM": when it dropped under what a place comes back under, while one waits
+        self._ram_checked = 0.0
+        self._ram_ok_since = None
+        self._last_kill = 0.0
+        self.vram_cap = None  # VRAM guard's lower process count while the graphics card is nearly full
+        self._vram_others_noted = 0.0
+        self.vram_idle = None  # MB of VRAM in use while none of our Nuke processes ran
+        self._vram_lowered_at = None  # VRAM % when the VRAM limit last took a process away
+        self.falls = collections.deque(maxlen=20)  # when a process last closed for memory (see fall_wait)
+        self.vram_falls = collections.deque(maxlen=20)  # of those, for VRAM (see _fell_vram)
+        self._running = set()  # renders running at the last tick, to see one end (see _start_next)
+        self.started_by_hand = 0.0  # until then the RAM and VRAM limits leave a process started by hand alone
+        self._vram_ok_since = None
+        self.vram = None  # [GPU %, VRAM used MB, VRAM total MB] from the window's GPU monitor
+        self.gpu_mem = {}  # pid -> (GPU %, VRAM bytes)
+        self._vram_checked = 0.0
+        self._last_vram_kill = 0.0
+        self._cpu_idle_since = None
+
+    @property
+    def max_renders(self):
+        return max(1, min(MAX_RENDERS, int(self.settings.get("max_renders") or MAX_RENDERS)))
+
+    def add(self, job, job_dir):
+        e = RenderEngine(job, job_dir, self.settings)
+        e.manager = self
+        if not e.movie:
+            e.set_chunk_size(e.preferred_chunk())
+        e.number = len(self.engines) + 1  # its place among the cards: 1, 2, 3 (renumber keeps it so)
+        e.threads, e.ram = self.threads, self.ram
+        e.workers_target = 0
+        e.scan_disk()  # frames the Write already rendered show as done straight away
+        e.done_if_on_disk()
+        self.engines.append(e)
+        return e
+
+    def remove(self, e):
+        if e in self.waiting:
+            self.waiting.remove(e)
+        e.shutdown()
+        if e in self.engines:
+            self.engines.remove(e)
+        self.renumber()
+
+    def renumber(self):
+        """Card numbers by place, 1, 2, 3 ...: a card closed leaves no gap (1, 2, 3, not 1, 5, 6). The order stays the order
+        they were added in, oldest first."""
+        for i, x in enumerate(self.engines, 1):
+            x.number = i
+
+    def running(self):
+        return [e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
+
+    def live_count(self):
+        """Processes running in the places of Processes (image sequences). A movie's process is beside them."""
+        return sum(1 for e in self.engines if not e.movie for w in e.workers.values() if w.state != "gone")
+
+    def movie_count(self):
+        """Processes running for movies, one a movie, beside the places of Processes."""
+        return sum(1 for e in self.engines if e.movie for w in e.workers.values() if w.state != "gone")
+
+    def budget(self):
+        """Processes the renders may use now: the total, unless the RAM or VRAM guard holds it lower."""
+        return max(1, min(self.total, self.ram_cap or self.total, self.vram_cap or self.total))
+
+    def vram_bound(self):
+        """The VRAM limit, not the RAM limit, is what holds the number of processes down now."""
+        return self.vram_cap is not None and (self.ram_cap is None or self.vram_cap <= self.ram_cap)
+
+    def free_slots(self):
+        return self.budget() - self.live_count()
+
+    @staticmethod
+    def ram_percent():
+        return psutil.virtual_memory().percent if psutil else 0.0
+
+    def _more_fit(self, pct, limit):
+        """How many more Nuke processes may start for the RAM: one, while the RAM is under Reload Nuke at and every
+        process running has rendered a frame (then how much one takes is known); else none. One at a time, as after a
+        reload: Reload Nuke and Kill at catch it if the new one grows too big."""
+        if not psutil:
+            return 0
+        return 1 if pct < limit and pct + self.one_pct("RAM") < pct_kill(self.settings, "RAM") and not self.starting() else 0
+
+    def one_pct(self, name):
+        """% of the RAM or VRAM one Nuke process of the renders running takes at its largest (0 when not known yet): a place
+        comes back only if it then stays under Kill at, or it would be closed again at once, round and round."""
+        if name == "RAM":
+            if not psutil:
+                return 0.0
+            total = psutil.virtual_memory().total / 1024 ** 3
+            sizes = [e.size_seen for e in self.engines if e.state == "rendering" and e.size_seen]
+            return max(sizes) / total * 100 if sizes else 0.0
+        return self.vram_one() or 0.0
+
+    def starting(self):
+        """A process still opening the script or before its first frame (for 5 minutes at most), or None."""
+        now = time.time()
+        return next((w for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")
+                     and not w.frames_here and now - w.spawned < 300), None)
+
+    def _ram_pending(self):
+        """GB the processes still starting are going to take: those opening the script or before their second frame, up to
+        the size of one. Not the ones already going: their RAM goes up and down under their highest, and counting that
+        kept a process from coming back with RAM free ("and the ones starting 8.8 GB more" with none starting)."""
+        return sum(max(0.0, e.size_gb() - w.rss) for e in self.engines for w in e.workers.values()
+                   if w.state == "loading" or (w.state in ("idle", "busy") and w.frames_here < 2))
+
+    def fresh_start(self):
+        """Nothing runs and a render starts: limits a render before ran into say nothing about this one."""
+        self.ram_cap = self.vram_cap = self._vram_lowered_at = None
+        self._ram_ok_since = self._vram_ok_since = None
+        self.falls.clear()
+        self.vram_falls.clear()
+
+    def _fell(self):
+        self.falls.append(time.time())
+        for e in self.engines:
+            e.filling = False
+
+    def _fell_vram(self):
+        """One closed for VRAM. Twice in 5 minutes: the renders say so, once a run. It changes nothing by itself."""
+        self._fell()
+        now = time.time()
+        self.vram_falls.append(now)
+        recent = sum(1 for t in self.vram_falls if now - t < 300)
+        if recent < 2 or self.total < 2:
+            return
+        for e in self.engines:
+            if e.state == "rendering" and not e.notice and not e.settings.get("_test"):
+                e.notice = ("These processes keep filling the graphics card. Fewer processes with more threads may be much faster: "
+                            "Test this script measures it.", "warn")
+                e.note("!! %d processes closed for VRAM within 5 minutes. %s" % (recent, e.notice[0]), "warn")
+
+    def fall_wait(self):
+        """Seconds until a process may come back after one closed for memory: RETURN_CHECK after the last close, always the
+        same, however often it happens (the wait no longer grows: a place came back far too late)."""
+        if not self.falls:
+            return 0.0
+        return max(0.0, self.falls[-1] + RETURN_CHECK - time.time())
+
+    def _vram_idle_update(self):
+        """VRAM in use while no Nuke process of JKrender runs: Windows, other programs. The rest is ours, including
+        what the per-process counters do not show (the CUDA context, the driver)."""
+        if self.vram and self.live_count() == 0:
+            self.vram_idle = float(self.vram[1])
+
+    def vram_one(self, engine=None):
+        """VRAM % one more Nuke process of this render will take: what its processes took after their first
+        chunk (not what one grew to later), or else the largest one running now."""
+        if not self.vram or not self.vram[2]:
+            return None
+        total = float(self.vram[2])
+        for engines in ([engine] if engine is not None else [], self.engines):
+            bases = [w.vram_base for e in engines for w in e.workers.values() if w.vram_base]
+            bases += [e._vram_seen for e in engines if getattr(e, "_vram_seen", 0)]
+            if bases:
+                return max(bases) / total * 100
+        sizes = [self.gpu_mem.get(w.proc.pid, (0, 0))[1] for e in self.engines for w in e.workers.values()
+                 if w.gpu and w.state != "gone"]
+        return max(sizes) / 1024 ** 2 / total * 100 if sizes and max(sizes) else None
+
+    def vram_holder(self):
+        """Who else holds a lot of VRAM, for the log: "; NukeX (pid 39760) holds 16.5 GB", or ""."""
+        ours = {w.proc.pid for e in self.engines for w in e.workers.values() if w.state != "gone"}
+        others = [(v[1], pid) for pid, v in (self.gpu_mem or {}).items() if pid not in ours and v[1] > 2 * 1024 ** 3]
+        if not others:
+            return ""
+        size, pid = max(others)
+        name = "a program"
+        try:
+            proc = psutil.Process(pid) if psutil else None
+            if proc is not None:
+                cmd = " ".join(proc.cmdline()).lower()
+                name = "NukeX" if "--nukex" in cmd else ("Nuke" if "nuke" in proc.name().lower() else proc.name())
+        except Exception:
+            pass
+        return "; %s (pid %d) holds %.1f GB of it" % (name, pid, size / 1024 ** 3)
+
+    def vram_others(self):
+        """VRAM % other programs hold, from when none of our processes ran; None until seen."""
+        if self.vram_idle is None or not self.vram or not self.vram[2]:
+            return None
+        return self.vram_idle / float(self.vram[2]) * 100
+
+    def no_room(self, engine=None):
+        """Why a process that fell cannot come back yet, or "". It has to fit in the RAM (counting what the ones still
+        opening the script will take) and in the graphics card's memory. Starting one that does not fit would
+        only push the PC over a limit, and a process would be closed again. The first one always starts."""
+        if self.live_count() == 0:
+            return ""
+        now = time.time()
+        if self.settings.get("ram_guard", True) or self.settings.get("vram_guard", True):
+            wait = self.fall_wait()
+            if wait:
+                return "one closed for memory, the next can try in %d s" % math.ceil(wait)
+            # one at a time while the memory holds places: how much one really takes shows only once it has rendered.
+            # A place freed otherwise (a movie done, another render done) comes back at once.
+            first = next((w for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")
+                          and not w.frames_here and now - w.spawned < 300), None)
+            if first is not None and (self.ram_cap is not None or self.vram_cap is not None or self.memory_over()):
+                return "%s has not rendered its first frame yet" % first.name
+        if psutil and self.settings.get("ram_guard", True):
+            limit = pct_limit(self.settings, "RAM")
+            pct = self.ram_percent()
+            if pct >= self._return_under("RAM"):
+                return self._ram_target(pct, limit)
+        if self.vram and self.vram[2] and self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True):
+            limit = pct_limit(self.settings, "VRAM")
+            real = float(self.vram[1]) / float(self.vram[2]) * 100
+            if real >= self._return_under("VRAM"):
+                return self._vram_target(real, limit, 0.0)
+        return ""
+
+    def _return_under(self, name):
+        """The RAM or VRAM % a closed place comes back under: Reload Nuke at, or lower when one more process at its largest
+        would reach Kill at."""
+        return min(pct_limit(self.settings, name), pct_kill(self.settings, name) - self.one_pct(name))
+
+    def _ram_target(self, pct, limit):
+        """What a process waiting for RAM waits for (as _more_fit)."""
+        return "RAM must drop under %.0f %% (now %.0f %%, Reload Nuke at or Kill at less one process)" % (
+            self._return_under("RAM"), pct)
+
+    def _vram_target(self, real, limit, one=0.0, growing=0.0, starting=0):
+        """What a process waiting for VRAM waits for (as _more_fit_vram)."""
+        return "VRAM must drop under %.0f %% (now %.0f %%, Reload Nuke at or Kill at less one process)%s" % (
+            self._return_under("VRAM"), real, self.vram_holder())
+
+    def _note_running(self, text, level="ev"):
+        for e in self.engines:
+            if e.state in ("rendering", "paused", "finishing"):
+                e.note(text, level)
+
+    @staticmethod
+    def _close_first(running):
+        """Of (engine, worker) pairs, the one to close over a limit: the last one started, so a process still opening
+        the script or just started goes before one with work behind it. One you started by hand only when nothing else is
+        left, and a movie (one file, it would start all over) after that."""
+        return max(running, key=lambda ew: (not ew[0].movie, not ew[1].pinned, ew[1].spawned))
+
+    def _kill_pick(self, running, name):
+        """Of (engine, worker) pairs, the one Kill at closes at once. While some are starting (no frame rendered yet: the
+        start of a render, or a fresh Nuke after a reload), the least loaded of those: it has done no work yet. Once all
+        render, the one holding the most RAM or VRAM: it frees the most at once, so one close is enough. One you started
+        by hand only when nothing else is left; even sizes go to the one started last."""
+        pool = ([ew for ew in running if not ew[0].movie and not ew[1].pinned] or [ew for ew in running if not ew[0].movie]
+                or running)  # a movie would start all over: last
+        starting = [ew for ew in pool if not ew[1].frames_here]
+        if starting:
+            return min(starting, key=lambda ew: (self._held(ew[1], name)[0], -ew[1].spawned))
+        return max(pool, key=lambda ew: (self._held(ew[1], name)[0], ew[1].spawned))
+
+    @staticmethod
+    def _chunk_back(w):
+        return ", its chunk goes back to the queue" if w.chunk is not None else ""
+
+    def _ram_guard(self):
+        """Fewer Nuke processes while RAM is nearly full, so Windows never starts swapping."""
+        now = time.time()
+        if not psutil or now - self._ram_checked < 2:
+            return
+        self._ram_checked = now
+        limit = pct_limit(self.settings, "RAM")
+        pct = self.ram_percent()
+        live = self.live_count()
+        rendering = any(e.state == "rendering" for e in self.engines)
+        if pct >= limit and rendering:
+            # Over Reload Nuke at: Reload Nuke takes the process holding the most after its chunk (memory_short); it
+            # starts again once it fits. Nothing closes here unless the RAM reaches Kill at.
+            self._ram_ok_since = None
+            if pct >= pct_kill(self.settings, "RAM") and live > 1 and now - self._last_kill > 5 and now - self._last_vram_kill > 5:
+                # Nearly out of memory: one process closes now, mid-frame, and its place waits until it fits.
+                running = [(e, w) for e in self.engines for w in e.workers.values() if w.state in ("loading", "idle", "busy")]
+                if running:
+                    e, w = self._kill_pick(running, "RAM")
+                    e.note("!! RAM %.0f %% (Kill at): %s closed now%s" % (pct, w.name, self._chunk_back(w)), "err")
+                    w.closed_why = "RAM %.0f %%" % pct
+                    e._kill(w, requeue=True, note="stopped")
+                    self._fell()
+                    self._last_kill = now
+                    self._hold_down("RAM", pct)
+        elif self.ram_cap is not None and self._more_fit(pct, limit) > 0:
+            # Only processes that fit under the limit; one more would just push RAM over again and one
+            # process would be closed and another started, round and round.
+            if self._ram_ok_since is None:
+                self._ram_ok_since = now
+            elif now - self._ram_ok_since >= RETURN_CHECK and not self.fall_wait():
+                self.ram_cap += self._more_fit(pct, limit)
+                self._ram_ok_since = now
+                if self.ram_cap >= self.total:
+                    self.ram_cap = None
+                    self._note_running("RAM is %.0f %% again: back to %d Nuke processes" % (pct, self.total), "ok")
+                else:
+                    self._note_running("RAM is %.0f %%: up to %d Nuke processes" % (pct, self.ram_cap))
+        else:
+            self._ram_ok_since = None
+
+    def process_rows(self, engines=None):
+        """One entry per process number (W01, W02 ...), across renders: [(wid, [(engine, worker), ...]), ...].
+
+        A number moves from render to render (W01 of a finished render goes on in another), so a row
+        holds every process that had that number, oldest first; the last one is the current one."""
+        rows = {}
+        for e in (self.engines if engines is None else engines):
+            for wid, w in e.workers.items():
+                rows.setdefault(wid, []).append((e, w))
+        return [(wid, sorted(rows[wid], key=lambda ew: ew[1].spawned)) for wid in sorted(rows)]
+
+    def _vram_guard(self):
+        """Fewer Nuke processes while the graphics card's memory is over the limit, like the RAM limit: every
+        process uses the GPU. Within 5 % of the limit the processes get a fresh Nuke after their chunk (Fresh Nuke after
+        every chunk). At the limit one process fewer: the last one started closes (after its chunk,
+        or now if it is still opening the script), and the next only once it is gone. Places come back when one more fits.
+        When other programs hold so much VRAM that closing JKrender's processes cannot get the card under the
+        limit, nothing more closes (it would only slow the render down).
+        About to spill into the RAM (Kill at, 98 %), the last one started closes at once, as with the RAM. When it drops, as many
+        come back at once as fit under the limit."""
+        now = time.time()
+        if now - self._vram_checked < 2:
+            return
+        self._vram_checked = now
+        if not (self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True)) or not self.vram:
+            self.vram_cap = self._vram_lowered_at = None
+            return
+        if not any(e.state == "rendering" for e in self.engines):
+            return
+        used, total = float(self.vram[1]), float(self.vram[2] or 1)
+        pct = used / total * 100
+        limit = pct_limit(self.settings, "VRAM")
+        live = self.live_count()
+
+        def vram_of(w):
+            return self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2
+
+        one = self.vram_one() or 10.0
+        # VRAM the other programs hold (Nuke GUIs, Frame Server...), from when none of our processes ran;
+        # the per-process counters miss part of ours (CUDA context, driver), so used minus theirs is not it
+        others = self.vram_others()
+        # the last process that closed for the limit freed (almost) nothing: the VRAM is growing elsewhere
+        # (only a guess while the VRAM of other programs is unknown: ours also grow, frame after frame)
+        no_help = others is None and self._vram_lowered_at is not None and live <= (self.vram_cap or live) \
+            and pct > self._vram_lowered_at - one / 2
+        # Over Reload Nuke at: Reload Nuke takes the process holding the most VRAM after its chunk; it starts again
+        # once it fits. Nothing closes here unless the VRAM reaches Kill at (or the card stalls: _stall_check).
+        if pct >= limit:
+            self._vram_ok_since = None
+            if pct >= pct_kill(self.settings, "VRAM") and now - self._last_vram_kill > 8 and now - self._last_kill > 5:
+                running = [(e, w) for e in self.engines for w in e.workers.values()
+                           if w.gpu and w.state in ("loading", "idle", "busy")]
+                # the only one left keeps going: closing it would only throw its chunk away, again and again,
+                # while another program holds the card (NukeX with 16 GB); the card then lends it shared memory
+                if len(running) > 1:
+                    # as with the RAM: while some are starting the least loaded of them, else the one holding the most
+                    e, w = self._kill_pick(running, "VRAM")
+                    kill = pct_kill(self.settings, "VRAM")
+                    if pct - vram_of(w) / total * 100 >= kill:
+                        # Other programs hold the card (NukeX with 16 GB): closing this one would not get it under Kill
+                        # at, only throw its work away, and the next one after it. The GPU frozen guard still acts.
+                        if now - self._vram_others_noted > 120:
+                            self._vram_others_noted = now
+                            self._note_running(
+                                "VRAM %.0f %% (Kill at %.0f %%), but closing %s would free only %.1f GB%s: other programs "
+                                "hold the card, so %d keep going" % (pct, kill, w.name, vram_of(w) / 1024,
+                                                                     self.vram_holder(), len(running)), "warn")
+                        return
+                    e.note("!! VRAM %.0f %% (Kill at): %s (%.1f GB) closed now%s"
+                           % (pct, w.name, vram_of(w) / 1024, self._chunk_back(w)), "err")
+                    w.closed_why = "VRAM %.0f %%" % pct
+                    e._kill(w, requeue=True, note="stopped")
+                    self._fell_vram()
+                    self._last_vram_kill = now
+                    self._hold_down("VRAM", pct)
+        elif self.vram_cap is not None and not self._stall_check(now, pct, limit):
+            more = self._more_fit_vram(pct, limit, one)
+            if more > 0:
+                # as many as fit under the limit at once, as with the RAM; one more would push it over again
+                if self._vram_ok_since is None:
+                    self._vram_ok_since = now
+                elif now - self._vram_ok_since >= RETURN_CHECK and not self.fall_wait():
+                    self.vram_cap += more
+                    self._vram_ok_since = now
+                    self._vram_lowered_at = None
+                    if self.vram_cap >= self.total:
+                        self.vram_cap = None
+                        self._note_running("VRAM is %.0f %% again: back to %d Nuke processes" % (pct, self.total), "ok")
+                    else:
+                        self._note_running("VRAM is %.0f %%: up to %d Nuke processes" % (pct, self.vram_cap))
+            else:
+                self._vram_ok_since = None
+        if pct >= limit or self.vram_cap is None:
+            self._stall_check(now, pct, limit)
+
+    def _hold_down(self, name, pct, live=None):
+        """A place closed for memory waits until it fits: the RAM or VRAM places go down to the processes still running.
+        They come back as the memory lets them (_more_fit, _more_fit_vram)."""
+        live = self.live_count() if live is None else live
+        cap = max(1, live)
+        if name == "RAM":
+            if self.ram_cap is None or cap < self.ram_cap:
+                self.ram_cap = cap
+                self._note_running("!! RAM %.0f %%: %d Nuke processes until there is room" % (pct, cap), "warn")
+        else:
+            if self.vram_cap is None or cap < self.vram_cap:
+                self.vram_cap = cap
+                self._vram_lowered_at = pct
+                self._note_running("!! VRAM %.0f %%: %d Nuke processes until there is room" % (pct, cap), "warn")
+
+    def memory_over(self):
+        """What a fresh Nuke or a place coming back would not fit in now: ["RAM"], ["VRAM"], both or []. Over Reload Nuke at,
+        or so full that one more process would reach Kill at."""
+        return [name for name, pct in self._mem_now().items() if pct is not None and pct >= self._return_under(name)]
+
+    def _stall_check(self, now, pct, limit):
+        """A card so full the processes stall (also under the limit, from STALL_VRAM): the last one started closes at
+        once, its chunk back to the queue, and the places go one down until the card has room. True when one closed.
+        Nuke waiting for a full card does not use the CPU and finishes no frame; Windows lends the card shared memory, so
+        the VRAM may stay just under the limit (94.8 % of 24 GB held three processes for 17 minutes)."""
+        if pct < min(limit, STALL_VRAM):
+            self._cpu_idle_since = None
+            return False
+        idle = self._cpu_stalled(now)
+        stalled = self._vram_stalled(now)
+        if not (idle or stalled) or now - self._last_vram_kill <= STALL_GAP or now - self._last_kill <= 5:
+            return False
+        # One waiting to be replaced after its chunk never gets there, and neither does one to close after its chunk.
+        running = [(e, w) for e in self.engines for w in e.workers.values() if w.gpu and w.state in ("loading", "idle", "busy")]
+        if len(running) < 2:
+            return False
+        e, w = self._close_first(running)
+        if idle:
+            why = "every Nuke process has waited %.0f s for the card without using the CPU" % idle
+        else:
+            why = "no frame finished for %.0f s" % stalled
+        e.note("!! VRAM %.0f %%: %s, the card is full: %s closed now%s" % (pct, why, w.name, self._chunk_back(w)), "err")
+        w.closed_why = "GPU frozen"  # State: closed (GPU frozen)
+        e._kill(w, requeue=True, note="stopped")
+        self._fell_vram()
+        self._last_vram_kill = now
+        self._cpu_idle_since = None
+        cap = max(1, len(running) - 1)
+        if self.vram_cap is None or cap < self.vram_cap:
+            self.vram_cap = cap  # until the card has room: the usual way back
+            self._vram_ok_since = None
+            self._vram_lowered_at = pct
+            self._note_running("!! VRAM %.0f %%: the processes stalled, down to %d Nuke processes until it drops" % (pct, cap),
+                               "warn")
+        return True
+
+    def _cpu_stalled(self, now):
+        """Seconds every GPU process rendering a frame but one (and at least two) has used (almost) no CPU, once that is
+        STALL_CPU_SECS and 2 x the usual frame time; else 0. One still working (one opening the script again, say) must not
+        hide a card the rest wait for."""
+        busy = [w for e in self.engines if e.state == "rendering" for w in e.workers.values()
+                if w.gpu and w.state == "busy"]
+        idle_ones = [w for w in busy if getattr(w, "cpu", None) is not None and w.cpu < STALL_CPU]
+        if len(busy) < 2 or len(idle_ones) < max(2, len(busy) - 1):
+            self._cpu_idle_since = None
+            return 0.0
+        if self._cpu_idle_since is None:
+            self._cpu_idle_since = now
+        idle = now - self._cpu_idle_since
+        secs = [x for w in busy for x in w.frame_secs[-10:]]
+        wait = max(STALL_CPU_SECS, 2 * statistics.median(secs)) if secs else STALL_CPU_SECS  # a long GPU frame is no stall
+        return idle if idle >= wait else 0.0
+
+    def _vram_stalled(self, now):
+        """Seconds since any GPU process of a running render finished a frame, when that is far longer than a frame takes
+        (STALL_FRAMES x the usual, at least STALL_MIN s); else 0."""
+        ends, secs, gpu = [], [], False
+        for e in self.engines:
+            if e.state != "rendering":
+                continue
+            # the last frame any process of it finished (a process just started again is no progress), or its start
+            ends.append(max(getattr(e, "last_frame_at", None) or 0, e.started or 0) or now)  # this run's, not the last one's
+            for w in e.workers.values():
+                if w.gpu and w.state in ("loading", "idle", "busy"):
+                    gpu = True
+                    secs += w.frame_secs[-10:]
+        if not ends or not gpu:
+            return 0.0
+        wait = max(STALL_MIN, STALL_FRAMES * statistics.median(secs)) if secs else 180.0
+        idle = now - max(ends)
+        return idle if idle > wait else 0.0
+
+    def vram_starting(self):
+        """VRAM % kept for the processes that have not finished their first chunk (just started, or a fresh Nuke): each counts
+        at the size one process of its render takes, less what it holds now, as no_room and _more_fit_vram count them.
+        (growing %, how many)."""
+        growing, starting = 0.0, 0
+        if not self.vram or not self.vram[2]:
+            return growing, starting
+        total = float(self.vram[2])
+        for e in self.engines:
+            size = self.vram_one(e)
+            for w in e.workers.values():
+                if size and w.gpu and w.state != "gone" and w.vram_base is None:
+                    growing += max(0.0, size - self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 2 / total * 100)
+                    starting += 1
+        return growing, starting
+
+    def _more_fit_vram(self, pct, limit, one):
+        """As _more_fit, for the graphics card: one more while the VRAM is under Reload Nuke at and none is starting."""
+        if not self.vram or not self.vram[2]:
+            return 0
+        return 1 if pct < limit and pct + (one or 0.0) < pct_kill(self.settings, "VRAM") and not self.starting() else 0
+
+    def _short_update(self):
+        """Since when the RAM and the VRAM have been at their Reload Nuke at %, without a break."""
+        now = time.time()
+        for name, pct in self._mem_now().items():
+            if pct is None or pct < pct_reload(self.settings, name):
+                self._short_since.pop(name, None)
+            else:
+                self._short_since.setdefault(name, now)
+
+    def reload_pick(self, short):
+        """The one process that reloads for Reload Nuke When memory is full: the one holding the most of what is short
+        (VRAM when the VRAM is short, else RAM). Kept until it has reloaded or closed, so State points at one process
+        and that is the one that goes."""
+        name = "VRAM" if "VRAM" in short else "RAM"
+        pick = getattr(self, "_reload_pick", None)
+        if (pick is not None and pick[0] == name and pick[1].state in ("loading", "idle", "busy")
+                and not (pick[1].retire or pick[1].handover or pick[1].leave)):
+            return pick[1]
+        running = [w for e in self.engines if not e.movie and e.state == "rendering" for w in e.workers.values()
+                   if w.state in ("idle", "busy") and not (w.retire or w.handover or w.leave) and (name == "RAM" or w.gpu)]
+        if not running:
+            self._reload_pick = None
+            return None
+        top = max(running, key=lambda w: self._held(w, name)[0])
+        self._reload_pick = (name, top)
+        return top
+
+    def _wait_update(self):
+        """Since when a place has waited to come back because the RAM or the VRAM holds the processes down."""
+        now = time.time()
+        rendering = any(e.state == "rendering" and any(c.state == "queued" for c in e.chunks) for e in self.engines)
+        for name, cap in (("RAM", self.ram_cap), ("VRAM", self.vram_cap)):
+            if rendering and cap is not None and cap < self.total and self.live_count() <= cap:
+                self._wait_since.setdefault(name, now)
+                self._wait_log(name, now)
+            else:
+                self._wait_since.pop(name, None)
+                started = self._wait_start.pop(name, None)
+                under = self._under_at.pop(name, None)
+                if started is not None and cap is None or (started is not None and cap is not None and cap >= self.total):
+                    self._note_running("The places waiting for %s are back after %s%s" % (
+                        name, fmt_secs(now - started), ", %.0f s after it dropped under the mark" % (now - under) if under else ""))
+
+    def _wait_log(self, name, now):
+        """The Log says when a place starts waiting for memory, and under what it comes back; when the memory drops under
+        that, and so how long JKrender takes to bring it back."""
+        pct = self._mem_now().get(name)
+        if pct is None:
+            return
+        mark = self._return_under(name)
+        if name not in self._wait_start:
+            self._wait_start[name] = now
+            self._under_at.pop(name, None)
+            self._note_running("A place waits for %s: it comes back under %.0f %% (now %.0f %%; Reload Nuke at %.0f %%, or Kill at "
+                               "%.0f %% less one process)" % (name, mark, pct, pct_limit(self.settings, name),
+                                                             pct_kill(self.settings, name)))
+            return
+        if pct < mark and name not in self._under_at:
+            self._under_at[name] = now
+            self._note_running("%s %.0f %%: under %.0f %%, a place comes back once it stays there %d s" % (
+                name, pct, mark, RETURN_CHECK))
+        elif pct >= mark and name in self._under_at:
+            del self._under_at[name]  # back over it before the place came back
+
+    def _held(self, w, name):
+        """GB of RAM or VRAM process w holds now, and after its first chunk (None before that)."""
+        if name == "RAM":
+            return w.rss, w.rss_base
+        now = self.gpu_mem.get(w.proc.pid, (0, 0))[1] / 1024 ** 3 if w.gpu else 0.0
+        return now, (w.vram_base / 1024 if w.vram_base else None)
+
+    def wait_reload(self, w, peek=False):
+        """The 1.3 rule. Why process w, its chunk done, reloads for a place waiting WAIT_RELOAD s for memory; else "". Only
+        the one holding the most of what is short (VRAM: the most VRAM; RAM: the most RAM), and only if it grew LEAK_GROWTH x
+        since its first chunk. One at a time. peek: only asks (for State), the count does not start again.
+        Not while the memory is already under the mark the waiting place comes back under (0.99.89): the place comes back
+        by itself, and every fresh Nuke would hold it off (it starts only when none is starting). A heavy comp lost 69 s
+        to four reloads one after another after the RAM had dropped under the mark."""
+        now = time.time()
+        if self.refreshing():
+            return ""
+        mem = self._mem_now()
+        for name in ("VRAM", "RAM"):
+            since = self._wait_since.get(name)
+            if since is None or now - since < WAIT_RELOAD:
+                continue
+            if mem.get(name) is not None and mem[name] < self._return_under(name):
+                continue
+            running = [x for e in self.engines if not e.movie for x in e.workers.values()
+                       if x.state in ("idle", "busy") and not x.retire and (name == "RAM" or x.gpu)]
+            if not running:
+                continue
+            top = max(running, key=lambda x: self._held(x, name)[0])
+            held, base = self._held(top, name)
+            if top is not w or not base or held < base * LEAK_GROWTH:
+                continue
+            if not peek:
+                self._wait_since[name] = now  # the next one, if a place still waits, WAIT_RELOAD s after this one
+            return "1.3 rule: a place waits %.0f s for %s; %s holds the most, %.1f GB, up from %.1f GB" % (
+                now - since, name, w.name, held, base)
+        return ""
+
+    def _mem_now(self):
+        ram = self.ram_percent() if psutil and self.settings.get("ram_guard", True) else None
+        vram = None
+        if self.settings.get("use_gpu", True) and self.settings.get("vram_guard", True) and self.vram and self.vram[2]:
+            vram = float(self.vram[1]) / float(self.vram[2]) * 100
+        return {"RAM": ram, "VRAM": vram}
+
+    def refreshing(self):
+        """A process getting a fresh Nuke for memory now: closing for it, waiting to start, or the new one before its first
+        frame. Its name, or "". When memory is short the processes get theirs one at a time."""
+        for e in self.engines:
+            for w in e.workers.values():
+                if w.state == "quitting" and w.closed_why == "reload":
+                    return w.name
+                if getattr(w, "fresh", False) and w.state in ("loading", "idle", "busy") and not w.frames_here:
+                    return w.name
+                if w.state == "gone" and w.id in getattr(e, "refresh_ids", []):
+                    return w.name
+        return ""
+
+    def memory_short(self):
+        """What is over Reload Nuke at, held reload_hold s (Settings > Reload Nuke after) without a break: "RAM over 95 %", "VRAM over 95 %", both, or "".
+        The threshold, not the reading: State says busy → reload (VRAM over 95 %). A process closed for memory that waits to come back is no
+        reason by itself: it comes back once there is room, and fresh Nukes at 60 % only cost script loads."""
+        now, pct, why = time.time(), self._mem_now(), []
+        for name in ("RAM", "VRAM"):
+            since = self._short_since.get(name)
+            if since is not None and now - since >= reload_hold(self.settings):
+                why.append("%s over %.0f %%" % (name, pct_limit(self.settings, name)))
+        return ", ".join(why)
+
+    def take_wid(self, engine=None):
+        """The lowest process number no running process has. When a render is done, the process a render
+        still running starts next takes over the free name (W01 goes on in render C), so the names stay
+        W01-W08. A render never gets a number twice (its closed ones are started again under their own)."""
+        # 1.0.11: a process that only closes after its render is over gives its name up (Start next render when one ends
+        # starts the next in that same moment: it took W02 while W01 was still closing)
+        running = {wid for e in self.engines for wid, w in e.workers.items() if w.state != "gone"
+                   and not (w.state == "quitting" and e.state in ("done", "failed", "stopped", "ready"))}
+        own = set(engine.workers) if engine is not None else set()
+        # a movie beside image sequences that render: after their places (W09 with Processes 8), so W01-W08 stay theirs.
+        # A sequence that is done only keeps its card: the movie takes W01 then (0.99.84)
+        beside = any(not x.movie and x is not engine and (x.state in ("waiting", "starting", "rendering", "paused", "finishing")
+                                                          or any(w.state != "gone" for w in x.workers.values()))
+                     for x in self.engines)
+        wid = self.total + 1 if engine is not None and engine.movie and beside else 1
+        while wid in running or wid in own:
+            wid += 1
+        return wid
+
+    def set_budget(self, total=None, threads=None, ram=None):
+        if total is not None:
+            self.total = max(1, int(total))
+        if threads is not None:
+            self.threads = int(threads)
+        if ram is not None:
+            self.ram = int(ram)
+        for e in self.engines:
+            e.threads, e.ram = self.threads, self.ram
+
+    def request_start(self, e, everything=False):
+        if e.state in ("rendering", "paused", "finishing", "waiting"):
+            return
+        e.everything = everything
+        e.resume_state = e.state
+        e.state = "waiting"
+        self.waiting.append(e)
+        self._admit()
+        if e.state == "waiting":
+            e.note("Waiting: %d render(s) already use the PC (Settings > Max renders at once)" % self.max_renders)
+
+    def cancel(self, e):
+        if e in self.waiting:
+            self.waiting.remove(e)
+            e.state = e.resume_state
+            e.note("No longer waiting to render")
+
+    def paused_between(self, a, b):
+        spans = list(self.pauses) + ([(self.paused_at, time.time())] if self.paused_at else [])
+        return sum(max(0.0, min(b, p1) - max(a, p0)) for p0, p1 in spans)
+
+    def tick(self):
+        changed = False
+        for e in list(self.engines):
+            changed = e.tick() or changed
+        self._vram_idle_update()
+        self._ram_guard()
+        self._vram_guard()
+        self._short_update()
+        self._wait_update()
+        changed = self._start_next() or changed
+        self._admit()
+        self._allocate()
+        all_paused = any(e.state == "paused" for e in self.engines) and not any(
+            e.state in ("rendering", "finishing") for e in self.engines)
+        if all_paused and self.paused_at is None:
+            self.paused_at = time.time()
+        elif not all_paused and self.paused_at is not None:
+            self.pauses.append((self.paused_at, time.time()))
+            self.paused_at = None
+        return changed
+
+    def _start_next(self):
+        """Settings > Start next render when one ends: for each render that finished just now, the next one on the cards
+        that has not been started. One you stopped stays stopped and does not start another."""
+        running = {e for e in self.engines if e.state in ("rendering", "paused", "finishing", "waiting")}
+        ended = [e for e in self._running if e not in running and e.state in ("done", "failed")]
+        self._running = running
+        if not ended or not self.settings.get("auto_next", False):
+            return False
+        ready = sorted((e for e in self.engines if e.state == "ready" and not e.nothing_to_render()), key=lambda e: e.number)
+        for e in ready[:len(ended)]:
+            e.note("Started by itself: the render before it finished", "ok")
+            self.request_start(e)
+            self._running.add(e)
+        return bool(ready)
+
+    def _admit(self):
+        for e in [x for x in self.waiting if x.movie]:  # a movie starts at once, in a process of its own
+            self.waiting.remove(e)
+            e.state = e.resume_state
+            e.start(everything=e.everything)
+        busy = [e for e in self.engines if e.state in ("rendering", "paused") and not e.is_tail() and not e.movie]
+        while self.waiting and len(busy) < self.max_renders:
+            e = self.waiting.pop(0)
+            e.state = e.resume_state
+            e.start(everything=e.everything)
+            if e.state == "rendering":
+                busy.append(e)
+
+    def _allocate(self):
+        # a render with a process you started by hand first, so the place made for it is not dealt to another
+        for e in self.engines:  # a movie: its one process, beside the places
+            if e.movie and e.state in ("rendering", "paused") and e.workers_target != min(1, e.need()):
+                e.set_workers(min(1, e.need()))
+        active = sorted((e for e in self.engines if e.state in ("rendering", "paused") and not e.movie),
+                        key=lambda e: (not (e.restart_ids or e.hand_wids), e.started or 0, e.number))
+        needs = {e: e.need() for e in active}
+        share = {e: 0 for e in active}
+        for _ in range(self.budget()):  # even shares, but for places added or taken away by hand
+            hungry = [e for e in active if share[e] < needs[e]]
+            if not hungry:
+                break
+            share[min(hungry, key=lambda e: share[e] - e.place_offset)] += 1
+        # Work on: places moved by hand, as long as both renders run and the one moved to has work for it
+        self.moves = [(a, b) for a, b in getattr(self, "moves", []) if a in share and b in share]
+        for a, b in self.moves:
+            if share[a] > 0 and share[b] < needs[b]:
+                share[a] -= 1
+                share[b] += 1
+        for e in active:
+            if e.workers_target != share[e]:
+                e.set_workers(share[e])
+
+    def move_worker(self, src, w, dst):
+        """Work on: the process w of render src hands its place to render dst after its chunk; the
+        process dst starts there gets w's name."""
+        if src is dst:
+            return
+        if not hasattr(self, "moves"):
+            self.moves = []
+        if w.state != "gone" and src.state in ("rendering", "paused"):
+            w.leave = True
+            w.leave_to = dst
+            self.moves.append((src, dst))
+        dst.preferred_wids.append(w.id)
+        src.note("%s goes on to render %d (%s) after its chunk" % (w.name, dst.number, dst.name))
+        dst.note("%s comes over from render %d (%s)" % (w.name, src.number, src.name))
+        self._allocate()
+
+    def shutdown(self):
+        for e in self.engines:
+            e.shutdown()
+
+
+# ----------------------------------------------------------------------------
+# Look
+# ----------------------------------------------------------------------------
+# Nuke's own interface: neutral greys with its orange highlight.
+C = {
+    "bg": "#282828", "panel": "#323232", "panel2": "#3b3b3b", "line": "#1c1c1c",
+    "text": "#cdcdcd", "dim": "#8c8c8c", "accent": "#f7931e", "ram": "#d2d2d2",
+    "vram": "#5aa9e6", "queued": "#4a4a4a", "rendering": "#f7931e", "done": "#7fae58", "failed": "#d4503f",
+    "bad": "#d4503f", "skipped": "#556b45", "small": "#e3c63d", "loading": "#626262", "stopped": "#7b6f60",
+    "after": "#8f7fc4",
+}
+STATE_LABELS = {
+    "ready": "Ready", "waiting": "Waiting", "rendering": "Rendering", "paused": "Paused", "finishing": "Checking output",
+    "done": "Done", "failed": "Failed", "stopped": "Stopped", "starting": "Starting",
+}
+
+STYLE = """
+* { color: %(text)s; font-family: "Segoe UI", sans-serif; font-size: 9pt; }
+QMainWindow, QWidget#root { background: %(bg)s; }
+QTabWidget::pane { border: 1px solid %(line)s; background: %(panel)s; top: -1px; }
+QTabBar::tab { background: %(bg)s; padding: 6px 16px; border: 1px solid %(line)s; border-bottom: none; margin-right: 2px; color: %(dim)s; }
+QTabBar::tab:selected { background: %(panel)s; color: %(text)s; border-top: 2px solid %(accent)s; }
+QPushButton { background: %(panel2)s; border: 1px solid %(line)s; padding: 5px 14px; border-radius: 3px; }
+QPushButton:hover { border-color: %(accent)s; }
+QPushButton:disabled { color: #5e5e5e; }
+QPushButton#primary { background: %(accent)s; color: #111; font-weight: 600; border: none; }
+QPushButton#primary:disabled { background: #5c4426; color: #2a2a2a; }
+QSpinBox, QLineEdit, QComboBox { background: %(panel2)s; border: 1px solid %(line)s; padding: 3px 5px; border-radius: 3px; }
+QSpinBox:disabled, QLineEdit:disabled, QComboBox:disabled { background: %(bg)s; color: #666666; border-color: #2e2e2e; }
+QRadioButton { color: %(text)s; }
+QCheckBox:disabled, QLabel:disabled, QRadioButton:disabled { color: #666666; }
+QTableWidget, QTableView, QPlainTextEdit, QTextBrowser { background: %(panel)s; border: none; gridline-color: %(line)s;
+    selection-background-color: #6b4a22; alternate-background-color: #2d2d2d; }
+QHeaderView::section { background: %(panel2)s; border: none; border-right: 1px solid %(line)s; padding: 4px 6px; color: %(dim)s; }
+QProgressBar { background: %(panel2)s; border: none; border-radius: 3px; height: 8px; text-align: center; }
+QProgressBar::chunk { background: %(accent)s; border-radius: 3px; }
+QSplitter::handle { background: %(line)s; }
+QCheckBox::indicator { width: 13px; height: 13px; }
+QToolTip { background: %(panel2)s; color: %(text)s; border: 1px solid %(line)s; }
+QLabel#dim { color: %(dim)s; }
+QLabel#big { font-size: 15pt; font-weight: 600; }
+QLabel#tileValue { font-size: 14pt; font-weight: 600; }
+""" % C
+
+
+def frame_broken(fr):
+    """Broken on disk: a rendered one that failed its check, or one found so on disk and waiting to render again."""
+    return fr.state == "bad" or (fr.state == "queued" and any(c[0] not in ("ok", "missing") for c in fr.checks.values()))
+
+
+def pixels_broken(fr):
+    return bool(fr.pixels and (fr.pixels.get("nan") or fr.pixels.get("inf") or fr.pixels.get("blank") or fr.pixels.get("differs")))
+
+
+def pixels_note(fr):
+    """Words for what the pixel check found in a frame, or ""."""
+    notes = []
+    if pixels_broken(fr):
+        notes += ["%d NaN" % fr.pixels["nan"]] if fr.pixels.get("nan") else []
+        notes += ["%d inf" % fr.pixels["inf"]] if fr.pixels.get("inf") else []
+        notes += [fr.pixels["blank"]] if fr.pixels.get("blank") else []
+        notes += fr.pixels.get("differs") or []
+    if fr.same_as is not None:
+        notes.append("same as %d" % fr.same_as)
+    return ", ".join(notes)
+
+
+def frame_color(fr):
+    if pixels_broken(fr) or fr.same_as is not None:
+        return QtGui.QColor(C["failed"])
+    if fr.state in ("done", "skipped") and fr.small:
+        return QtGui.QColor(C["small"])
+    return QtGui.QColor(C.get(fr.state, C["queued"]))
+
+
+# ----------------------------------------------------------------------------
+# Widgets
+# ----------------------------------------------------------------------------
+class FrameMap(QtWidgets.QWidget):
+    """The render on one line: every chunk is a block, every frame a cell inside it, coloured by state."""
+
+    frameClicked = QtCore.Signal(int)
+
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.setMouseTracking(True)
+        self.setFixedHeight(30)
+        self._cells = []
+        self._blocks = []
+        self._pulse = 0
+
+    def _layout(self):
+        e = self.engine
+        frames = e.frame_list() if e else []
+        groups = []  # [chunk name, [frames]] in frame order
+        for f in frames:
+            name = e.frames[f].chunk
+            if groups and groups[-1][0] == name:
+                groups[-1][1].append(f)
+            else:
+                groups.append([name, [f]])
+        w = float(max(1, self.width()))
+        # The gap between chunks shrinks when there are very many, so frames keep most of the width.
+        gap = next((g for g in (4, 3, 2, 1) if g * len(groups) <= w * 0.2), 0)
+        per = (w - gap * max(0, len(groups) - 1)) / float(max(1, len(frames)))
+        h = float(self.height())
+        self._cells, self._blocks = [], []
+        x = 0.0
+        for name, fs in groups:
+            self._blocks.append((name, QtCore.QRectF(x, 0, per * len(fs), h)))
+            for i, f in enumerate(fs):
+                self._cells.append((f, QtCore.QRectF(x + i * per, 0, per, h)))
+            x += per * len(fs) + gap
+
+    def paintEvent(self, event):
+        self._layout()
+        self._pulse = (self._pulse + 1) % 20
+        p = QtGui.QPainter(self)
+        p.fillRect(self.rect(), QtGui.QColor(C["panel"]))
+        split = self._cells and self._cells[0][1].width() >= 5  # wide enough to show each frame
+        for f, rect in self._cells:
+            fr = self.engine.frames[f]
+            color = frame_color(fr)
+            if fr.state == "queued" and fr.old is not None:
+                # All frames again: still on disk until the new one is written, so it keeps the on-disk colour
+                color = QtGui.QColor(C["bad"] if fr.old.state == "bad" else C["skipped"])
+            if fr.state == "rendering":
+                color = color.lighter(100 + abs(10 - self._pulse) * 4)
+            p.fillRect(rect.adjusted(0, 0, -1 if split else 0, 0), color)
+        font = p.font()
+        font.setPointSizeF(7.5)
+        p.setFont(font)
+        for name, rect in self._blocks:
+            p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 110), 1))
+            p.setBrush(QtCore.Qt.NoBrush)
+            p.drawRect(rect.adjusted(0, 0, -1, -1))
+            if name and rect.width() >= p.fontMetrics().horizontalAdvance(name) + 8:
+                p.setPen(QtGui.QColor(0, 0, 0, 150))
+                p.drawText(rect, QtCore.Qt.AlignCenter, name)
+        p.end()
+
+    def _frame_at(self, pos):
+        for f, rect in self._cells:
+            if rect.contains(QtCore.QPointF(pos)):
+                return f
+        return None
+
+    def mouseMoveEvent(self, event):
+        f = self._frame_at(event.position())
+        if f is None:
+            return
+        fr = self.engine.frames[f]
+        lines = ["Frame %d — %s" % (f, "on disk, renders again" if fr.state == "queued" and fr.old is not None else fr.state),
+                 "Chunk %s" % (fr.chunk or "—")]
+        if fr.worker:
+            lines.append("Worker %s" % fr.worker)
+        if fr.secs is not None:
+            lines.append("%.2f s" % fr.secs)
+        for i, chk in sorted(fr.checks.items()):
+            lines.append("%s  %s  %s" % (chk[0], fmt_size(chk[1]), chk[2]))
+        if fr.small:
+            lines.append("Much smaller than the other frames")
+        for kind, secs in sorted((fr.hooks or {}).items(), reverse=True):  # beforeFrameRender, then afterFrameRender
+            lines.append("%s on the Write: %.2f s" % (kind, secs))
+        if pixels_note(fr):
+            lines.append(pixels_note(fr))
+        QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
+
+    def mousePressEvent(self, event):
+        f = self._frame_at(event.position())
+        if f is not None:
+            self.frameClicked.emit(f)
+
+
+class Gantt(QtWidgets.QWidget):
+    """One row per Nuke process (W01, W02 ...). A process that moves to another render keeps its row;
+    with several renders each chunk says which render it was for, and the picked render is bright.
+
+    Script load in grey, each chunk as a block. Right-click a row for that process's menu."""
+
+    workerMenu = QtCore.Signal(object, object, object)  # engine, worker, global position
+
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+        self.selected = None
+        self.show_all = True  # False: only the picked render's processes
+        self.dim_others = True  # False: every render's chunks equally bright
+        self.show_hooks = True  # False: no beforeRender / afterRender blocks (Settings > Show render hooks in Workers)
+        self.hide_old_done = True  # a render started again: the done chunks of its earlier run are not drawn
+        self.setMouseTracking(True)
+        self.setMinimumHeight(70)
+        self._blocks = []
+
+    def paintEvent(self, event):
+        m = self.manager
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.fillRect(self.rect(), QtGui.QColor(C["panel"]))
+        engines = m.engines if self.show_all or self.selected is None else [self.selected]
+        rows = m.process_rows(engines)  # W01, W02 ...: a process keeps its row when it moves to another render
+        self._blocks = []
+        self._rows = []
+        if not rows:
+            p.setPen(QtGui.QColor(C["dim"]))
+            p.drawText(self.rect(), QtCore.Qt.AlignCenter, "Workers appear here when a render starts")
+            p.end()
+            return
+        now = m.paused_at or time.time()
+
+        def clock(t):  # wall time with every all-renders pause cut out
+            return t - m.paused_between(0, min(t, now))
+
+        def end_of(e, b):
+            cap = e.paused_at if e.state == "paused" and e.paused_at else now
+            return min(b or cap, cap)
+
+        def shown(e, w):  # the segments drawn: without the done chunks of an earlier run, when hidden
+            cut = e.rerun_at if self.hide_old_done else None
+            return [s for s in w.segments
+                    if not (cut and s[3] and s[3] <= cut and (s[0] == "load" or s[4] == "done"))
+                    and (self.show_hooks or s[0] not in ("before", "after"))]  # its loading too: no empty start
+
+        pairs = [ew for _, ews in rows for ew in ews]
+        running = any(e.state in ("rendering", "paused", "finishing") for e, _ in pairs)
+        starts = [s[2] for e, w in pairs for s in shown(e, w)]
+        t0 = clock(min(starts) if starts else min(w.spawned for _, w in pairs))
+        t1 = max([clock(now) if running else 0] + [clock(end_of(e, s[3])) for e, w in pairs for s in shown(e, w)])
+        # Stretches with no process at all (one render done, the next sent an hour later) are cut out (0.99.91): a narrow
+        # space stands in their place, so the renders keep the width instead of an empty hour.
+        ivals = sorted((clock(s[2]), clock(end_of(e, s[3]))) for e, w in pairs for s in shown(e, w) if s[2] <= now)
+        if running:
+            ivals.append((clock(now), clock(now)))
+        # 1.0.11: between two renders (one done, the next not started yet) an empty stretch over a second is cut however
+        # short it is (7 s between two movies left a hole); inside a render only one over GAP_CUT, so a short pause
+        # there keeps its true length
+        spans = {}
+        for e, w in pairs:
+            for s in shown(e, w):
+                if s[2] <= now:
+                    a, b = clock(s[2]), clock(end_of(e, s[3]))
+                    lo, hi = spans.get(e, (a, b))
+                    spans[e] = (min(lo, a), max(hi, b))
+        for e in spans:
+            if e.state in ("rendering", "paused", "finishing"):
+                spans[e] = (spans[e][0], clock(now))
+        gaps, reach = [], None
+        for a, b in ivals:
+            if reach is not None and a - reach > 1.0:
+                inside = any(lo < reach and hi > a for lo, hi in spans.values())
+                if a - reach > GAP_CUT or not inside:
+                    gaps.append((reach, a))
+            reach = b if reach is None else max(reach, b)
+        span = max(1.0, t1 - t0 - sum(g1 - g0 for g0, g1 in gaps))
+        many = len(m.engines) > 1
+        left, top, right = 46, 6, 8
+        avail = self.height() - top - 4  # no time axis under the rows (1.0.9): they get its height
+        row_h = max(5.0, min(22.0, avail / float(len(rows))))
+        width = self.width() - left - right - GAP_PX * len(gaps)
+
+        def xpos(t):  # clock time -> x, with the cut stretches out and a GAP_PX mark for each
+            c, marks = t - t0, 0
+            for g0, g1 in gaps:
+                if t >= g1:
+                    c -= g1 - g0
+                    marks += 1
+                elif t > g0:
+                    c -= t - g0
+            return left + c / span * width + marks * GAP_PX
+        font = p.font()
+        font.setPointSizeF(7.5)
+        p.setFont(font)
+        y = top
+        for wid, ews in rows:
+            e_now, w_now = ews[-1]
+            p.setOpacity(1.0)
+            p.setPen(QtGui.QColor(C["text"] if w_now.state != "gone" else C["dim"]))
+            if row_h >= 9:
+                p.drawText(QtCore.QRectF(0, y, left - 6, row_h), QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                           w_now.name)
+            for e, w in ews:
+                p.setOpacity(0.35 if many and self.dim_others and self.selected is not None and e is not self.selected
+                             else 1.0)
+                for kind, label, a, b, state in sorted(shown(e, w), key=lambda s: s[0] == "before"):  # hooks on top
+                    if a > now:
+                        continue
+                    raw = (a, end_of(e, b))  # for the tooltips, which look the segment up by its start
+                    a, b = clock(a), clock(end_of(e, b))
+                    x = xpos(a)
+                    # the hooks take a moment of a long render: wide enough to see and hover all the same
+                    bw = max(HOOK_BLOCK if kind in ("before", "after") else 1.5, (b - a) / span * width)
+                    rect = QtCore.QRectF(x, y + 1.5, bw - 1, row_h - 3)
+                    if kind == "load":
+                        color = QtGui.QColor(C["loading"])  # every script load grey, a fresh Nuke after a chunk too
+                    elif kind == "before":  # the beforeRender hooks, once in each Nuke, inside its first chunk
+                        color = QtGui.QColor(C["after"])
+                    elif kind == "after":  # the afterRender hooks, once at the end of the render
+                        color = QtGui.QColor(C["after"] if state in ("rendering", "done") else
+                                             C["failed"] if state == "failed" else C["stopped"])
+                    elif state in ("rendering", "done", "failed"):
+                        color = QtGui.QColor(C[state])
+                    else:  # stopped, closed, retired: the chunk went back to the queue
+                        color = QtGui.QColor(C["stopped"])
+                    if state == "crashed":
+                        color = QtGui.QColor(C["failed"])
+                    p.setPen(QtCore.Qt.NoPen)
+                    p.setBrush(color)
+                    p.drawRoundedRect(rect, 2, 2)
+                    if kind in ("chunk", "after") and row_h >= 12:
+                        text = "%d · %s" % (e.number, label) if many else label
+                        if p.fontMetrics().horizontalAdvance(text) + 6 > bw:
+                            text = label if p.fontMetrics().horizontalAdvance(label) + 6 <= bw else ""
+                        if text:
+                            p.setPen(QtGui.QColor("#0e0f11"))
+                            p.drawText(rect, QtCore.Qt.AlignCenter, text)
+                    self._blocks.append((rect, e, w, kind, label, raw[0], raw[1], state))
+            p.setOpacity(1.0)
+            self._rows.append((y, y + row_h, e_now, w_now))
+            if e_now.state == "paused" and w_now.state != "gone":
+                # this process is frozen with its render
+                band = QtCore.QRectF(left, y, width, row_h)
+                p.fillRect(band, QtGui.QColor(0, 0, 0, 120))
+                if row_h >= 12:
+                    p.setPen(QtGui.QColor(C["accent"]))
+                    p.drawText(band, QtCore.Qt.AlignCenter, "PAUSED")
+            y += row_h
+        # No time axis under the rows (1.0.9): a chunk's tooltip says how long it took. A stretch with no process at all
+        # is cut out with nothing drawn in its place, only GAP_PX of space (1.0.10).
+        p.end()
+
+    @staticmethod
+    def _chunk_tip(e, w, label, a, b, state, who):
+        """What a chunk on the timeline did: its frames, which rendered, how it ended and what the process did next."""
+        info = w.seg_info.get(a) or {}
+        c = next((c for c in e.chunks if c.name == label), None)
+        spec = info.get("spec") or (c.spec if c else "?")
+        end = b or time.time()
+        lines = ["%s on %s, %s" % (label, who, fmt_secs(end - a - e.paused_between(a, end)))]
+        count, done = info.get("count"), info.get("frames") or []
+        lines.append("frames %s%s" % (spec, " (%d)" % count if count else ""))
+        if state == "rendering":
+            lines.append("rendering: %d of %d frames so far" % (len(done), count or 0))
+            return "\n".join(lines)
+        if info.get("end") not in (None, "rendered") or (done and count and len(done) < count):
+            if done:
+                lines.append("rendered %s (%d of %d); the rest went back to the queue" % (frames_to_spec(done), len(done), count or 0))
+            else:
+                lines.append("no frame rendered; the chunk went back to the queue")
+        end = info.get("end") or {"done": "rendered", "crashed": "Nuke crashed", "failed": "failed"}.get(state, state)
+        if end == "rendered":
+            lines.append("ended: every frame rendered")
+        else:
+            lines.append("ended: %s" % end)
+        after = info.get("after")
+        if after:
+            lines.append("then: %s" % after)
+        elif end == "rendered":
+            later = [s for s in w.segments if s[0] == "chunk" and s[2] > a]
+            lines.append("then: on to %s" % later[0][1] if later else "then: no chunk left for it")
+        return "\n".join(lines)
+
+    def contextMenuEvent(self, event):
+        y = event.pos().y()
+        for y0, y1, e, w in getattr(self, "_rows", []):  # the row's current process
+            if y0 <= y < y1:
+                self.workerMenu.emit(e, w, event.globalPos())
+                return
+
+    def mouseMoveEvent(self, event):
+        pos = event.position()
+        for rect, e, w, kind, label, a, b, state in reversed(self._blocks):  # the one drawn on top first
+            if rect.contains(pos):
+                who = "%s (%s)" % (w.name, e.name)
+                if kind == "load":
+                    why = label[len("again: "):] if label.startswith("again: ") else ""
+                    text = ("%s opening the script again%s: %.1f s" % (who, " (%s)" % why if why else "", b - a)
+                            if label.startswith("again") else "%s opening the script: %.1f s" % (who, b - a))
+                elif kind == "before":
+                    text = "%s: the beforeRender hooks took %s, once in this Nuke before its first frame" % (
+                        who, label.split(" ", 1)[-1])
+                elif kind == "after":
+                    text = "%s: the afterRender hooks, once for the whole render, %s%s" % (who, fmt_secs(b - a), {
+                        "rendering": " so far", "failed": "; one failed, see the Log",
+                        "crashed": "; Nuke ended before they were done", "stopped": "; closed before they were done"}.get(state, ""))
+                else:
+                    text = self._chunk_tip(e, w, label, a, b, state, who)
+                QtWidgets.QToolTip.showText(event.globalPosition().toPoint(), text, self)
+                return
+        QtWidgets.QToolTip.hideText()
+
+
+class SortItem(QtWidgets.QTableWidgetItem):
+    """A cell that sorts by its key (a number) when it has one; cells without one go last."""
+
+    KEY = QtCore.Qt.UserRole + 1
+
+    def __lt__(self, other):
+        a, b = self.data(self.KEY), other.data(self.KEY)
+        if a is None or b is None:
+            return (a is not None) > (b is not None) if (a is None) != (b is None) else self.text() < other.text()
+        return a < b
+
+
+class ScriptTest(QtWidgets.QDialog):
+    """Test this script: the same frames from 6 places spread over the shot, rendered with each Processes x Threads x
+    Cache setup (Create tests makes them from this PC; Add test adds your own) in two rounds: Round 1 a few frames each,
+    Round 2 the fastest again with all the frames. Frames per minute once the processes are going. The fastest is green,
+    the next orange; Use these settings puts it into Settings. Nothing changes unless you press it. The frames go to a
+    test folder, deleted after each setup; the render's own files stay as they are."""
+
+    LIMIT = 360  # seconds a setup may take in the final round; a slow one is measured on the frames it got done
+    QUICK_LIMIT = 180  # and in the quick round
+    QUICK_FRAMES = 3  # per process in the quick round: the first is left out of the rate, so two count
+    FINALISTS = 2  # setups the quick round sends to the final, with any within CLOSE of the best
+    CLOSE = 0.05
+    # Once a setup has rendered the frames, one that takes this much longer cannot win and stops. After two like that
+    # in a row the setups with still more processes are left out: each has less cache and fewer threads
+    # (a heavy comp: 4 GB of cache 69 s a frame, 2 GB and 1 GB not one frame in 6 minutes). Your own settings always run.
+    SLOWER = 1.5
+    GIVE_UP = 2
+    ROUND2_FRAMES = 8  # per process in Round 2 (no Frames per setup since 0.99.43): two chunks or so each, so growing memory
+    # and Reload Nuke show in the test, not only the first frames
+    TESTS = 7  # setups Create tests makes, from 1 process to the most this PC takes
+    MIN_THREADS = 4  # a process gets at least this many threads
+    MIN_CACHE = 4  # GB of cache a process gets at least: a heavy comp slows down a lot under that
+    MAX_THREADS = 64  # a process runs in one Windows processor group, at most 64 threads: more would sit unused
+
+    @staticmethod
+    def spread(most, count):
+        """count numbers of processes from 1 to most, closer together where few processes are (2 to 3 is a bigger step than
+        6 to 7): 1, 2, 3, 4, 5, 6, 8 on 32 threads."""
+        if most <= count:
+            return list(range(1, most + 1))
+        picked = {max(1, int(round(most ** (i / float(count - 1))))) for i in range(count)} | {1, most}
+        while len(picked) < count:  # fill the widest gap
+            ordered = sorted(picked)
+            gap = max(zip(ordered, ordered[1:]), key=lambda p: p[1] - p[0])
+            picked.add((gap[0] + gap[1]) // 2)
+        return sorted(picked)
+
+    @classmethod
+    def plan(cls, cpu, free_gb):
+        """The setups for this PC: (processes, threads, Cache GB), from 1 process with all the threads to as many as the
+        CPU (at least MIN_THREADS each) and the RAM (at least MIN_CACHE of cache each) take; each gets its share of the
+        threads and of the RAM, less what a process takes besides its cache."""
+        most = max(1, min(cpu // cls.MIN_THREADS, int(free_gb // (BESIDE_CACHE + cls.MIN_CACHE))))
+        fewest = -(-cpu // cls.MAX_THREADS)  # past 64 threads: enough processes to use every group
+        counts = [fewest - 1 + n for n in cls.spread(most - fewest + 1, cls.TESTS)] if most >= fewest else [fewest]
+        return [(n, min(cls.MAX_THREADS, max(1, cpu // n)), max(1, int(free_gb / n - BESIDE_CACHE))) for n in counts]
+
+    def _setup(self, x):
+        """A saved setup as (processes, threads, cache, Reload Nuke, Reload after); one saved before a part of it existed
+        gets that setting as it is now."""
+        x = list(x)
+        fresh = x[3] if len(x) > 3 and x[3] in FRESH_SHORT else self.fresh
+        after = x[4] if len(x) > 4 and x[4] in dict(RELOAD_AFTER) else self.after
+        return (int(x[0]), int(x[1]), int(x[2]), fresh, after)
+
+    def _planned(self, cpu):
+        return [k + (self.fresh, self.after) for k in self.plan(cpu, self._free_gb())]
+
+    @staticmethod
+    def _label(k):
+        return "%d x %d, cache %d GB" % (k[0], k[1], k[2])  # the Reload Nuke Rule column next to it says the rest
+
+    def _free_gb(self):
+        """RAM the processes of a test may take: the RAM limit of the whole RAM, less what Windows and other programs
+        usually hold. Not what is free this moment: a render or a Nuke open now would leave every setup a little cache
+        (8 x 4 with 1 GB), and a test should not run beside them anyway."""
+        if not psutil:
+            return float(self.main.manager.ram * self.main.manager.total)
+        total = psutil.virtual_memory().total / 1024.0 ** 3
+        return max(1.0, total * pct_limit(self.main.settings, "RAM") / 100 - min(16.0, total * 0.2))
+
+    @staticmethod
+    def hardware():
+        """This PC in a line: CPU, cores and threads, RAM, graphics card."""
+        info, cpu = machine_info(), cpu_layout()
+        cores = "%d cores" % cpu["cores"] if cpu.get("cores") else ""
+        if cpu.get("e_cores"):
+            cores += " (%d performance + %d efficiency)" % (cpu["p_cores"], cpu["e_cores"])
+        parts = [info.get("cpu") or "CPU", ", ".join(x for x in (cores, "%d threads" % (cpu.get("threads") or os.cpu_count() or 0)) if x)]
+        if (cpu.get("packages") or 1) > 1:
+            parts.append("%d CPUs" % cpu["packages"])
+        if (cpu.get("groups") or 1) > 1:
+            parts.append("%d processor groups (a process uses one, at most %d threads)" % (cpu["groups"], ScriptTest.MAX_THREADS))
+        if info.get("ram_gb"):
+            parts.append("%.0f GB RAM" % info["ram_gb"])
+        if info.get("gpu"):
+            parts.append("%s %s GB" % (info["gpu"], info.get("vram_gb") or "?"))
+        return "  ·  ".join(parts)
+
+    def __init__(self, window, engine):
+        super().__init__(window)
+        self.main, self.src = window, engine
+        self.setWindowTitle("Test this script: %s" % engine.name)
+        self.resize(1400, 580)
+        cpu = os.cpu_count() or 8
+        m = window.manager
+        self.fresh = window.settings.get("fresh_after_chunk", "short")
+        self.after = window.settings.get("reload_after", "frame")
+        cur = (m.total, m.threads, m.ram, self.fresh, self.after)
+        self.current = cur
+        self.added = {self._setup(x) for x in window.settings.get("test_setups", [])}  # your own, kept for next time
+        self.setups = sorted(set(self._planned(cpu)) | self.added)
+        self.all_frames = engine.frame_list()
+        lay = QtWidgets.QVBoxLayout(self)
+        top = QtWidgets.QHBoxLayout()
+        self.b_create = QtWidgets.QPushButton("Create tests")
+        self.b_create.setToolTip("Looks at this PC (CPU threads, RAM) and makes %d setups, from 1 process with all the threads to\n"
+                                 "as many as it takes, each with its share of the threads and the RAM. Replaces the setups in the table."
+                                 % self.TESTS)
+        self.b_create.clicked.connect(self._create_setups)
+        top.addWidget(self.b_create)
+        self.b_add = QtWidgets.QPushButton("Add test")
+        self.b_add.setToolTip("A setup of your own: Processes, Threads, Cache and Reload Nuke. It is kept for the next time.")
+        self.b_add.clicked.connect(self._add_setup)
+        self.b_remove = QtWidgets.QPushButton("Remove test")
+        self.b_remove.setToolTip("Removes the selected setups. A recommended one comes back the next time this window opens.")
+        self.b_remove.clicked.connect(self._remove_setups)
+        top.addWidget(self.b_add)
+        top.addWidget(self.b_remove)
+        top.addStretch(1)
+        lay.addLayout(top)
+        self.l_hw = QtWidgets.QLabel(self.hardware())
+        self.l_hw.setObjectName("dim")
+        lay.addWidget(self.l_hw)
+        self.table = QtWidgets.QTableWidget(len(self.setups), len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
+        for col, (_, tip) in enumerate(self.COLUMNS):
+            self.table.horizontalHeaderItem(col).setToolTip(tip)
+        self.table.horizontalHeader().setSortIndicator(0, QtCore.Qt.AscendingOrder)  # the setups in their order to start with
+        self.table.setSortingEnabled(True)  # a click on a column sorts by it, again the other way
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_menu)
+        self.table.verticalHeader().hide()
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        head = self.table.horizontalHeader()
+        head.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)  # columns can be made wider or narrower
+        head.setSectionsMovable(True)  # and dragged elsewhere
+        head.setStretchLastSection(True)
+        self._sizing, self._auto_width = True, True  # columns grow with what they show until you size one yourself
+        self.table.resizeColumnsToContents()
+        saved = window.settings.get(self._header_key())
+        if saved:  # as you left them last time
+            try:
+                head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
+                if head.count() != len(self.COLUMNS):
+                    raise ValueError
+                self._auto_width = False
+            except (ValueError, UnicodeError):
+                self.table.resizeColumnsToContents()
+        self._sizing = False
+        head.sectionResized.connect(self._sized)
+        lay.addWidget(self.table, 1)
+        self.verdict = QtWidgets.QLabel("")  # only when something went wrong: the colours in the table say which is fastest
+        self.verdict.setWordWrap(True)
+        self.verdict.hide()
+        lay.addWidget(self.verdict)
+        ram = max(1, int(psutil.virtual_memory().total / 1024 ** 3)) if psutil else 256
+
+        def box(lo, hi, value, suffix=""):
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(lo, hi)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            return spin
+
+        def label(text):
+            lab = QtWidgets.QLabel(text)
+            lab.setObjectName("dim")
+            return lab
+
+        self.l_frames = label("")  # how many frames each round renders, top right, after Add test and Remove test
+        self.l_frames.setToolTip("Every setup of a round renders the same frames: stretches of frames in a row at the same 6 places\n"
+                                 "spread over the whole shot, as many as the setup with the most processes needs.")
+        self.add_defaults = (m.total, m.threads, m.ram, self.fresh, self.after, cpu, ram)  # what Add test starts from, and its limits
+        top.addWidget(self.l_frames)
+        buttons = QtWidgets.QHBoxLayout()
+        self.b_start = QtWidgets.QPushButton("Start")
+        self.b_start.setObjectName("primary")
+        self.b_stop = QtWidgets.QPushButton("Stop")
+        self.b_use = QtWidgets.QPushButton("Use these settings")
+        self.b_use.setEnabled(False)
+        self.b_stop.setEnabled(False)
+        for b in (self.b_start, self.b_stop, self.b_use):
+            buttons.addWidget(b)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
+        self.b_start.clicked.connect(self.start)
+        self.b_stop.clicked.connect(self.stop)
+        self.b_use.clicked.connect(self.use)
+        self.results, self.quick, self.round, self.queue = {}, {}, "quick", []
+        self._frames_note()
+        self.index = -1
+        self.run = None
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self._fill_table()
+
+    def _fill_table(self):
+        self.table.setSortingEnabled(False)
+        self.table.clearContents()
+        self.table.setRowCount(len(self.setups))
+        for i, k in enumerate(self.setups):
+            n, t, c = k[:3]
+            item = SortItem(self._label(k))
+            item.setData(SortItem.KEY, n * 10000 + t * 100 + c + [m for m, _ in FRESH_MODES].index(k[3]) / 10.0
+                         + [a for a, _ in RELOAD_AFTER].index(k[4]) / 100.0)
+            item.setData(SortItem.KEY + 1, i)  # which setup the row is, wherever sorting puts it
+            self.table.setItem(i, self.C_SETUP, item)
+            self._cell(i, self.C_RULE, rule_text(k[3], k[4]), [m for m, _ in FRESH_MODES].index(k[3]) * 10
+                       + [a for a, _ in RELOAD_AFTER].index(k[4]))
+            self._cell(i, self.C_STATE, "waiting")
+        self.table.setSortingEnabled(True)
+        self._fit_columns()
+
+    def _sized(self, column, *_):
+        # you sized a column: they stay as you left them. Not the last one: it stretches with the window by itself.
+        if not self._sizing and column != self.table.columnCount() - 1:
+            self._auto_width = False
+
+    def _fit_columns(self):
+        """Columns grow to show what they hold (until you size one yourself); the window grows to show them all, as far
+        as the screen allows."""
+        if self._auto_width:
+            self._sizing = True
+            head = self.table.horizontalHeader()
+            for col in range(self.table.columnCount() - 1):
+                wanted = max(head.sectionSizeHint(col), self.table.sizeHintForColumn(col))
+                if head.sectionSize(col) < wanted:
+                    head.resizeSection(col, wanted)
+            self._sizing = False
+        wanted = sum(max(self.table.horizontalHeader().sectionSizeHint(c), self.table.sizeHintForColumn(c))
+                     for c in range(self.table.columnCount())) + 60
+        room = self.screen().availableGeometry().width() - 40
+        if self.width() < min(wanted, room):
+            self.resize(min(wanted, room), self.height())
+
+    def _setup_window(self, title, button, values):
+        """A small window with Processes, Threads, Cache, Reload Nuke and Reload after; the setup, or None when cancelled."""
+        n, t, c, fresh, after = values
+        cpu, ram = self.add_defaults[5:]
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(title)
+        form = QtWidgets.QFormLayout(dialog)
+        spins = []
+        for name, hi, value, suffix in (("Processes", cpu, n, ""), ("Threads", cpu, t, ""), ("Cache", ram, c, " GB")):
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(1, hi)
+            spin.setValue(value)
+            spin.setSuffix(suffix)
+            form.addRow(name, spin)
+            spins.append(spin)
+        combo = QtWidgets.QComboBox()
+        for key, text in FRESH_MODES:
+            combo.addItem(text, key)
+        combo.setCurrentIndex(max(0, combo.findData(fresh)))
+        combo.setToolTip("Reload Nuke, as in Settings > Performance and Optimization")
+        form.addRow("Reload Nuke", combo)
+        combo_after = QtWidgets.QComboBox()
+        for key, text in RELOAD_AFTER:
+            combo_after.addItem(text, key)
+        combo_after.setCurrentIndex(max(0, combo_after.findData(after)))
+        combo_after.setToolTip("Reload after, as in Settings > Performance and Optimization (When memory is full only)")
+        combo.currentIndexChanged.connect(lambda _: combo_after.setEnabled(combo.currentData() == "short"))
+        combo_after.setEnabled(fresh == "short")
+        form.addRow("Reload after", combo_after)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(button)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        accepted = dialog.exec() == QtWidgets.QDialog.Accepted
+        setup = tuple(spin.value() for spin in spins) + (combo.currentData(), combo_after.currentData())
+        dialog.deleteLater()
+        return setup if accepted else None
+
+    def _create_setups(self):
+        """Create tests: this PC looked at again, and its setups in place of all in the table, your own too."""
+        _MACHINE.clear()  # the graphics card or the RAM may have changed since
+        _CPU_LAYOUT.clear()
+        self.l_hw.setText(self.hardware())
+        self.added = set()
+        self.main._save_setting("test_setups", [])
+        self.setups = sorted(self._planned(os.cpu_count() or 8))
+        self._fill_table()
+
+    def _add_setup(self):
+        """Add test: a setup of your own, kept for next time."""
+        setup = self._setup_window("Add test", "Add", self.add_defaults[:5])
+        if setup is None:
+            return
+        self.add_defaults = setup + self.add_defaults[5:]
+        self.added.add(setup)
+        self.main._save_setting("test_setups", sorted(self.added))
+        if setup not in self.setups:
+            self.setups = sorted(self.setups + [setup])
+        self._fill_table()
+
+    def _table_menu(self, pos):
+        """Right click on a setup: Edit test."""
+        item = self.table.itemAt(pos)
+        row = item.row() if item is not None else -1
+        first = self.table.item(row, self.C_SETUP) if row >= 0 else None
+        if first is None or first.data(SortItem.KEY + 1) is None:
+            return
+        index = first.data(SortItem.KEY + 1)
+        menu = QtWidgets.QMenu(self)
+        edit = menu.addAction("Edit test")
+        edit.setEnabled(self.b_add.isEnabled())  # not while a test runs
+        edit.triggered.connect(lambda: QtCore.QTimer.singleShot(0, lambda: self._edit_setup(index)))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def _edit_setup(self, index):
+        """Edit test: Processes, Threads, Cache and Reload Nuke of a setup; it is kept as one of your own."""
+        old = self.setups[index]
+        setup = self._setup_window("Edit test", "Save", old)
+        if setup is None or setup == old:
+            return
+        self.added.discard(old)
+        self.added.add(setup)
+        self.main._save_setting("test_setups", sorted(self.added))
+        self.setups = sorted(set(x for x in self.setups if x != old) | {setup})
+        self._fill_table()
+
+    def _remove_setups(self):
+        rows = {i.row() for i in self.table.selectedIndexes()}
+        gone = set()
+        for row in rows:  # the rows may be sorted: each knows its setup
+            item = self.table.item(row, self.C_SETUP)
+            if item is not None and item.data(SortItem.KEY + 1) is not None:
+                gone.add(self.setups[item.data(SortItem.KEY + 1)])
+        self.setups = [x for x in self.setups if x not in gone]
+        self.added -= gone
+        self.main._save_setting("test_setups", sorted(self.added))
+        self._fill_table()
+
+    def _idle(self, on):
+        for widget in (self.b_start, self.b_create, self.b_add, self.b_remove):
+            widget.setEnabled(on)
+        self.b_stop.setEnabled(not on)
+
+    def _wanted(self, processes):
+        """How many frames a setup of so many processes needs: Round 1 QUICK_FRAMES a process, Round 2 ROUND2_FRAMES a process.
+        Every setup of a round renders the most any of them needs, the same frames."""
+        if self.round == "quick":
+            return max(self.QUICK_FRAMES * processes, 6)
+        return max(self.ROUND2_FRAMES * processes, 8)
+
+    PLACES = 6  # places spread over the shot, the same for every setup
+    COLUMNS = (("Processes x threads", "Nuke processes x threads each, and the cache each gets"),
+               ("Reload Nuke Rule", "When a process closes after its chunk and a new one opens the script (Settings > Reload Nuke)"),
+               ("Avg processes", "Processes rendering at once on average, once it settled (fewer when the RAM limit kept some out)"),
+               ("Round 1", "Round 1: 3 frames a process for every setup. How long it took, the frames done and the start"),
+               ("Round 2", "Round 2: the fastest setups of round 1 again with all the frames. How long it took, the frames done and the start"),
+               ("Frames / min", "Once the processes are going: each process's first frame and the start left out. From round 2 where it ran"),
+               ("Frames / s", "Frames / min divided by 60"),
+               ("Frame", "Time of one frame in one process"),
+               ("CPU avg", "CPU use and the threads it means"), ("RAM avg", "RAM use of the PC"), ("GPU avg", "Graphics card use"),
+               ("VRAM avg", "Graphics card memory"), ("Fell", "Processes that crashed or were closed for RAM or VRAM"),
+               ("Reloads", "Processes closed after their chunk and opened again (Reload Nuke)"),
+               ("Winner test", "How much longer each setup took than the fastest on the test's frames, in time and per cent:\n"
+                               "the same frames for each, with the start of Nuke in it. One stopped early: the rest at its Frames / min.\n"
+                               "The tooltip of each cell has the test's time"),
+               ("Winner Whole Shot", "The fastest setup, and how much longer the whole shot would take with each of the others, in time and per cent:\n"
+                               "the time of its test (start and the first frames in it) and the rest of the shot's frames at its Frames / min.\n"
+                               "The start is paid once, the rate for every frame: on a long shot this grows beyond the test's difference.\n"
+                               "The tooltip of each cell has the whole shot's time"), ("State", ""))
+    C_SETUP, C_RULE, C_RUN, C_R1, C_R2, C_RATE, C_FPS, C_FRAME, C_CPU, C_RAM, C_GPU, C_VRAM, C_FELL, C_FRESH, C_TEST, C_SLOWER, C_STATE = range(17)
+
+    def _header_key(self):
+        return "test_header" if len(self.COLUMNS) == 13 else "test_header_%d" % len(self.COLUMNS)
+
+    def _frames_for(self, processes):
+        """Frames from the same places spread over the whole shot for every setup, a stretch of frames in a row at each: a shot
+        heavier at its start or end counts as it is, every setup renders the same parts of it, and a node that looks at other
+        frames works as in a render (a lone frame would always start cold). A setup that needs more frames gets longer
+        stretches at the same places. A shot with no more frames than that: all of them."""
+        frames = self.all_frames
+        total = len(frames)
+        # the same frames for every setup of the round: as many as the one with the most processes needs
+        count = max(self._wanted(p) for p in (getattr(self, "round_procs", None) or [processes]))
+        if count >= total:
+            return list(frames)
+        places = max(1, min(self.PLACES, total // 3, count // 2))  # at least 2 in a row: the first of a stretch warms up
+        sizes = [count // places + (1 if k < count % places else 0) for k in range(places)]
+        picked = set()
+        for k, size in enumerate(sizes):  # the first at the shot's start, the last at its end, the rest evenly between
+            start = int(round(k * (total - size) / float(places - 1))) if places > 1 else (total - size) // 2
+            picked.update(frames[start:start + size])
+        for f in frames:  # stretches that met: the rest from the start, so it is still that many
+            if len(picked) >= count:
+                break
+            picked.add(f)
+        return sorted(picked)
+
+    def _frames_note(self, *_):
+        """Top right: how many frames the rounds render, the same for every setup of a round."""
+        total = len(self.all_frames)
+        self.l_frames.setText("Round 1: %d frames a process, Round 2: %d a process, the same frames for every setup; of %d, from %d "
+                              "places over the whole shot" % (self.QUICK_FRAMES, self.ROUND2_FRAMES, total,
+                                                               max(1, min(self.PLACES, total // 3))))
+
+    def _whole(self, r):
+        """Seconds the whole shot would take: the test as it went (the start, the first frames warming up), then the shot's
+        other frames at the rate once going. The rate alone left the start out and showed 1 x 32 +0:48 behind 6 x 5 on 79
+        frames, with the tests 0:28 against 0:18."""
+        return self._time_for(r, len(self.all_frames))
+
+    @staticmethod
+    def _time_for(r, count):
+        """Seconds for count frames: the test as it went, then the frames it did not get to at its rate; a test of more
+        frames than that in proportion."""
+        if not r.get("rate"):
+            return float("inf")
+        done = r.get("done", len(r["frames"]))
+        took = r.get("took", 0.0)
+        if done > count:
+            return took * count / float(done)
+        return took + (count - done) / r["rate"] * 60
+
+    def _rate_cells(self, i, rate):
+        self._cell(i, self.C_RATE, "%.1f" % rate if rate is not None else "", rate)
+        self._cell(i, self.C_FPS, "%.2f" % (rate / 60.0) if rate is not None else "", rate)
+
+    def _tip(self, index, col, text):
+        item = self.table.item(self._row(index), col)
+        if item is not None:
+            item.setToolTip(text)
+
+    def _row(self, index):
+        """The table row of setup number index: sorting moves the rows."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, self.C_SETUP)
+            if item is not None and item.data(SortItem.KEY + 1) == index:
+                return row
+        return index
+
+    def _cell(self, index, col, text, key=None):
+        sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)  # or the row moves away while it is written
+        row = self._row(index)
+        item = self.table.item(row, col)
+        if item is None:
+            item = SortItem()
+            self.table.setItem(row, col, item)
+        item.setText(text)
+        item.setData(SortItem.KEY, key)
+        self.table.setSortingEnabled(sorting)
+
+    def start(self):
+        if self.src.movie:
+            QtWidgets.QMessageBox.information(self, "JKrender", "A movie renders in one process from start to end: "
+                                              "there is nothing to compare.")
+            return
+        if any(e.state in ("rendering", "paused", "finishing", "waiting") for e in self.main.manager.engines):
+            QtWidgets.QMessageBox.information(self, "JKrender", "A render is going: the test would only measure the two "
+                                              "fighting over the PC. Start it when nothing renders.")
+            return
+        if not self.setups:
+            return
+        self._idle(False)
+        self.b_use.setEnabled(False)
+        self.verdict.setText("")
+        self.verdict.hide()
+        self._fill_table()
+        self.results, self.quick = {}, {}
+        self.round = "quick"  # every setup a little, then the best ones with all the frames
+        self.queue = list(range(len(self.setups)))
+        self.round_procs = [k[0] for k in self.setups]
+        self.index = -1
+        self.slow_in_a_row = 0
+        self._next()
+        self.timer.start(1000)
+
+    def _next(self):
+        while (self.round == "quick" and self.queue and self.slow_in_a_row >= self.GIVE_UP
+               and self.setups[self.queue[0]] != self.current and self.setups[self.queue[0]] not in self.added):
+            self._cell(self.queue.pop(0), self.C_STATE, "left out: slower")
+        if not self.queue and self.round == "quick":
+            self._to_final()
+        if not self.queue:
+            self._finish()
+            return
+        self.index = self.queue.pop(0)
+        n, t, c, fresh, after = self.setups[self.index]
+        settings = dict(self.main.settings)
+        settings.update(processes=n, threads=t, ram=c, fresh_after_chunk=fresh, reload_after=after, max_renders=1, _test=True)
+        root = TEST_DIR / ("%s_%dx%d_%d_%s_%s" % (datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), n, t, c, fresh, after))
+        out = root / "out"
+        out.mkdir(parents=True, exist_ok=True)
+        job = copy.deepcopy(self.src.job)
+        for w in job.get("writes", []):
+            w["output"] = str(out / os.path.basename(w.get("output") or "test_####.exr")).replace("\\", "/")
+        job["test_out"] = str(out).replace("\\", "/")
+        manager = RenderManager(settings)
+        e = manager.add(job, root)
+        frames = self._frames_for(n)
+        e.set_range(frames_to_spec(frames))
+        manager.request_start(e)
+        self.run = {"manager": manager, "engine": e, "root": root, "t0": time.time(), "open": None, "frames": frames,
+                    "cpu": [], "ram": [], "ram_gb": [], "gpu": [], "vram": [], "vram_gb": [], "busy": [], "stopping": False}
+        if psutil:
+            psutil.cpu_percent(None)  # from here on
+        self._cell(self.index, self.C_STATE, "%s: starting" % self._round_name())
+
+    def _to_final(self):
+        """After the quick round: the fastest setups again with all the frames; the rest are left as the quick round had them."""
+        rated = sorted((k for k in self.quick if self.quick[k]["rate"]), key=lambda k: -self.quick[k]["rate"])
+        if len(rated) < 2:
+            self.results = dict(self.quick)  # nothing to choose between: the quick round is the answer
+            return
+        top = self.quick[rated[0]]["rate"]
+        final = [k for i, k in enumerate(rated) if i < self.FINALISTS or self.quick[k]["rate"] >= top * (1 - self.CLOSE)]
+        self.round = "final"
+        self.round_procs = [k[0] for k in final]
+        self.slow_in_a_row = 0
+        for i, k in enumerate(self.setups):
+            if k in final:
+                self.queue.append(i)
+                self._cell(i, self.C_STATE, "Round 2: waiting")
+            elif k in self.quick:
+                self.results[k] = self.quick[k]
+                self._cell(i, self.C_STATE, "Round 1 only: slower")
+
+    @staticmethod
+    def steady(workers):
+        """Frames per minute once the processes are going: each process's frames after its first, over the time from the end
+        of its first frame to the end of its last. So the start (once in a whole render) and the first frame (Nuke warming
+        up, a frame that looks at other frames filling its cache) are left out, and the handing out of frames between
+        them is in, as in a long render. A process with one frame only: its frame time."""
+        rate, secs = 0.0, []
+        for w in workers:
+            ends = getattr(w, "frame_ends", [])
+            if len(ends) >= 2 and ends[-1] > ends[0]:
+                rate += 60.0 * (len(ends) - 1) / (ends[-1] - ends[0])
+            elif w.frame_secs:
+                rate += 60.0 / max(w.frame_secs[-1], 1e-3)
+            secs += w.frame_secs[1:] if len(w.frame_secs) > 1 else w.frame_secs
+        return rate, (statistics.median(secs) if secs else 0.0)
+
+    def tick(self):
+        r = self.run
+        if r is None:
+            return
+        m, e = r["manager"], r["engine"]
+        m.vram = self.main._gpu
+        m.gpu_mem = self.main._gpu_procs or {}
+        m.tick()
+        now = time.time()
+        done = e.counts()["done"]
+        if any(": missing " in x[1] for x in e.log):
+            # Nuke says it wrote a frame that is not in the test folder: it went somewhere else, so stop at once
+            self.stop()
+            self.b_use.setEnabled(False)
+            self.verdict.show()
+            self.verdict.setText("Test stopped: a frame did not arrive in the test folder, so it may have gone to the "
+                                 "render's own folder. Check that folder before you render.")
+            return
+        if r["open"] is None and any(w.state == "busy" for w in e.workers.values()):
+            r["open"] = now  # the first process has opened the script: a short test should not be mostly script loads
+        if psutil:
+            r["cpu"].append(psutil.cpu_percent(None))
+            vm = psutil.virtual_memory()
+            r["ram"].append(vm.percent)
+            r["ram_gb"].append(vm.used / 1024.0 ** 3)
+        if m.vram and m.vram[2]:
+            r["gpu"].append(m.vram[0])
+            r["vram"].append(m.vram[1] / m.vram[2] * 100)
+            r["vram_gb"].append(m.vram[1] / 1024.0)
+        r["busy"].append(sum(1 for w in e.workers.values() if w.state == "busy"))
+        r["fresh"] = sum("reloads after its chunk" in x[1] for x in e.log)
+        rate = self.steady(e.workers.values())[0] if done else None
+        self._show(self.index, r, rate, done)
+        # time per frame: a setup with many processes renders more of them; only against the same round's frames
+        same = self.quick if self.round == "quick" else {k: v for k, v in self.results.items() if v.get("round") == "final"}
+        paces = [x["took"] / len(x["frames"]) for x in same.values() if x["complete"]]
+        slower = bool(paces) and now - r["t0"] >= min(paces) * len(r["frames"]) * self.SLOWER and e.state == "rendering"
+        limit = self.QUICK_LIMIT if self.round == "quick" else self.LIMIT
+        if not r["stopping"] and (slower or now - r["t0"] >= limit or e.state in ("done", "failed", "stopped")):
+            r["stopping"] = True
+            r["slower"] = slower
+            r["complete"] = done >= len(r["frames"])
+            r["took"] = now - r["t0"]
+            r["done"] = done
+            r["rate"], r["frame"] = self.steady(e.workers.values()) if done else (0.0, 0.0)  # no frame done: no rate
+            r["start"] = (r["open"] - r["t0"]) if r["open"] else None
+            r["round"] = self.round
+            r["fell"] = sum("closed now" in x[1] for x in e.log) + e.crashes
+            if e.state in ("rendering", "paused", "finishing", "waiting"):
+                e.stop("Test setup done")
+        if r["stopping"] and all(w.state == "gone" for w in e.workers.values()):
+            (self.quick if self.round == "quick" else self.results)[self.setups[self.index]] = r
+            self.slow_in_a_row = self.slow_in_a_row + 1 if r["slower"] or not done else 0
+            self._show(self.index, r, r["rate"], done, final=True)
+            self._drop(r)
+            self.run = None
+            self._next()
+
+    @staticmethod
+    def _drop(r):
+        """The setup's processes and its folder: frames, and logs once JKrender has let go of them."""
+        r["manager"].shutdown()
+        for w in r["engine"].workers.values():
+            try:
+                w.log.close()
+            except Exception:
+                pass
+        shutil.rmtree(r["root"], ignore_errors=True)
+
+    def _round_name(self):
+        return "Round 1" if self.round == "quick" else "Round 2"
+
+    def _show(self, i, r, rate, done, final=False):
+        busy = r["busy"][len(r["busy"]) // 3:] or r["busy"]  # once it has settled
+        running = sum(busy) / float(len(busy)) if busy else None
+        self._cell(i, self.C_RUN, "%.1f" % running if running is not None else "", running)
+        # this round of this setup, from the start with the script loads; when the limit ended it, how far it got
+        took = r.get("took", time.time() - r["t0"])
+        text = fmt_secs(took)
+        if final:
+            text += "  (%d of %d%s)" % (done, len(r["frames"]), ", start %.0f s" % r["start"] if r.get("start") is not None else "")
+        self._cell(i, self.C_R1 if self.round == "quick" else self.C_R2, text, took)
+        self._rate_cells(i, rate)
+        if final:
+            self._cell(i, self.C_FRAME, "%.1f s" % r["frame"] if r.get("frame") else "", r.get("frame") or None)
+        average = lambda v: sum(v) / float(len(v))
+        cpus = os.cpu_count() or 1
+        if r["cpu"]:
+            self._cell(i, self.C_CPU, "%.0f %% · %.1f threads" % (average(r["cpu"]), average(r["cpu"]) * cpus / 100.0), average(r["cpu"]))
+        if r["ram"]:
+            self._cell(i, self.C_RAM, "%.0f %% · %.1f GB" % (average(r["ram"]), average(r["ram_gb"])), average(r["ram"]))
+        if r["gpu"]:
+            self._cell(i, self.C_GPU, "%.0f %%" % average(r["gpu"]), average(r["gpu"]))
+        if r["vram"]:
+            self._cell(i, self.C_VRAM, "%.0f %% · %.1f GB" % (average(r["vram"]), average(r["vram_gb"])), average(r["vram"]))
+        if final:
+            self._cell(i, self.C_FELL, str(r.get("fell", "")), r.get("fell"))
+        if r.get("fresh") is not None:  # as it happens
+            self._cell(i, self.C_FRESH, str(r["fresh"]), r["fresh"])
+        self._cell(i, self.C_STATE, ("%s: %s" % (self._round_name(), "stopped, slower" if r.get("slower") else "done")) if final
+                   else "%s: rendering, %d frames" % (self._round_name(), done))
+        self._fit_columns()
+
+    def _rank(self, best):
+        """Slower: how much longer the whole shot would take than with the fastest, in time and per cent; the fastest and the
+        next one coloured."""
+        frames = len(self.all_frames)
+        whole = self._whole
+        top = self.results[best]
+        tested = top.get("done", len(top["frames"]))  # the test's frames, as the fastest rendered them
+        test_time = lambda x: self._time_for(x, tested)
+        order = sorted((k for k in self.results if self.results[k]["rate"]), key=lambda k: whole(self.results[k]))
+        if best in order:
+            order.remove(best)
+        order.insert(0, best)
+        colours = {order[0]: QtGui.QColor(C["done"])}
+        if len(order) > 1:
+            colours[order[1]] = QtGui.QColor(C["accent"])
+        for i, k in enumerate(self.setups):
+            r = self.results.get(k)
+            if r is None:
+                continue
+            rate = r["rate"]
+            if rate:
+                self._rate_cells(i, rate)
+            if k == best:
+                self._cell(i, self.C_TEST, "fastest", 0.0)
+                self._tip(i, self.C_TEST, "The test (%d frames): %s" % (tested, fmt_secs(test_time(r))))
+                self._cell(i, self.C_SLOWER, "fastest", 0.0)
+                self._tip(i, self.C_SLOWER, "The whole shot (%d frames): about %s" % (frames, fmt_secs(whole(r))))
+            elif rate:
+                mine, fastest = test_time(r), test_time(top)
+                extra = mine - fastest
+                self._cell(i, self.C_TEST, "+%s  (+%.0f %%)" % (fmt_secs(max(0.0, extra)), max(0.0, (mine / fastest - 1) * 100)), extra)
+                self._tip(i, self.C_TEST, "The test (%d frames): %s, the fastest %s" % (tested, fmt_secs(mine), fmt_secs(fastest)))
+                mine, fastest = whole(r), whole(top)
+                extra = mine - fastest
+                self._cell(i, self.C_SLOWER, "+%s  (+%.0f %%)" % (fmt_secs(max(0.0, extra)), max(0.0, (mine / fastest - 1) * 100)), extra)
+                self._tip(i, self.C_SLOWER, "The whole shot (%d frames): about %s, the fastest %s" % (frames, fmt_secs(mine), fmt_secs(fastest)))
+            else:
+                self._cell(i, self.C_TEST, "no frame", 1e12)
+                self._cell(i, self.C_SLOWER, "no frame", 1e12)
+            colour = colours.get(k)
+            row = self._row(i)
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item is None:
+                    continue
+                if colour is not None:
+                    tint = QtGui.QColor(colour)
+                    tint.setAlpha(70)
+                    item.setBackground(tint)
+                else:
+                    item.setBackground(QtGui.QBrush())
+
+    def stop(self):
+        self.timer.stop()
+        r = self.run
+        if r is not None:
+            if r["engine"].state in ("rendering", "paused", "finishing", "waiting"):
+                r["engine"].stop("Test stopped")
+            self._drop(r)
+            self._cell(self.index, self.C_STATE, "stopped")
+            self.run = None
+        self._idle(True)
+        for k, v in getattr(self, "quick", {}).items():
+            self.results.setdefault(k, v)  # what the quick round found, where the final did not get to it
+        if self.results:
+            self._finish(partial=True)
+
+    def _finish(self, partial=False):
+        self.timer.stop()
+        shutil.rmtree(TEST_DIR, ignore_errors=True)  # its test renders; a folder Windows still held is gone now
+        self._idle(True)
+        if not self.results:
+            return
+        # the final round's, which rendered all the frames; then any complete one; the rate of one stopped early says less
+        whole = ([k for k in self.results if self.results[k]["complete"] and self.results[k].get("round") == "final"]
+                 or [k for k in self.results if self.results[k]["complete"]] or [k for k in self.results if self.results[k]["rate"]])
+        if not whole:
+            text = "No setup finished a frame, so there is nothing to recommend."
+            self.verdict.setText(text)
+            self.verdict.show()
+            self._save_results(text)
+            return
+        best = min(whole, key=lambda k: self._whole(self.results[k]))  # the whole shot soonest
+        self.best = best
+        self._rank(best)
+        self._fit_columns()  # Winner and the final rates were just written
+        rate = self.results[best]["rate"]
+        mine = self.results.get(self.current)
+        if best == self.current:
+            text = "Your settings (Processes %d, Threads %d, Cache %d GB, Reload Nuke %s) are the fastest of these for this script: " \
+                   "%.1f frames / min." % (best[0], best[1], best[2], rule_text(best[3], best[4]), rate)
+        else:
+            gain = (" — the whole shot about %s instead of %s with yours" % (fmt_secs(self._whole(self.results[best])), fmt_secs(self._whole(mine)))
+                    if mine and mine["rate"] else "")
+            text = "Fastest for this script on this PC: Processes %d, Threads %d, Cache %d GB, Reload Nuke %s, %.1f frames / min%s." % (
+                best[0], best[1], best[2], rule_text(best[3], best[4]), rate, gain)
+            self.b_use.setEnabled(True)
+        if partial:
+            text = "(Stopped before all setups were tested.) " + text
+        if any(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()):
+            text += "  The shot has only %d frames, so %s rendered all of them." % (
+                len(self.all_frames), "every setup" if all(len(r["frames"]) >= len(self.all_frames) for r in self.results.values()) else "some setups")
+        self._save_results(text)  # the line goes into the saved table only
+
+    def _save_results(self, verdict):
+        """The table as text, to look at or compare later: ~/.nuke/JKrender/settings/test_results."""
+        try:
+            TEST_RESULTS.mkdir(parents=True, exist_ok=True)
+            head = [self.table.horizontalHeaderItem(c).text() for c in range(self.table.columnCount())]
+            rows = [[(self.table.item(r, c).text() if self.table.item(r, c) else "") for c in range(self.table.columnCount())]
+                    for r in range(self.table.rowCount())]
+            path = TEST_RESULTS / ("%s_%s.txt" % (self.src.name, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")))
+            lines = ["%s, Round 1: %d frames a process, Round 2: %d a process, %d in the shot, %d threads" % (
+                self.src.name, self.QUICK_FRAMES, self.ROUND2_FRAMES, len(self.all_frames), os.cpu_count() or 0),
+                     " | ".join(head)] + [" | ".join(r) for r in rows] + [verdict]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def use(self):
+        n, t, c, fresh, after = self.best
+        self.main.s_workers.setValue(n)
+        self.main.s_threads.setValue(t)
+        self.main.s_ram.setValue(c)
+        self.main.c_fresh.setCurrentIndex(max(0, self.main.c_fresh.findData(fresh)))
+        self.main.c_reload_after.setCurrentIndex(max(0, self.main.c_reload_after.findData(after)))
+        self.b_use.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.stop()
+        self.main._save_setting(self._header_key(), bytes(self.table.horizontalHeader().saveState().toBase64()).decode("ascii"))
+        super().closeEvent(event)
+
+
+class TotalCard(QtWidgets.QFrame):
+    """Right of the render cards: when every render still to go should be done, at the speed the PC renders now,
+    and how long they have taken so far. Once they are all through, how long it took altogether."""
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedWidth(260)
+        self.setStyleSheet("TotalCard { background: %s; border: 1px solid %s; border-radius: 5px; }" % (C["panel"], C["line"]))
+        lay = QtWidgets.QGridLayout(self)
+        lay.setContentsMargins(10, 6, 10, 7)
+        lay.setVerticalSpacing(2)
+        self.t0 = None  # when the renders now counted started
+        self.members = []  # the renders counted since then, finished ones too
+        self.through = False  # all of them are through: it shows how long they took
+        self.head = head = QtWidgets.QLabel("ALL RENDERS DONE IN")
+        head.setStyleSheet("color: %s; font-size: 7.5pt; font-weight: 600; letter-spacing: 1px; background: transparent;"
+                           % C["dim"])
+        self.when = QtWidgets.QLabel("")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent;")
+        self.left = QtWidgets.QLabel("")
+        self.left.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(4)
+        self.pct = QtWidgets.QLabel("")
+        self.pct.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        self.pct.setMinimumWidth(36)
+        self.pct.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        lay.addWidget(head, 0, 0, 1, 2)
+        lay.addWidget(self.when, 1, 0, 1, 2)
+        lay.addWidget(self.left, 2, 0, 1, 2)
+        lay.addWidget(self.bar, 3, 0)
+        lay.addWidget(self.pct, 3, 1)
+        lay.setColumnStretch(0, 1)
+        self.setToolTip("Every render still rendering or waiting: the frames they have left, at the speed all\n"
+                        "Nuke processes together render now. Waiting renders are counted at that speed too.")
+
+    def refresh(self, engines):
+        active = [e for e in engines if e.state in ("rendering", "paused", "finishing", "waiting")]
+        now = time.time()
+        if active:
+            if self.t0 is None or self.through:  # renders start again after all were through: count anew
+                self.members, self.through = [], False
+                self.t0 = min([e.started for e in active if e.started] or [now])
+            self.members += [e for e in active if e not in self.members]
+        self.members = [e for e in self.members if e in engines]  # a closed render leaves the count
+        if not active:
+            self._finished()
+            return
+        self.show()
+        self.head.setText("ALL RENDERS DONE IN")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent;")
+        frames = sum(len(e.frames) for e in active)
+        left = sum(e.counts()["queued"] + e.counts()["rendering"] for e in active)
+        done = frames - left
+        self.bar.setMaximum(max(1, frames))
+        self.bar.setValue(done)
+        self.pct.setText("%.0f %%" % (100.0 * done / max(1, frames)))
+        running = [e for e in active if e.state in ("rendering", "finishing")]
+        rate = sum(e.rate() for e in running)
+        eta = left / rate if rate > 0 else None
+        alone = [x for x in (e.eta() for e in running) if x is not None]
+        if eta is not None and alone:
+            eta = max(eta, max(alone))  # never sooner than one render on its own
+        renders = "%d render%s" % (len(active), "" if len(active) == 1 else "s")
+        so_far = "%s so far" % fmt_secs(now - self.t0)
+        if not running:
+            self.when.setText("Paused" if any(e.state == "paused" for e in active) else "Waiting")
+            self.left.setText("%s  ·  %d frames  ·  %s" % (so_far, left, renders))
+        elif eta is None:
+            self.when.setText("Estimating…")
+            self.left.setText("%s  ·  %d frames  ·  %s" % (so_far, left, renders))
+        else:
+            end = datetime.datetime.now() + datetime.timedelta(seconds=eta)
+            day = "" if end.date() == datetime.date.today() else (
+                "tomorrow " if end.date() == datetime.date.today() + datetime.timedelta(days=1) else end.strftime("%d.%m. "))
+            self.when.setText(fmt_secs(eta))
+            self.left.setText("finishes at %s%s  ·  %s  ·  %d frames" % (day, end.strftime("%H:%M"), so_far, left))
+        self.setToolTip("Every render still rendering or waiting: the frames they have left, at the speed all\n"
+                        "Nuke processes together render now. Waiting renders are counted at that speed too.\n"
+                        "So far: since the first of them started (%s)." % renders)
+
+    def _finished(self):
+        """No render left to go: how long the renders took altogether, until the next one starts."""
+        ended = [e for e in self.members if e.ended]
+        if self.t0 is None or not ended:
+            self.t0 = None
+            self.hide()
+            return
+        self.show()
+        self.through = True
+        end = max(e.ended for e in ended)
+        ok = all(e.state == "done" for e in self.members)
+        self.head.setText("ALL RENDERS TOOK" if ok else "RENDERS ENDED AFTER")
+        self.when.setStyleSheet("font-weight: 600; font-size: 11pt; background: transparent; color: %s;"
+                                % (C["done"] if ok else C["text"]))
+        self.when.setText(fmt_secs(end - self.t0))
+        frames = sum(len(e.frames) for e in self.members)
+        n = len(self.members)
+        self.left.setText("finished at %s  ·  %d frames  ·  %d render%s" % (
+            datetime.datetime.fromtimestamp(end).strftime("%H:%M"), frames, n, "" if n == 1 else "s"))
+        self.bar.setMaximum(1)
+        self.bar.setValue(1 if ok else 0)
+        self.pct.setText("100 %" if ok else "")
+        self.setToolTip("From the first of these renders starting to the last one ending.")
+
+
+class RenderCard(QtWidgets.QFrame):
+    """One render at the top of the window: name, progress and state. Click to look at it."""
+
+    clicked = QtCore.Signal(object, bool)  # engine, Shift held
+    closeRequested = QtCore.Signal(object)
+
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.setFixedWidth(250)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        lay = QtWidgets.QGridLayout(self)
+        lay.setContentsMargins(10, 6, 6, 7)
+        lay.setHorizontalSpacing(6)
+        lay.setVerticalSpacing(2)
+        self.badge = QtWidgets.QLabel(str(engine.number))
+        self.badge.setFixedSize(20, 20)
+        self.badge.setAlignment(QtCore.Qt.AlignCenter)
+        self.name = QtWidgets.QLabel(engine.name)
+        self.name.setStyleSheet("font-weight: 600; background: transparent;")
+        self.close_btn = QtWidgets.QToolButton()
+        self.close_btn.setText("×")
+        self.close_btn.setToolTip("Close this render")
+        self.close_btn.setStyleSheet("QToolButton { border: none; color: %s; font-size: 12pt; background: transparent; }"
+                                     "QToolButton:hover { color: %s; }" % (C["dim"], C["text"]))
+        self.close_btn.clicked.connect(lambda: self.closeRequested.emit(self.engine))
+        self.write = QtWidgets.QLabel(engine.output_names)
+        self.write.setToolTip("%s\n%s" % (engine.write_names, "\n".join(p for _, p in engine.outputs)))
+        self.write.setStyleSheet("color: %s; background: transparent;" % C["dim"])
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(4)
+        self.status = QtWidgets.QLabel("")
+        self.status.setStyleSheet("background: transparent;")
+        lay.addWidget(self.badge, 0, 0)
+        lay.addWidget(self.name, 0, 1)
+        lay.addWidget(self.close_btn, 0, 2)
+        lay.addWidget(self.write, 1, 1, 1, 2)
+        lay.addWidget(self.bar, 2, 0, 1, 3)
+        lay.addWidget(self.status, 3, 0, 1, 3)
+        lay.setColumnStretch(1, 1)
+
+    def refresh(self, selected, closable):
+        e = self.engine
+        if self.badge.text() != str(e.number):
+            self.badge.setText(str(e.number))
+        c = e.counts()
+        total = max(1, len(e.frames))
+        finished = c["done"] + c["skipped"] + c["bad"]
+        self.bar.setMaximum(total)
+        self.bar.setValue(finished)
+        color = {"rendering": C["rendering"], "finishing": C["rendering"], "done": C["done"], "failed": C["failed"],
+                 "paused": C["accent"], "stopped": C["accent"], "waiting": C["dim"]}.get(e.state, C["dim"])
+        eta = e.eta() if e.state in ("rendering", "paused") else None
+        left = ("&nbsp;&nbsp;·&nbsp;&nbsp;%s left" % fmt_secs(eta)) if eta else ""
+        label = ("afterRender hooks" if e.state == "finishing" and getattr(e, "after_state", None) == "sent"
+                 else STATE_LABELS.get(e.state, e.state))
+        self.status.setText('<span style="color:%s">%s</span>&nbsp;&nbsp;<span style="color:%s">%d / %d%s</span>'
+                            % (color, label, C["dim"], finished, total, left))
+        self.badge.setStyleSheet("background: %s; color: %s; border-radius: 3px; font-weight: 600;"
+                                 % (C["accent"] if selected else C["line"], "#111" if selected else C["text"]))
+        errors = e.errors()
+        self.setToolTip("Errors: " + "; ".join(errors) if errors else e.recovered())
+        if errors:  # something went wrong: the whole card goes red, also while it renders
+            self.setStyleSheet("RenderCard { background: #4a2a26; border: %dpx solid %s; border-radius: 5px; }"
+                               % (2 if selected else 1, C["failed"]))
+        elif e.state == "done":  # finished: the whole card goes green
+            self.setStyleSheet("RenderCard { background: #3b4a2f; border: %dpx solid %s; border-radius: 5px; }"
+                               % (2 if selected else 1, C["done"]))
+        else:
+            self.setStyleSheet("RenderCard { background: %s; border: 1px solid %s; border-radius: 5px; }"
+                               % (C["panel2"] if selected else C["panel"], C["accent"] if selected else C["line"]))
+        self.close_btn.setVisible(closable)
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.engine, bool(event.modifiers() & QtCore.Qt.ShiftModifier))
+
+
+class Graph(QtWidgets.QWidget):
+    """Line history of a few series over the last few minutes."""
+
+    def __init__(self, title, series, max_value=None, unit="%"):
+        super().__init__()
+        self.title = title
+        self.series = series  # [(key, label, color)]
+        self.max_value = max_value
+        self.unit = unit
+        self.data = {k: collections.deque(maxlen=300) for k, _, _ in series}
+        self.setMinimumHeight(130)
+
+    def add(self, values):
+        for k in self.data:
+            self.data[k].append(values.get(k, 0.0) or 0.0)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.fillRect(self.rect(), QtGui.QColor(C["panel2"]))
+        r = self.rect().adjusted(8, 22, -8, -8)
+        top = self.max_value or max([1.0] + [v for d in self.data.values() for v in d]) * 1.15
+        p.setPen(QtGui.QPen(QtGui.QColor(C["line"]), 1))
+        for i in range(1, 4):
+            y = r.top() + r.height() * i / 4.0
+            p.drawLine(QtCore.QPointF(r.left(), y), QtCore.QPointF(r.right(), y))
+        p.setPen(QtGui.QColor(C["dim"]))
+        p.drawText(QtCore.QRectF(8, 3, 200, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self.title)
+        x_text = 8 + p.fontMetrics().horizontalAdvance(self.title) + 16
+        for key, label, color in self.series:
+            d = self.data[key]
+            if len(d) >= 2:
+                path = QtGui.QPainterPath()
+                n = d.maxlen
+                for i, v in enumerate(d):
+                    x = r.right() - (len(d) - 1 - i) * r.width() / float(n - 1)
+                    y = r.bottom() - min(1.0, v / top) * r.height()
+                    path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
+                p.setPen(QtGui.QPen(QtGui.QColor(color), 1.6))
+                p.drawPath(path)
+            value = d[-1] if d else 0
+            text = "%s %.0f%s" % (label, value, self.unit) if self.unit == "%" else "%s %.1f %s" % (label, value, self.unit)
+            p.setPen(QtGui.QColor(color))
+            p.drawText(QtCore.QRectF(x_text, 3, 220, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, text)
+            x_text += p.fontMetrics().horizontalAdvance(text) + 14
+        p.end()
+
+
+class CoreGrid(QtWidgets.QWidget):
+    """Load of every logical CPU thread."""
+
+    def __init__(self):
+        super().__init__()
+        self.values = []
+        self.setMinimumHeight(56)
+
+    def set_values(self, values):
+        self.values = values
+        self.update()
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.fillRect(self.rect(), QtGui.QColor(C["panel2"]))
+        n = len(self.values)
+        if not n:
+            p.end()
+            return
+        r = self.rect().adjusted(8, 20, -8, -6)
+        p.setPen(QtGui.QColor(C["dim"]))
+        p.drawText(QtCore.QRectF(8, 2, 400, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                   "CPU threads (%d)" % n)
+        bw = r.width() / float(n)
+        for i, v in enumerate(self.values):
+            x = r.left() + i * bw
+            p.fillRect(QtCore.QRectF(x + 1, r.top(), bw - 2, r.height()), QtGui.QColor(C["queued"]))
+            h = r.height() * min(100.0, v) / 100.0
+            color = QtGui.QColor(C["done"] if v < 70 else (C["accent"] if v < 92 else C["failed"]))
+            p.fillRect(QtCore.QRectF(x + 1, r.bottom() - h, bw - 2, h), color)
+        p.end()
+
+
+class Toggle(QtWidgets.QCheckBox):
+    """On / off switch in Nuke orange; a QCheckBox underneath, so isChecked / toggled work as usual."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(36, 20)
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        on, enabled = self.isChecked(), self.isEnabled()
+        track = QtGui.QColor(C["accent"] if on else "#555555")
+        if not enabled:
+            track = QtGui.QColor("#6b5434" if on else "#444444")
+        r = QtCore.QRectF(1, 3, self.width() - 2, self.height() - 6)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        d = self.height() - 4
+        x = self.width() - d - 2 if on else 2
+        p.setBrush(QtGui.QColor("#f2f2f2" if enabled else "#9a9a9a"))
+        p.drawEllipse(QtCore.QRectF(x, 2, d, d))
+        p.end()
+
+
+class Tile(QtWidgets.QFrame):
+    def __init__(self, title):
+        super().__init__()
+        self.setStyleSheet("QFrame { background: %s; border-radius: 4px; }" % C["panel2"])
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(0)
+        self.title = t = QtWidgets.QLabel(title)
+        t.setObjectName("dim")
+        self.value = QtWidgets.QLabel("—")
+        self.value.setObjectName("tileValue")
+        self.sub = QtWidgets.QLabel("")
+        self.sub.setObjectName("dim")
+        self.avg = QtWidgets.QLabel("")  # the average while rendering (CPU, RAM, GPU)
+        self.avg.setObjectName("dim")
+        self.avg.setToolTip("Average while rendering, from when the renders started until the last one ended")
+        self.avg.hide()
+        for label in (t, self.value, self.sub, self.avg):
+            label.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        for label in (self.sub, self.avg):
+            label.setWordWrap(True)  # tiles are all the same width: "71.4 of 94 GB – cache 10.8 GB" goes on in a second line
+        lay.addWidget(t)
+        lay.addWidget(self.value)
+        lay.addWidget(self.sub)
+        lay.addWidget(self.avg)
+
+    def set(self, value, sub=""):
+        self.value.setText(value)
+        self.sub.setText(sub)
+        self.setToolTip("%s: %s%s" % (self.title.text(), value, "\n" + sub if sub else ""))  # in a narrow window it may not all fit
+
+    def set_avg(self, text):
+        self.avg.setText(text)
+        self.avg.setVisible(bool(text))
+
+    def show_state(self, value, sub, color):
+        self.set(value, sub)
+        self.value.setStyleSheet("color: %s;" % color)
+
+
+class FlowLayout(QtWidgets.QLayout):
+    """A row that goes on in the next line when the window is too narrow for it. self.fill takes what is left of its line, or a line of its own."""
+    FILL_LEAST = 260
+
+    def __init__(self, gap=14):
+        super().__init__()
+        self.items, self.gap, self.fill = [], gap, None
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self.items.append(item)
+
+    def count(self):
+        return len(self.items)
+
+    def itemAt(self, i):
+        return self.items[i] if 0 <= i < len(self.items) else None
+
+    def takeAt(self, i):
+        return self.items.pop(i) if 0 <= i < len(self.items) else None
+
+    def expandingDirections(self):
+        return QtCore.Qt.Orientations()
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._place(QtCore.QRect(0, 0, width, 0), False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._place(rect, True)
+
+    def sizeHint(self):
+        shown = [i for i in self.items if not i.isEmpty()]
+        return QtCore.QSize(sum(i.sizeHint().width() for i in shown) + self.gap * max(0, len(shown) - 1),
+                            max([i.sizeHint().height() for i in shown] or [0]))
+
+    def minimumSize(self):
+        shown = [i for i in self.items if not i.isEmpty()]
+        return QtCore.QSize(max([i.minimumSize().width() for i in shown] or [0]), max([i.sizeHint().height() for i in shown] or [0]))
+
+    def _place(self, rect, move):
+        lines, line, used = [], [], 0
+        for item in self.items:
+            if item.isEmpty():
+                continue
+            fills = item.widget() is self.fill
+            want = self.FILL_LEAST if fills else item.sizeHint().width()
+            if line and used + self.gap + want > rect.width():
+                lines.append(line)
+                line, used = [], 0
+            used += (self.gap if line else 0) + want
+            line.append((item, want, fills))
+        if line:
+            lines.append(line)
+        y = rect.y()
+        for line in lines:
+            high = max(i.sizeHint().height() for i, _, _ in line)
+            x = rect.x()
+            for item, want, fills in line:
+                wide = rect.right() + 1 - x if fills else want
+                if move:
+                    tall = item.sizeHint().height()
+                    item.setGeometry(QtCore.QRect(x, y + (high - tall) // 2, wide, tall))
+                x += wide + self.gap
+            y += high + self.gap // 2
+        return y - rect.y() - (self.gap // 2 if lines else 0)
+
+
+class CardsScroll(QtWidgets.QScrollArea):
+    """The render cards: as many as you like in a window of any width. It is as high as the cards, and a bar only when they do not fit."""
+
+    def __init__(self, host, beside):
+        super().__init__()
+        self.host, self.beside = host, beside
+        self.setWidget(host)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+
+    def fit(self):
+        high = max(self.host.minimumSizeHint().height(), self.beside.sizeHint().height())
+        if self.host.minimumSizeHint().width() > self.width():
+            high += self.horizontalScrollBar().sizeHint().height()
+        if self.height() != high:
+            self.setFixedHeight(high)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+
+class ReflowScroll(QtWidgets.QScrollArea):
+    """Settings cards: side by side as far as they fit, the rest under them, and it scrolls."""
+
+    def __init__(self, inner, grid, cards):
+        super().__init__()
+        self.grid, self.cards, self.columns = grid, cards, 0
+        self.setWidget(inner)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+    def resizeEvent(self, event):
+        self.reflow(event.size().width())
+        super().resizeEvent(event)
+
+    def reflow(self, width):
+        m = self.grid.contentsMargins()
+        wide = max(c.minimumSizeHint().width() for c in self.cards) + self.grid.horizontalSpacing()
+        columns = max(1, min(len(self.cards), (width - m.left() - m.right() + self.grid.horizontalSpacing()) // wide))
+        if columns == self.columns:
+            return
+        self.columns = columns
+        for c in self.cards:
+            self.grid.removeWidget(c)
+        for i, c in enumerate(self.cards):
+            self.grid.addWidget(c, i // columns, i % columns)
+        for col in range(len(self.cards)):
+            self.grid.setColumnStretch(col, 1 if col < columns else 0)
+        rows = (len(self.cards) + columns - 1) // columns
+        for row in range(len(self.cards) + 1):
+            self.grid.setRowStretch(row, 0 if row < rows else 1)
+
+
+class TwoTiles(QtWidgets.QFrame):
+    """Two tiles in the place of one, with a line between them. The right one can go, for a movie."""
+
+    def __init__(self, left, right):
+        super().__init__()
+        self.setStyleSheet("QFrame { background: %s; border-radius: 4px; }" % C["panel2"])
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.right = right
+        self.line = line = QtWidgets.QFrame()
+        line.setFixedWidth(1)
+        line.setStyleSheet("QFrame { background: %s; border-radius: 0; }" % C["dim"])
+        lay.addWidget(left, 1)
+        lay.addWidget(line)
+        lay.addWidget(right, 1)
+
+    def show_right(self, on):
+        self.line.setVisible(on)
+        self.right.setVisible(on)
+
+
+class ZoomView(QtWidgets.QWidget):
+    """An image fitted to the widget. Mouse wheel zooms around the cursor, drag pans, double-click fits again.
+
+    The view is kept as a zoom factor and a centre point in image fractions, so it stays put when
+    the next frame of a playing movie (or a sharper still of the same frame) replaces the image."""
+
+    zoomed_in = QtCore.Signal()  # from fitted to zoomed in: time to show real pixels
+
+    def __init__(self):
+        super().__init__()
+        self.image = None
+        self.text = ""
+        self.zoom = 1.0  # 1 = whole image fits
+        self.center = QtCore.QPointF(0.5, 0.5)
+        self._drag = None
+        self.setMouseTracking(True)
+        self.setMinimumSize(200, 120)
+
+    def set_image(self, image):
+        self.image = image if image is not None and not image.isNull() else None
+        self.text = ""
+        self.update()
+
+    def set_text(self, text):
+        self.image = None
+        self.text = text
+        self.update()
+
+    def reset_view(self):
+        self.zoom, self.center = 1.0, QtCore.QPointF(0.5, 0.5)
+        self.update()
+
+    def _scale(self):
+        fit = min(self.width() / float(self.image.width()), self.height() / float(self.image.height()))
+        return fit * self.zoom
+
+    def _target(self):
+        sc = self._scale()
+        w, h = self.image.width() * sc, self.image.height() * sc
+        x = self.width() / 2.0 - self.center.x() * w
+        y = self.height() / 2.0 - self.center.y() * h
+        return QtCore.QRectF(x, y, w, h)
+
+    def _clamp(self):
+        half_w = min(0.5, 0.5 / self.zoom)
+        half_h = min(0.5, 0.5 / self.zoom)
+        self.center = QtCore.QPointF(min(1 - half_w, max(half_w, self.center.x())),
+                                     min(1 - half_h, max(half_h, self.center.y())))
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.fillRect(self.rect(), QtGui.QColor("#0d0e10"))
+        if self.image is None:
+            p.setPen(QtGui.QColor(C["dim"]))
+            p.drawText(self.rect(), QtCore.Qt.AlignCenter, self.text)
+            p.end()
+            return
+        p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, self.zoom < 4)
+        p.drawImage(self._target(), self.image)
+        if self.zoom > 1.001:
+            label = "%d %%" % round(self._scale() * 100)
+            p.setPen(QtGui.QColor(C["text"]))
+            p.fillRect(QtCore.QRectF(6, 6, 58, 18), QtGui.QColor(0, 0, 0, 150))
+            p.drawText(QtCore.QRectF(6, 6, 58, 18), QtCore.Qt.AlignCenter, label)
+        p.end()
+
+    def wheelEvent(self, event):
+        if self.image is None:
+            return
+        pos = event.position()
+        before = self._target()
+        fx = (pos.x() - before.x()) / before.width()
+        fy = (pos.y() - before.y()) / before.height()
+        step = 1.25 if event.angleDelta().y() > 0 else 1 / 1.25
+        fitted = self.zoom <= 1.001
+        self.zoom = max(1.0, min(64.0, self.zoom * step))
+        # Keep the image point under the cursor where it is.
+        sc = self._scale()
+        w, h = self.image.width() * sc, self.image.height() * sc
+        self.center = QtCore.QPointF(fx - (pos.x() - self.width() / 2.0) / w, fy - (pos.y() - self.height() / 2.0) / h)
+        self._clamp()
+        self.update()
+        if fitted and self.zoom > 1.001:
+            self.zoomed_in.emit()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton and self.image is not None and self.zoom > 1.001:
+            self._drag = (event.position(), QtCore.QPointF(self.center))
+            self.setCursor(QtCore.Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag and self.image is not None:
+            start, center = self._drag
+            target = self._target()
+            d = event.position() - start
+            self.center = QtCore.QPointF(center.x() - d.x() / target.width(), center.y() - d.y() / target.height())
+            self._clamp()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._drag = None
+        self.setCursor(QtCore.Qt.ArrowCursor)
+
+    def mouseDoubleClickEvent(self, event):
+        self.reset_view()
+
+
+def play_icon(playing):
+    """Pause bars while playing, a play triangle otherwise."""
+    pix = QtGui.QPixmap(32, 32)
+    pix.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pix)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    p.setPen(QtCore.Qt.NoPen)
+    p.setBrush(QtGui.QColor(C["accent"]))
+    if playing:
+        p.drawRoundedRect(QtCore.QRectF(8, 7, 6, 18), 1.5, 1.5)
+        p.drawRoundedRect(QtCore.QRectF(18, 7, 6, 18), 1.5, 1.5)
+    else:
+        p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(10, 6), QtCore.QPointF(26, 16), QtCore.QPointF(10, 26)]))
+    p.end()
+    return QtGui.QIcon(pix)
+
+
+def nav_icon(kind):
+    """Small orange icons for the frame bar: "prev", "next", "big" (enlarge) and "small" (back)."""
+    pix = QtGui.QPixmap(32, 32)
+    pix.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pix)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    col = QtGui.QColor(C["accent"])
+    if kind in ("prev", "next"):
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(col)
+        if kind == "prev":
+            p.drawRect(QtCore.QRectF(8, 8, 3, 16))
+            p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(24, 8), QtCore.QPointF(12, 16), QtCore.QPointF(24, 24)]))
+        else:
+            p.drawRect(QtCore.QRectF(21, 8, 3, 16))
+            p.drawPolygon(QtGui.QPolygonF([QtCore.QPointF(8, 8), QtCore.QPointF(20, 16), QtCore.QPointF(8, 24)]))
+    else:
+        pen = QtGui.QPen(col, 3)
+        pen.setCapStyle(QtCore.Qt.RoundCap)
+        p.setPen(pen)
+        out = kind == "big"  # corners pointing out to enlarge, in to go back
+        for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+            cx, cy = (16 - sx * 10, 16 - sy * 10) if out else (16 - sx * 4, 16 - sy * 4)
+            d = 7 if out else -7
+            p.drawLine(QtCore.QPointF(cx, cy), QtCore.QPointF(cx + sx * d, cy))
+            p.drawLine(QtCore.QPointF(cx, cy), QtCore.QPointF(cx, cy + sy * d))
+    p.end()
+    return QtGui.QIcon(pix)
+
+
+class FramesModel(QtCore.QAbstractTableModel):
+    COLS = ["Frame", "State", "Chunk", "Worker", "Time", "Size", "Check frames", "Check pixels"]
+
+    def __init__(self, engine):
+        super().__init__()
+        self.engine = engine
+        self.mode = "All"
+        self.rows = []
+        self.refilter()
+
+    def refilter(self):
+        self.beginResetModel()
+        self.rows = self._wanted()
+        self.endResetModel()
+
+    def _wanted(self):
+        """The frames to list. All: every frame, of the range (rendered, on disk, missing, still to render) and those on
+        disk outside it; the others are parts of it."""
+        e = self.engine
+        frames = {f: e.frame_info(f) for f in e.all_frames()}
+        if self.mode == "Problems":
+            return [f for f in sorted(frames) if self._problem(frames[f])]
+        if self.mode == "Rendered":  # what this run rendered, not what it found on disk and skipped
+            return [f for f in sorted(frames) if frames[f].state in ("done", "bad")]
+        if self.mode == "Framerange":  # every frame of the range, also those not on disk yet
+            return e.frame_list()
+        return sorted(frames)
+
+    @staticmethod
+    def _problem(fr):
+        return (fr.state in ("bad", "failed") or fr.small or pixels_broken(fr) or fr.same_as is not None
+                or (fr.state == "queued" and bool(fr.checks)))  # found broken on disk, to render again
+
+    def touch(self):
+        """Row by row, not a reset: what you selected stays selected while frames come in."""
+        now = self._wanted()
+        if now != self.rows:
+            wanted = set(now)
+            for i in range(len(self.rows) - 1, -1, -1):
+                if self.rows[i] not in wanted:
+                    self.beginRemoveRows(QtCore.QModelIndex(), i, i)
+                    del self.rows[i]
+                    self.endRemoveRows()
+            for i, f in enumerate(now):
+                if i >= len(self.rows) or self.rows[i] != f:
+                    self.beginInsertRows(QtCore.QModelIndex(), i, i)
+                    self.rows.insert(i, f)
+                    self.endInsertRows()
+        if self.rows:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, len(self.COLS) - 1))
+
+    def rowCount(self, parent=QtCore.QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QtCore.QModelIndex()):
+        return len(self.COLS)
+
+    def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+        if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
+            return self.COLS[section]
+        return None
+
+    def data(self, index, role=QtCore.Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self.rows):
+            return None
+        f = self.rows[index.row()]
+        fr = self.engine.frame_info(f)
+        if fr is None:
+            return None
+        col = index.column()
+        if role == QtCore.Qt.DisplayRole:
+            if col == 0:
+                return str(f)
+            if col == 1:
+                if f not in self.engine.frames:
+                    return "not in Framerange"
+                if fr.state == "queued":
+                    if fr.checks:
+                        return "broken on disk"
+                    return "on disk, queued again" if fr.old is not None else "not on disk"
+                return fr.state
+            if col == 2:  # a rendered one: the chunk that did it, none if it was found on disk; the plan may have changed since
+                return (fr.ran_in or "") if fr.state in ("done", "bad", "skipped") else fr.chunk or ""
+            if col == 3:
+                return fr.worker or ""
+            old = fr.old if fr.state in ("queued", "rendering") else None  # the frame on disk until the new one is written
+            if col == 4:
+                secs = fr.secs if fr.secs is not None else (old.secs if old is not None else None)
+                return "%.2f s" % secs if secs is not None else ""
+            if col == 5:
+                sizes = [c[1] for c in (fr.checks or (old.checks if old is not None else {})).values() if c[1] is not None]
+                return fmt_size(sum(sizes)) if sizes else ""
+            if col == 6:
+                if not fr.checks:
+                    return ""
+                bad = [c for c in fr.checks.values() if c[0] != "ok"]
+                if bad:
+                    return "%s %s" % (bad[0][0], bad[0][2])
+                return "small (check it)" if fr.small else "ok"
+            if col == 7:
+                if not fr.pixels:
+                    return ""
+                if "error" in fr.pixels:
+                    return "not read"
+                return pixels_note(fr) or ("no RGB" if fr.pixels.get("no_rgb") else "ok")
+        if role == QtCore.Qt.ForegroundRole and col == 6 and not fr.checks:
+            return None
+        if role == QtCore.Qt.ForegroundRole and col == 7:
+            if not fr.pixels:
+                return None
+            if "error" in fr.pixels:
+                return QtGui.QColor(C["small"])
+            return QtGui.QColor(C["failed"] if pixels_broken(fr) or fr.same_as is not None else C["done"])
+        if role == QtCore.Qt.ForegroundRole and col in (1, 6):
+            if fr.state in ("bad", "failed") or (col == 1 and (pixels_broken(fr) or fr.same_as is not None
+                                                               or (fr.state == "queued" and fr.checks))):
+                return QtGui.QColor(C["failed"])
+            if fr.small:
+                return QtGui.QColor(C["small"])
+            if fr.state in ("done", "skipped"):
+                return QtGui.QColor(C["done"])
+            if fr.state == "rendering":
+                return QtGui.QColor(C["rendering"])
+        if role == QtCore.Qt.UserRole:
+            return f
+        return None
+
+
+# ----------------------------------------------------------------------------
+# Window
+# ----------------------------------------------------------------------------
+# ---- updates: the newest public release, installed on a click (1.0.1) ------------------------------------------------
+UPDATE_URL = "https://api.github.com/repos/JanKanta/JKrender/releases/latest"
+UPDATE_KEEP = ("lib", "log", "settings", "update_backup")  # never written by an update: downloads, logs, your settings
+
+
+def version_tuple(version):
+    return tuple(int(x) for x in re.findall(r"\d+", str(version))[:4])
+
+
+def latest_release(timeout=6):
+    """The newest public release: {"version", "notes", "zip", "page"}, or None (offline, a firewall, no release with a
+    zip). JKRENDER_UPDATE_URL points elsewhere (the tests' own server)."""
+    try:
+        import jkrender_deps
+        with jkrender_deps._get(os.environ.get("JKRENDER_UPDATE_URL") or UPDATE_URL, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        version = str(data.get("tag_name") or "").lstrip("v")
+        zip_url = next((a.get("browser_download_url") for a in data.get("assets") or []
+                        if str(a.get("name", "")).endswith(".zip")), None)
+        if not version or not zip_url:
+            return None
+        # What's new shows what is new: not the install steps a release page may add for a zip downloaded by hand
+        notes = re.split(r"\n\s*\*\*Install:?\*\*", "\n" + (data.get("body") or ""))[0].strip()
+        return {"version": version, "notes": notes, "zip": zip_url, "page": data.get("html_url") or ""}
+    except Exception:
+        return None
+
+
+def install_dir():
+    return Path(os.environ.get("JKRENDER_UPDATE_DIR") or Path(__file__).resolve().parent)
+
+
+def download_update(url, dest, timeout=120):
+    """The release zip into dest (a .part file first, so a broken download never looks whole)."""
+    import jkrender_deps
+    part = str(dest) + ".part"
+    with jkrender_deps._get(url, timeout=timeout) as r, open(part, "wb") as f:
+        shutil.copyfileobj(r, f)
+    os.replace(part, dest)
+    return dest
+
+
+def install_update(zip_path, version, target=None):
+    """Unpacks a release zip over this JKrender: every file in its JKrender folder, except lib, log and settings (and the
+    backups). The files it replaces go to update_backup/<the version now> first; when one cannot be written, the ones
+    already replaced come back. A git clone is left alone (git pull updates it). Returns (ok, what happened)."""
+    import zipfile
+    target = Path(target or install_dir())
+    if (target / ".git").exists():
+        return False, "This JKrender is a git clone: update it with git pull."
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            names = [n for n in z.namelist() if n.startswith("JKrender/") and not n.endswith("/")]
+            if z.testzip() is not None or "JKrender/JKrender.py" not in names:
+                return False, "The download is not a whole JKrender release; nothing was changed."
+            m = re.search(r'^APP_VERSION = "([^"]+)"', z.read("JKrender/JKrender.py").decode("utf-8", "replace"), re.M)
+            if not m or m.group(1) != version:
+                return False, "The download is JKrender %s, not %s; nothing was changed." % (m.group(1) if m else "?", version)
+            files = {}
+            for n in names:
+                rel = n[len("JKrender/"):]
+                parts = rel.split("/")
+                if parts[0] in UPDATE_KEEP or ".." in parts or not rel:
+                    continue
+                files[rel] = z.read(n)
+    except (zipfile.BadZipFile, OSError, KeyError) as exc:
+        return False, "The download is broken (%s); nothing was changed." % exc
+    backup = target / "update_backup" / APP_VERSION
+    done = []
+    try:
+        for rel in files:
+            dest = target.joinpath(*rel.split("/"))
+            if dest.is_file():
+                keep = backup.joinpath(*rel.split("/"))
+                keep.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(dest, keep)
+        for rel, data in files.items():
+            dest = target.joinpath(*rel.split("/"))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".update")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            done.append(rel)
+    except OSError as exc:
+        for rel in done:
+            keep = backup.joinpath(*rel.split("/"))
+            try:
+                if keep.is_file():
+                    shutil.copy2(keep, target.joinpath(*rel.split("/")))
+            except OSError:
+                pass
+        return False, "Could not write the new files (%s); the old version is back." % exc
+    return True, ("JKrender %s is installed; the replaced files are in update_backup/%s. Close this window and restart "
+                  "Nuke, so the window and Nuke's menu run the new version." % (version, APP_VERSION))
+
+
+class UpdateDialog(QtWidgets.QDialog):
+    """A newer release: What's new, Update (download and install now), Later; Don't show this again for that version."""
+
+    def __init__(self, window, info):
+        super().__init__(window)
+        self.window, self.info = window, info
+        self.setWindowTitle("JKrender update")
+        self.setMinimumWidth(460)
+        lay = QtWidgets.QVBoxLayout(self)
+        self.text = QtWidgets.QLabel("<b>JKrender %s is out.</b> You have %s." % (info["version"], APP_VERSION))
+        self.text.setWordWrap(True)
+        lay.addWidget(self.text)
+        self.notes = QtWidgets.QTextBrowser()
+        self.notes.setOpenExternalLinks(True)
+        self.notes.setMarkdown(info.get("notes") or "No notes for this release.")
+        self.notes.setMinimumHeight(260)
+        self.notes.hide()
+        lay.addWidget(self.notes)
+        self.skip = QtWidgets.QCheckBox("Don't show this again for %s" % info["version"])
+        self.skip.setChecked(window.settings.get("update_skip") == info["version"])
+        self.skip.toggled.connect(lambda on: window._save_setting("update_skip", info["version"] if on else ""))
+        lay.addWidget(self.skip)
+        row = QtWidgets.QHBoxLayout()
+        self.b_new = QtWidgets.QPushButton("What's new")
+        self.b_update = QtWidgets.QPushButton("Update")
+        self.b_later = QtWidgets.QPushButton("Later")
+        self.b_new.clicked.connect(self._whats_new)
+        self.b_update.clicked.connect(self._update)
+        self.b_later.clicked.connect(self.reject)
+        for b in (self.b_new, self.b_update, self.b_later):
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.result_text = ""
+        self._job = None
+
+    def _whats_new(self):
+        self.notes.setVisible(not self.notes.isVisible())
+        self.adjustSize()
+
+    def busy(self):
+        return [e for e in self.window.manager.engines if e.state in ("rendering", "paused", "finishing", "waiting")]
+
+    def _update(self):
+        if self.busy():
+            self.text.setText("<b>JKrender %s is out.</b> Stop or finish the renders first: the update replaces the files "
+                              "the Nuke processes run." % self.info["version"])
+            return
+        for b in (self.b_new, self.b_update, self.b_later, self.skip):
+            b.setEnabled(False)
+        self.text.setText("Downloading JKrender %s…" % self.info["version"])
+        dest = Path(tempfile.gettempdir()) / ("JKrender-%s.zip" % self.info["version"])
+        self._job = {"done": False, "error": ""}
+
+        def fetch(job=self._job):
+            try:
+                download_update(self.info["zip"], dest)
+                job["ok"], job["text"] = install_update(dest, self.info["version"])
+            except Exception as exc:
+                job["ok"], job["text"] = False, "The download failed (%s); nothing was changed." % exc
+            finally:
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
+                job["done"] = True
+
+        threading.Thread(target=fetch, daemon=True).start()
+        self._poll = QtCore.QTimer(self)
+        self._poll.timeout.connect(self._check)
+        self._poll.start(200)
+
+    def _check(self):
+        if not self._job or not self._job["done"]:
+            return
+        self._poll.stop()
+        self.result_text = self._job["text"]
+        self.text.setText(("<b>%s</b>" if self._job["ok"] else "%s") % self.result_text)
+        self.b_later.setText("Close")
+        self.b_later.setEnabled(True)
+        self.b_new.setEnabled(True)
+        if not self._job["ok"]:
+            self.b_update.setEnabled(True)
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self, job_path, exit_when_done=False, restoring=False):
+        super().__init__()
+        self._queue_saved = None
+        self.settings = read_settings()
+        self.manager = RenderManager(self.settings)
+        self.exit_when_done = exit_when_done
+        self.cards = {}
+        self._last_states = {}
+        self._pixels_were = {}  # render -> its pixel check was running at the last tick
+        self._banner_was = None  # what the banner of the picked finished render last said
+        self._preview_frame = None
+        self._gpu = None
+        self._gpu_procs = {}  # pid -> (GPU %, VRAM bytes)
+        self._io_last = None
+        self._net_last = None
+        self.server = None
+        self.setWindowTitle("JKrender %s" % APP_VERSION)
+        room = QtWidgets.QApplication.primaryScreen().availableGeometry()
+        self.resize(min(2560, room.width()), min(1369, room.height() - 23))  # a 1440p monitor filled, less the title bar
+        job_path = Path(job_path)
+        # Before the window shows: frames the Write already rendered appear as done.
+        self.engine = self.manager.add(json.loads(job_path.read_text(encoding="utf-8")), job_path.parent)
+        if self.settings.get("log_cleanup", True):
+            days = int(self.settings.get("log_days", 15))
+            deleted, freed = clean_render_folders(job_path.parent.parent, days, keep=[job_path.parent])
+            if deleted:
+                self.engine.note("Deleted %d render log folder(s) older than %d days (%s)" % (deleted, days, fmt_size(freed)))
+        # the script copies of renders not open, packed in the background once the cards are in (1.0.29)
+        QtCore.QTimer.singleShot(4000, lambda root=job_path.parent.parent, e=self.engine: threading.Thread(
+            target=self._pack_old_snapshots, args=(root, e), daemon=True).start())
+        self._build()
+        self._restore_headers()
+        self._add_card(self.engine)
+        self.select(self.engine)
+        if psutil:
+            psutil.cpu_percent(percpu=True)
+        self._gpu_mac = None  # macOS: (GPU %, unified memory in use), shown only
+        self._gpu_procs_mac = {}  # macOS: pid -> GPU %; no GPU memory per process, it is part of the RAM
+        self._gpu_name = None  # a card read without nvidia-smi (1.0.28): its name, for the GPU tile
+        if shutil.which("nvidia-smi") or sys.platform.startswith("win") or sys.platform == "darwin" or amdgpu_card():
+            threading.Thread(target=self._gpu_loop, daemon=True).start()
+        QtWidgets.QApplication.instance().installEventFilter(self)  # clicks off the cards drop the Shift picks
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(100)
+        self.slow = QtCore.QTimer(self)
+        self.slow.timeout.connect(self._slow_tick)
+        self.slow.start(1000)
+        if self.settings.get("auto_start", False) and not self.engine.nothing_to_render() and not restoring:
+            QtCore.QTimer.singleShot(300, self._start)
+
+    # ---- renders ------------------------------------------------------------
+    def _pack_old_snapshots(self, root, engine):
+        """Background, when the window has opened: the script copies of the renders not open here, packed (pack_snapshots)."""
+        try:
+            packed, before, after = pack_snapshots(root, keep=[e.dir for e in list(self.manager.engines)])
+        except Exception:
+            return
+        if packed:
+            engine.events.put(("note", "Packed the script copies of %d render(s) not open: %s to %s; one is unpacked when "
+                               "it renders again" % (packed, fmt_size(before), fmt_size(after))))
+
+    def listen(self):
+        """Become the JKrender every later render from Nuke is handed to."""
+        self.server = QtNetwork.QTcpServer(self)
+        self.server.newConnection.connect(self._on_connection)
+        return self.server.listen(QtNetwork.QHostAddress.LocalHost, APP_PORT)
+
+    def _on_connection(self):
+        while self.server.hasPendingConnections():
+            sock = self.server.nextPendingConnection()
+            sock.data = bytearray()
+            sock.readyRead.connect(lambda sock=sock: self._on_message(sock))
+
+    def _on_message(self, sock):
+        """One line of JSON in, "OK" back. Qt drops a connection whose sender half-closes, so no shutdown."""
+        sock.data.extend(bytes(sock.readAll()))
+        if b"\n" not in sock.data:
+            return
+        try:
+            message = json.loads(bytes(sock.data).decode("utf-8"))
+            # "jobs": the Writes selected together in Nuke (1.0.4), picked together here; "job": one, as before
+            job_paths = [str(p) for p in message["jobs"]] if "jobs" in message else [message["job"]]
+            reply = b"OK"
+        except Exception as exc:
+            job_paths, reply = [], ("ERROR %s" % exc).encode("utf-8")
+        sock.write(reply)
+        sock.flush()
+        sock.disconnectFromHost()
+        if job_paths:
+            QtCore.QTimer.singleShot(0, lambda: self.add_jobs(job_paths))
+
+    def add_jobs(self, job_paths, auto=True):
+        """The Writes selected together in Nuke: a card each, all of them picked, so one Render starts them all
+        (as Shift+click would pick them). A single one drops the picks made before."""
+        added = [e for e in (self.add_job(p, auto) for p in job_paths) if e is not None]
+        self.pick(added)
+        return added
+
+    def pick(self, engines):
+        """Pick these renders for Render / Pause / Stop and show the first of them."""
+        self.picked = set(engines) if len(engines) > 1 else set()
+        if engines:
+            self.select(engines[0])
+        else:
+            self._refresh_cards()
+            self._sync_controls()
+
+    def add_job(self, job_path, auto=True):
+        """A card for the render in job_path, shown. Its engine, or None when that output already renders here."""
+        job_path = Path(job_path)
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        outputs = sorted(w.get("output") or "" for w in job.get("writes", []))
+        for e in list(self.manager.engines):
+            if sorted(w.get("output") or "" for w in e.job.get("writes", [])) != outputs:
+                continue
+            if e.state in ("rendering", "paused", "finishing", "waiting"):
+                self.select(e)
+                self._bring_to_front()
+                QtWidgets.QMessageBox.information(self, "JKrender", "%s is already rendering here." % e.output_names)
+                return None
+            self._remove_engine(e)  # the newer send wins: it carries a fresh snapshot of the script
+        e = self.manager.add(job, job_path.parent)
+        self._add_card(e)
+        self.select(e)
+        self._bring_to_front()
+        if auto and self.settings.get("auto_start", False) and not e.nothing_to_render():
+            self.manager.request_start(e)
+            self._sync_controls()
+        return e
+
+    def _save_queue(self):
+        """The cards and the Nuke processes, whole or not at all, whenever they change."""
+        if self.exit_when_done:
+            return
+        renders = [{"job": str(e.dir / "job.json"), "state": e.state, "range": e.range_text, "frames": e.frames_text, "started": e.started} for e in self.manager.engines]
+        pids = []
+        for e in self.manager.engines:
+            for w in e.workers.values():
+                if w.state != "gone" and w.ps:
+                    try:
+                        pids.append([w.proc.pid, w.ps.create_time()])
+                    except Exception:
+                        pass
+        data = {"renders": renders, "pids": sorted(pids)}
+        if data == self._queue_saved:
+            return
+        try:
+            HOME_DIR.mkdir(parents=True, exist_ok=True)
+            temp = QUEUE_FILE.with_suffix(".tmp")
+            temp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            os.replace(temp, QUEUE_FILE)
+            self._queue_saved = data
+        except OSError:
+            pass
+
+    def restore(self, e, saved):
+        """A card as it was when JKrender went down. What the disk has counts; a render that was going is left
+        stopped, for Render to go on from the rest. True if it was going."""
+        if saved.get("frames"):
+            e.frames_text = saved["frames"]
+        if saved.get("range") and saved["range"] != e.range_text:
+            e.set_range(saved["range"])
+            e.scan_disk()
+            e.done_if_on_disk()
+        if saved.get("started"):
+            e.started = saved["started"]  # Nuke's temp files of that run go by this
+            e._clean_temp()
+            e.started = None
+        going = saved.get("state") in ("rendering", "paused", "finishing", "waiting")
+        if e.state != "done" and (going or saved.get("state") in ("stopped", "failed")):
+            e.state = "stopped"
+        if going:
+            e.note("!! Interrupted: JKrender went down while this rendered. What is on disk counts; Render goes on from the rest.", "err")
+        self._last_states.pop(e, None)
+        return going and e.state != "done"
+
+    def _bring_to_front(self):
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _add_card(self, e):
+        card = RenderCard(e)
+        card.clicked.connect(self._card_clicked)
+        card.closeRequested.connect(self._close_card)
+        self.cards_row.insertWidget(self.cards_row.count() - 1, card)  # before the stretch
+        self.cards[e] = card
+        self._refresh_cards()
+        QtCore.QTimer.singleShot(100, lambda: self.cards_scroll.ensureWidgetVisible(card))  # once the row has made room for it
+        QtCore.QTimer.singleShot(300, lambda: self._check_on_open(e))  # after a card from before a crash got its range back
+
+    def _check_on_open(self, e):
+        """Settings > Check pixels when a render opens. The frame check already ran: it is how the card knows what is on disk."""
+        if (self.settings.get("check_on_open", True) and e in self.manager.engines and not e.job.get("test_out")
+                and e.state in ("ready", "stopped", "done", "failed")):
+            e.check_all_pixels()
+
+    def _card_clicked(self, e, shift):
+        """A click picks one render; Shift+click adds it to (or takes it from) the renders picked, and Render,
+        Pause and Stop then act on all of them."""
+        picked = getattr(self, "picked", set())
+        if shift:
+            if not picked:
+                picked = {self.engine}
+            if e in picked and len(picked) > 1:
+                picked.discard(e)
+                self.picked = picked
+                if e is self.engine:
+                    self.select(next(x for x in self.manager.engines if x in picked))
+                else:
+                    self._refresh_cards()
+                    self._sync_controls()
+                return
+            picked.add(e)
+        else:
+            picked = set()
+        self.picked = picked
+        self.select(e)
+
+    def _targets(self):
+        """The renders Render / Pause / Stop act on: the picked ones, or the one shown."""
+        picked = [x for x in self.manager.engines if x in getattr(self, "picked", set())]
+        return picked if len(picked) > 1 else [self.engine]
+
+    def _refresh_cards(self):
+        picked = getattr(self, "picked", set())
+        for e, card in self.cards.items():
+            card.refresh(e is self.engine or e in picked, len(self.cards) > 1)
+        self.total_card.refresh(self.manager.engines)
+        self.cards_scroll.fit()
+
+    def _close_card(self, e):
+        if e.state in ("rendering", "paused", "finishing", "waiting"):
+            ask = QtWidgets.QMessageBox.question(
+                self, "JKrender", "%s is still rendering.\n\nStop it and close it?" % e.name,
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+            if ask != QtWidgets.QMessageBox.Yes:
+                return
+            if e.state == "waiting":
+                self.manager.cancel(e)
+            else:
+                e.stop("Stopped: render closed")
+        e.write_report()
+        self._remove_engine(e)
+
+    def _remove_engine(self, e):
+        getattr(self, "picked", set()).discard(e)
+        card = self.cards.pop(e, None)
+        if card is not None:
+            card.setParent(None)
+            card.deleteLater()
+        self._last_states.pop(e, None)
+        self.manager.remove(e)
+        if e is self.engine and self.manager.engines:
+            self.select(self.manager.engines[0])
+        self._refresh_cards()
+        self._sync_controls()
+
+    def select(self, e):
+        """Show one render: header, frame map, chunks, output, log and details all follow it."""
+        if hasattr(self, "_play_timer"):
+            self._movie_stop()
+        if hasattr(self, "e_frames"):
+            self._frames_edited()  # still typed for the render picked until now
+        self.engine = e
+        self._last_states[e] = e.state  # shown below; the next tick need not show it again
+        self.frame_map.engine = e
+        self.frames_model.engine = e
+        self.frames_model.refilter()
+        self.gantt.selected = e
+        if hasattr(self, "r_chunk_auto"):  # Settings are built
+            self._show_chunk()
+        if hasattr(self, "e_frames"):
+            self.e_frames.setText(e.frames_text)
+        self.chunk_table.setRowCount(0)  # columns keep their widths: fitted once, or as you left them
+        self._preview_frame = None
+        self.preview.reset_view()
+        self.preview.set_text("Click a frame to see it")
+        self.preview_info.setText("")
+        self._frame_play_stop()
+        self._sync_frame_bar(None)  # the slider covers this render's frames before any frame is shown
+        # frames already rendered: the first one shows in the preview straight away
+        first = None if e.movie else next((f for f in e.frame_list() if e.frames[f].state in ("done", "skipped")), None)
+        if first is not None:
+            QtCore.QTimer.singleShot(0, lambda e=e, f=first: self._show_first(e, f))
+        self.out_pages.setCurrentIndex(1 if e.movie else 0)
+        if e.movie:
+            self._movie_size_last = None
+            self._update_movie()
+            self._movie_show(0.5)
+        self._log_refilter()
+        self._state_changed()
+        self._refresh_cards()
+        self._slow_tick()
+        self.frame_map.update()
+        self.gantt.update()
+
+    # ---- layout -------------------------------------------------------------
+    def _build(self):
+        root = QtWidgets.QWidget()
+        root.setObjectName("root")
+        self.setCentralWidget(root)
+        lay = QtWidgets.QVBoxLayout(root)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+
+        # one card per render; click a card to look at that render
+        host = QtWidgets.QWidget()
+        self.cards_row = QtWidgets.QHBoxLayout(host)
+        self.cards_row.setContentsMargins(0, 0, 0, 0)
+        self.cards_row.setSpacing(8)
+        self.cards_row.addStretch(1)
+        self.total_card = TotalCard()  # stays where it is when the cards scroll
+        self.cards_scroll = CardsScroll(host, self.total_card)
+        top = QtWidgets.QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(self.cards_scroll, 1)
+        top.addWidget(self.total_card)
+        lay.addLayout(top)
+
+        # controls (Render, Pause, Stop, frame range, and the render's result right after them) go here
+        self.run_flow = FlowLayout()
+        lay.addLayout(self.run_flow)
+
+        # numbers
+        stats = QtWidgets.QHBoxLayout()
+        stats.setSpacing(8)
+        self.t_frames = Tile("Frames")
+        self.t_elapsed = Tile("Elapsed")
+        self.t_eta = Tile("Remaining")
+        self.t_speed = Tile("Speed")
+        self.t_avg = Tile("Frame time")
+        self.t_workers = Tile("Nuke processes")
+        self.t_check_frames = Tile("Check frames")
+        self.t_check_pixels = Tile("Check pixels")
+        for t in (self.t_frames, self.t_elapsed, self.t_eta, self.t_speed, self.t_avg, self.t_workers):
+            stats.addWidget(t, 1)
+        self.check_tiles = TwoTiles(self.t_check_frames, self.t_check_pixels)
+        stats.addWidget(self.check_tiles, 2)
+        lay.addLayout(stats)
+
+        self.frame_map = FrameMap(self.engine)
+        self.frame_map.frameClicked.connect(self._pick_frame)
+        lay.addWidget(self.frame_map)
+        legend = QtWidgets.QLabel(
+            " ".join('<span style="color:%s">■</span> %s&nbsp;&nbsp;' % (C[k], t) for k, t in (
+                ("queued", "queued"), ("rendering", "rendering"), ("done", "done"), ("skipped", "on disk, skipped"),
+                ("small", "suspiciously small"), ("failed", "failed / broken"))))
+        legend.setObjectName("dim")
+        legend.setWordWrap(True)
+        lay.addWidget(legend)
+
+        # controls
+        run = QtWidgets.QWidget()
+        ctl = QtWidgets.QHBoxLayout(run)
+        ctl.setContentsMargins(0, 0, 0, 0)
+        ctl.setSpacing(6)
+        self.b_start = QtWidgets.QPushButton("Render")
+        self.b_start.setObjectName("primary")
+        self.b_pause = QtWidgets.QPushButton("Pause")
+        self.b_stop = QtWidgets.QPushButton("Stop")
+        self.b_start.clicked.connect(self._start)
+        self.b_pause.clicked.connect(self._pause)
+        self.b_stop.clicked.connect(self._stop)
+        self.b_start.setToolTip("Shift+click render cards to pick several: Render, Pause and Stop act on all of them")
+        for b in (self.b_start, self.b_pause, self.b_stop):
+            ctl.addWidget(b)
+        ctl.addSpacing(14)
+
+        def spin(label, lo, hi, value, suffix, tip):
+            # placed in the Settings tab (see _settings_tab)
+            box = QtWidgets.QSpinBox()
+            box.setRange(lo, hi)
+            box.setValue(value)
+            box.setSuffix(suffix)
+            box.setToolTip(tip)
+            return box
+
+        cpu = os.cpu_count() or 8
+        ram = int(psutil.virtual_memory().total / 1024 ** 3) if psutil else 64
+        e, m = self.engine, self.manager
+        self.s_workers = spin("Processes", 1, cpu, m.total, "",
+                              "Nuke processes for all renders together. One render gets them all;\n"
+                              "renders side by side share them (8 -> 4 + 4 -> 3 + 3 + 2).")
+        self.s_threads = spin("Threads", 1, cpu, m.threads, "",
+                              "Threads per Nuke process (-m).")
+        self.s_ram = spin("RAM", 1, ram, m.ram, " GB",
+                          "Nuke's cache limit per process (-c). A heavy script takes more than this;\n"
+                          "System > RAM shows what each process really takes.")
+        self.s_chunk = spin("Chunk", 1, 10000, e.chunk_size, " fr",
+                            "Frames per chunk. Applies to chunks that have not started yet.\n"
+                            "With Smaller chunks at the end this is the largest chunk; towards the end they get smaller.")
+        self.range_edit = QtWidgets.QLabel(e.frames_text)  # to read: it changes in Settings > Framerange
+        self.range_edit.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.range_edit.setToolTip("The frames of this render: the range Nuke sent, unless you changed it in Settings > Framerange.\n"
+                                   "The slate frame comes on top of them.")
+        def show_value(layout, name, tip):
+            """A name and its value to read, like Framerange. They change in Settings."""
+            lab = QtWidgets.QLabel(name)
+            lab.setObjectName("dim")
+            value = QtWidgets.QLabel("")
+            for x in (lab, value):
+                x.setToolTip(tip)
+            layout.addWidget(lab)
+            layout.addWidget(value)
+            return value
+
+        ctl.addSpacing(8)
+        self.l_slate = show_value(ctl, "Slate", "The slate frame of this render. Settings > Slate frame.")
+        ctl.addSpacing(8)
+        lab = QtWidgets.QLabel("Framerange")
+        lab.setObjectName("dim")
+        ctl.addWidget(lab)
+        ctl.addWidget(self.range_edit)
+        self.run_flow.addWidget(run)
+        info = QtWidgets.QWidget()  # its own piece of the row: in a narrow window it goes to the next line
+        have = QtWidgets.QHBoxLayout(info)
+        have.setContentsMargins(0, 0, 0, 0)
+        have.setSpacing(6)
+        self.l_info = {}
+        for i, (key, name, tip) in enumerate((
+                ("processes", "Processes", "Nuke processes for all renders together. Settings > Processes, or right-click in System while rendering."),
+                ("threads", "Threads", "Threads per Nuke process. Settings > Threads."),
+                ("cache", "Cache", "Nuke's cache limit per process. Settings > Cache."),
+                ("chunk", "Chunk", "Frames per chunk of this render. Settings > Chunk."))):
+            if i:
+                have.addSpacing(8)
+            self.l_info[key] = show_value(have, name, tip)
+        self.run_flow.addWidget(info)
+        self.banner = QtWidgets.QLabel("")  # "Done in 4:39. All 92 frames ...": right after the controls
+        self.banner.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+        self.banner.hide()
+        self.run_flow.addWidget(self.banner)  # the render's result, on what is left of the line
+        self.run_flow.fill = self.banner
+        self.s_workers.valueChanged.connect(self._workers_changed)
+        self.s_threads.valueChanged.connect(lambda v: self._budget_changed("threads", v))
+        self.s_ram.valueChanged.connect(lambda v: self._budget_changed("ram", v))
+        self.s_chunk.valueChanged.connect(self._chunk_changed)
+
+        # Three panes: on the left, full height, Output / Chunks / Details; on the right, Workers (process
+        # timeline) / Log on top and System / Settings below.
+        main = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.side_tabs = QtWidgets.QTabWidget()
+        self.output_page = self._output_tab()
+        self.side_tabs.addTab(self.output_page, "Output")
+        self.side_tabs.addTab(self._chunks_table(), "Chunks")
+        self.side_tabs.addTab(self._details_tab(), "Details")
+        self.side_tabs.currentChanged.connect(lambda i: self._details_shown() and self._update_details())
+        main.addWidget(self.side_tabs)
+        right = QtWidgets.QWidget()
+        rlay = QtWidgets.QVBoxLayout(right)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.setSpacing(0)
+        self.tabs = QtWidgets.QTabBar()
+        self.tabs.setDrawBase(False)
+        self.tabs.setExpanding(False)
+        for name in ("Workers", "Log"):
+            self.tabs.addTab(name)
+        rlay.addWidget(self.tabs)
+        split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.gantt = Gantt(self.manager)
+        self.gantt.workerMenu.connect(self._worker_menu)
+        self.gantt.show_all = bool(self.settings.get("show_all_workers", True))
+        self.gantt.dim_others = bool(self.settings.get("dim_others", True))
+        self.gantt.show_hooks = bool(self.settings.get("show_hooks", True))
+        self.gantt.hide_old_done = True  # rendering again, the timeline shows the new run only
+        self.pages = QtWidgets.QStackedWidget()
+        for page in (self.gantt, self._log_tab()):
+            self.pages.addWidget(page)
+        split.addWidget(self.pages)
+        self.sub_tabs = QtWidgets.QTabWidget()
+        self.sub_tabs.addTab(self._system_tab(), "System")
+        settings_page = self._settings_tab()  # builds the Job tab too
+        self.sub_tabs.addTab(self._job_scroll, "Job")
+        self.sub_tabs.addTab(settings_page, "Settings")
+        self.sub_tabs.addTab(self._donation_tab(), "Donation")
+        self.sub_tabs.addTab(self._author_tab(), "Author")
+        split.addWidget(self.sub_tabs)
+        split.setSizes([464, 576])
+        rlay.addWidget(split, 1)
+        main.addWidget(right)
+        main.setStretchFactor(0, 2)
+        main.setStretchFactor(1, 3)
+        main.setSizes([945, 1583])
+        lay.addWidget(main, 1)
+        self.main_split = main
+        self.big_box = QtWidgets.QWidget()  # the big preview, in place of the three panes
+        self.big_lay = QtWidgets.QVBoxLayout(self.big_box)
+        self.big_lay.setContentsMargins(0, 0, 0, 0)
+        self.big_box.hide()
+        lay.addWidget(self.big_box, 1)
+        self.tabs.currentChanged.connect(self._page_changed)
+
+    def _details_shown(self):
+        return self.side_tabs.currentWidget() is self.details
+
+    def _page_changed(self, index):
+        self.pages.setCurrentIndex(index)
+        if self._details_shown():
+            self._update_details()
+
+    @staticmethod
+    def _page(html_parts):
+        """A plain scrolling page of text and links (Donation, Author)."""
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(14)
+        for part in html_parts:
+            if isinstance(part, QtWidgets.QWidget):
+                lay.addWidget(part)
+                continue
+            lab = QtWidgets.QLabel(part)
+            lab.setWordWrap(True)
+            lab.setTextFormat(QtCore.Qt.RichText)
+            lab.setOpenExternalLinks(True)
+            lab.setTextInteractionFlags(QtCore.Qt.TextBrowserInteraction)
+            lay.addWidget(lab)
+        lay.addStretch(1)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidget(w)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        return scroll
+
+    @staticmethod
+    def donation_info():
+        """donation.json next to JKrender.py, {} when it is not there or not readable."""
+        try:
+            data = json.loads(DONATION_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _donation_tab(self):
+        """Donation: what donation.json holds (Ko-fi, PayPal, Revolut, a bank transfer), each with its QR code when there is
+        one; the ones left empty do not show, and with none filled in it says they come soon."""
+        d = self.donation_info()
+        head = '<span style="font-size: 13pt; font-weight: 600; color: %s;">Support JKrender</span>' % C["accent"]
+        parts = [head, html_escape(d.get("intro") or "JKrender is free. If it saves you time on your renders, you can support its work here.")]
+        shown = 0
+        for key, title in (("kofi", "Ko-fi (card, from anywhere)"), ("paypal", "PayPal"), ("revolut", "Revolut")):
+            link = (d.get(key) or "").strip()
+            if not link:
+                continue
+            url = link if link.startswith("http") else "https://" + link
+            parts.append('<b>%s</b><br><a href="%s" style="color: %s;">%s</a>' % (title, html_escape(url), C["accent"], html_escape(link)))
+            parts += self._qr_widget(d.get(key + "_qr"))
+            shown += 1
+        if (d.get("bank_iban") or "").strip():
+            lines = ["<b>Bank transfer</b>", "IBAN: %s" % html_escape(d["bank_iban"].strip())]
+            if (d.get("bank_name") or "").strip():
+                lines.append("To: %s" % html_escape(d["bank_name"].strip()))
+            if (d.get("bank_note") or "").strip():
+                lines.append(html_escape(d["bank_note"].strip()))
+            parts.append("<br>".join(lines))
+            parts += self._qr_widget(d.get("bank_qr"))
+            shown += 1
+        if not shown:
+            parts.append('<span style="color: %s;">Donation links are coming soon.</span>' % C["dim"])
+        self._donation_count = shown
+        return self._page(parts)
+
+    @staticmethod
+    def _qr_widget(name):
+        """The QR code image named in donation.json (a PNG next to it), as a widget; [] when there is none."""
+        name = (name or "").strip()
+        if not name:
+            return []
+        pix = QtGui.QPixmap(str(DONATION_FILE.with_name(name)))
+        if pix.isNull():
+            return []
+        lab = QtWidgets.QLabel()
+        lab.setPixmap(pix.scaled(180, 180, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        return [lab]
+
+    def _author_tab(self):
+        """Author: who made JKrender and where to find him."""
+        a = AUTHOR
+        head = '<span style="font-size: 13pt; font-weight: 600; color: %s;">%s</span>' % (C["accent"], html_escape(a["name"]))
+        link = '<a href="%s" style="color: %s;">%s</a>'
+        return self._page([
+            head,
+            "Author of JKrender %s." % APP_VERSION,
+            "<b>LinkedIn</b><br>" + link % (a["linkedin"], C["accent"], a["linkedin"]),
+            "<b>JKrender on GitHub</b><br>" + link % (a["github"], C["accent"], a["github"]) +
+            "<br>The manuals, what changed in each version, and where to report a bug.",
+        ])
+
+    def _settings_tab(self):
+        """Settings: General, Performance and Optimization. Builds the Job tab too (Job, Processes and Chunks): self._job_scroll.
+
+        Every card is a grid: the name of a setting on the left, its switch or value on the right,
+        so everything lines up; a short grey note sits under the row it explains."""
+        w = QtWidgets.QWidget()
+        outer = QtWidgets.QGridLayout(w)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(12)
+        cards = []
+        FIELD = 96  # every value box the same width
+
+        def card(title):
+            frame = QtWidgets.QFrame()
+            frame.setObjectName("card")
+            frame.setStyleSheet("#card { background: %s; border: 1px solid %s; border-radius: 6px; }"
+                                % (C["panel"], C["line"]))
+            v = QtWidgets.QVBoxLayout(frame)
+            v.setContentsMargins(16, 12, 16, 14)
+            v.setSpacing(12)
+            head = QtWidgets.QLabel(title)
+            head.setStyleSheet("color: %s; font-weight: 600; font-size: 10pt; background: transparent;" % C["accent"])
+            v.addWidget(head)
+            grid = QtWidgets.QGridLayout()
+            grid.setHorizontalSpacing(16)
+            grid.setVerticalSpacing(10)
+            grid.setColumnMinimumWidth(0, 150)
+            grid.setColumnStretch(2, 1)
+            v.addLayout(grid)
+            v.addStretch(1)
+            cards.append(frame)
+            frame.grid, frame.box = grid, v
+            return frame
+
+        def row(c, label, widgets, tip=""):
+            r = c.grid.rowCount()
+            lab = QtWidgets.QLabel(label)
+            lab.setStyleSheet("background: transparent;")
+            lab.setToolTip(tip)
+            c.grid.addWidget(lab, r, 0, QtCore.Qt.AlignVCenter)
+            h = QtWidgets.QHBoxLayout()
+            h.setSpacing(10)
+            for x in widgets:
+                if isinstance(x, QtWidgets.QAbstractSpinBox):
+                    x.setFixedWidth(FIELD)
+                if tip and not x.toolTip():
+                    x.setToolTip(tip)
+                h.addWidget(x)
+            h.addStretch(1)
+            c.grid.addLayout(h, r, 1, 1, 2)
+            return lab
+
+        def note(c, widget_or_text):
+            lab = widget_or_text if isinstance(widget_or_text, QtWidgets.QLabel) else QtWidgets.QLabel(widget_or_text)
+            lab.setStyleSheet("color: %s; font-size: 8pt; background: transparent;" % C["dim"])
+            lab.setWordWrap(True)
+            r = c.grid.rowCount()
+            c.grid.addWidget(lab, r, 1, 1, 2)
+            c.grid.setRowMinimumHeight(r, 0)
+            return lab
+
+        def line(c):
+            """A thin line across the card, between groups of settings."""
+            frame = QtWidgets.QFrame()
+            frame.setFixedHeight(1)
+            frame.setStyleSheet("background: %s; border: none;" % C["line"])
+            r = c.grid.rowCount()
+            c.grid.addWidget(frame, r, 0, 1, 3)
+            return frame
+
+        def toggle(key, default, slot=None):
+            t = Toggle()
+            t.setChecked(bool(self.settings.get(key, default)))
+            t.toggled.connect(slot or (lambda v, key=key: self._save_setting(key, v)))
+            return t
+
+        # -- General
+        gen = card("General")
+        self.c_auto = toggle("auto_start", False)
+        row(gen, "Start render on open", [self.c_auto], "Render as soon as the window opens, without clicking Render")
+        self.c_next = toggle("auto_next", False)
+        row(gen, "Start next render when one ends", [self.c_next],
+            "When a render finishes, the next render still waiting to be started starts by itself, in the order of the\n"
+            "cards, and so on. A render you stopped stays stopped and does not start the next one.")
+        self.c_clear = toggle("clear_cache_auto", False)
+        row(gen, "Clear Nuke cache without asking", [self.c_clear],
+            "Render frees the memory of the Nukes you have open (buffers, playback cache and Blink cache; the disk cache stays)\n"
+            "so the render has it.\n"
+            "On: it does so at every Render, without asking.\n"
+            "Off: Render asks first, as an open Nuke's cache is work in progress. The render starts either way.")
+        self.c_sound = toggle("end_sound", True)
+        row(gen, "Sound when a render ends", [self.c_sound],
+            "One sound when a render finishes, another when it fails, leaves broken frames or the pixel check finds a problem.\n"
+            "It comes when the checks that are on are through: the frame check, then the pixel check. With several renders,\n"
+            "for each of them. A render you stopped and a render already on disk when it opens stay silent.")
+        line(gen)
+        self.c_frames = toggle("check_frames", True)
+        row(gen, "Check frames when a render ends", [self.c_frames],
+            "When a render ends (or you stop it), each frame it rendered: is the file there, not empty, whole and readable,\n"
+            "and is it far smaller than the rest. Then the pixel check, when that is on.\n"
+            "Off: a frame that came out broken counts as done until you press Check frames. Render still checks what is on disk before it starts.")
+        self.c_pixels = toggle("check_pixels", True)
+        row(gen, "Check pixels when a render ends", [self.c_pixels],
+            "In R, G and B only: NaN and inf, black, empty or one-colour frames, frames exactly the same as another; and a size,\n"
+            "bit depth or compression unlike the rest of the sequence, in the background. The other layers of a multi-layer EXR\n"
+            "(AOVs, utility passes such as SmartVector, depth or normals) are not looked at; a frame of such layers only: no RGB.\n"
+            "EXR, PNG, JPEG, TIFF and DPX (NaN and inf only in EXR, the others hold whole numbers); other formats: only frames that are the same.\n"
+            "A movie: blank frames and frames the same as the one before (frozen), read with ffmpeg.\n"
+            "About 0.1 s a 4K EXR, a little more for a PNG. It needs numpy (and OpenEXR for EXR), and only reports: nothing renders again by itself.")
+        self.c_open = toggle("check_on_open", True)
+        row(gen, "Check pixels when a render opens", [self.c_open],
+            "The same check on the frames already on disk, in the background, as soon as a render opens here.\n"
+            "Render stops it, and a render that ends checks them all anyway. Frames on disk are always checked for missing, empty or cut-off files when a render opens.")
+        threading.Thread(target=lambda: [sound_file(name) for name in SOUNDS], daemon=True).start()
+        line(gen)
+        self.s_max = QtWidgets.QSpinBox()
+        self.s_max.setRange(1, MAX_RENDERS)
+        self.s_max.setValue(self.manager.max_renders)
+        self.s_max.valueChanged.connect(lambda v: self._save_setting("max_renders", v))
+        row(gen, "Max renders at once", [self.s_max],
+            "1: renders go one after another; the next one starts loading while the last chunks\n"
+            "of the current one finish, so the PC never sits idle. That gets the first shot done soonest.\n"
+            "2-3: renders run side by side and share the Nuke processes. Not faster in total,\n"
+            "but you see frames of every shot early.")
+        self.c_all_workers = toggle("show_all_workers", True, self._all_workers_changed)
+        row(gen, "Show processes of all renders", [self.c_all_workers],
+            "On: Workers and System show the Nuke processes of every render in the window.\n"
+            "Off: only those of the render you picked at the top.")
+        self.c_dim = toggle("dim_others", True, self._dim_changed)
+        row(gen, "Dim other renders in Workers", [self.c_dim],
+            "On: in the Workers timeline the chunks of the render you picked are bright, the others dimmed.\n"
+            "Off: every render's chunks are equally bright.")
+        self.c_hooks = toggle("show_hooks", True, self._hooks_shown_changed)
+        row(gen, "Show render hooks in Workers", [self.c_hooks],
+            "On: the beforeRender and afterRender hooks of the script (the Write's, or a pipeline's) are purple blocks on the\n"
+            "Workers timeline: beforeRender between a Nuke's script load and its first chunk, afterRender after the last one.\n"
+            "Off: not drawn. They run either way, and the Log still says when and how long.")
+        self.c_clean = toggle("log_cleanup", True, lambda v: (self._save_setting("log_cleanup", v),
+                                                               self.s_days.setEnabled(v)))
+        self.s_days = QtWidgets.QSpinBox()
+        self.s_days.setRange(1, 3650)
+        self.s_days.setSuffix(" days")
+        self.s_days.setValue(int(self.settings.get("log_days", 15)))
+        self.s_days.setEnabled(self.c_clean.isChecked())
+        self.s_days.valueChanged.connect(lambda v: self._save_setting("log_days", v))
+        row(gen, "Delete old render logs", [self.c_clean, self.s_days],
+            "When JKrender opens, render folders in the log folder (script snapshot, job and the\n"
+            "processes' logs) whose newest file is older than this are deleted. Rendered frames are not touched.\n"
+            "The script copies of renders not open, untouched for an hour, are packed (.gz, about a fifth of the size);\n"
+            "one is unpacked when its render runs again.")
+        note(gen, "Snapshots and logs in the log folder; rendered frames are never touched.")
+        # Check for updates: a button of its own right above Reset to defaults, what it found beside it
+        self.b_update = QtWidgets.QPushButton("Check for updates")
+        self.b_update.setToolTip("Asks GitHub now for the newest JKrender release. A newer one opens the update window "
+                                 "(What's new, Update, Later),\nalso one you said not to show again. JKrender asks by itself "
+                                 "at every start, too.")
+        self.update_status = QtWidgets.QLabel("JKrender %s" % APP_VERSION)
+        self.update_status.setStyleSheet("background: transparent; color: %s;" % C["dim"])
+        self.b_update.clicked.connect(self._check_update_now)
+        upd = QtWidgets.QWidget()
+        upd.setObjectName("updateRow")
+        upd.setStyleSheet("#updateRow { background: transparent; }")  # the row only: the button keeps its own look
+        upd_lay = QtWidgets.QHBoxLayout(upd)
+        upd_lay.setContentsMargins(0, 0, 0, 0)
+        upd_lay.setSpacing(10)
+        upd_lay.addWidget(self.b_update)
+        upd_lay.addWidget(self.update_status)
+        upd_lay.addStretch(1)
+        gen.box.addWidget(upd)
+        self.b_reset = QtWidgets.QPushButton("Reset to defaults")
+        self.b_reset.setToolTip("Every setting back to how JKrender comes. What it learned about scripts is kept.")
+        self.b_reset.clicked.connect(self._reset_settings)
+        gen.box.addWidget(self.b_reset, 0, QtCore.Qt.AlignLeft)
+
+        # -- Job: the render picked at the top
+        jobs = card("Job")
+        self.c_slate = Toggle()
+        self.c_slate.setChecked(bool(self.settings.get("slate", True)))
+        self.c_slate.toggled.connect(lambda v: self._slate_changed("slate", v))
+        self.l_slate_frame = QtWidgets.QLabel("")
+        self.l_slate_frame.setStyleSheet("background: transparent;")
+        row(jobs, "Slate frame", [self.c_slate, self.l_slate_frame],
+            "The project range starts after the slate.\n"
+            "With this on, every render also renders the frame before its first frame as the slate (1001-1020: 1000).")
+        self.e_frames = QtWidgets.QLineEdit(self.engine.frames_text)
+        self.e_frames.setFixedWidth(FIELD * 2)
+        self.e_frames.editingFinished.connect(self._frames_edited)
+        row(jobs, "Framerange", [self.e_frames],
+            "The frames of the render picked at the top; every render has its own. Nuke sends the Write's range.\n"
+            "Like 1001-1100 or 1001-1010,1050. Empty: back to what Nuke sent. The slate frame comes on top of them.\n"
+            "Frames already on disk stay where they are. Locked while this render runs.")
+        self.b_test = QtWidgets.QPushButton("Test this script…")
+        self.b_test.setToolTip("Renders a piece of the selected render's script with a few Processes x Threads x Cache setups\n"
+                               "and recommends the fastest for it on this PC. Nothing changes unless you take it.")
+        self.b_test.clicked.connect(lambda: ScriptTest(self, self.engine).show())
+        row(jobs, "Test", [self.b_test])
+
+        # -- Performance and Optimization, under Job
+        perf = card("Performance and Optimization")
+        self.c_gpu = toggle("use_gpu", True)
+        row(perf, "Use GPU", [self.c_gpu],
+            "Start the Nuke processes with --gpu, so GPU nodes (Kronos, ZDefocus, Denoise, ...)\n"
+            "render on the graphics card instead of the CPU. Every process uses the same GPU and\n"
+            "its own VRAM: System > GPU shows how much each takes. Applies to processes started from now on.")
+        note(perf, "Kronos, ZDefocus, Denoise ... on the graphics card. Each process takes its own VRAM.")
+        self.c_fresh = QtWidgets.QComboBox()
+        for key, text in FRESH_MODES:
+            self.c_fresh.addItem(text, key)
+        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(self.settings.get("fresh_after_chunk", "short"))))
+        self.c_fresh.currentIndexChanged.connect(lambda i: self._save_setting("fresh_after_chunk", self.c_fresh.itemData(i)))
+        row(perf, "Reload Nuke", [self.c_fresh],
+            "A process closes after its chunk and a new one opens the script again, with its RAM and VRAM back at the start.\n"
+            "Some scripts make Nuke keep memory it no longer needs, chunk after chunk: a reload leaves room for more processes.\n"
+            "Each costs one script load.\n\n"
+            "When memory is full: only once the RAM or VRAM has stayed\n"
+            "at Reload Nuke at for Reload Nuke after (Performance and Optimization), one process at a time.\n"
+            "After every chunk: always. Test this script can tell whether it pays for a script.")
+        note(perf, "When memory is full: the process holding the most reloads, once RAM or VRAM stays over Reload Nuke at. "
+                   "After every chunk: every process, every chunk.")
+        self.c_reload_after = QtWidgets.QComboBox()
+        for key, text in (("frame", "Frame"), ("chunk", "Chunk")):
+            self.c_reload_after.addItem(text, key)
+        self.c_reload_after.setCurrentIndex(max(0, self.c_reload_after.findData(self.settings.get("reload_after", "frame"))))
+        self.c_reload_after.currentIndexChanged.connect(
+            lambda i: self._save_setting("reload_after", self.c_reload_after.itemData(i)))
+        row(perf, "Reload after", [self.c_reload_after],
+            "When a reload for memory (When memory is full, the 1.3 rule) happens.\n"
+            "Frame: right after the frame the process just finished and wrote; the rest of its chunk goes back to the queue\n"
+            "for the others. Nothing is lost, and the memory is free within a frame.\n"
+            "Chunk: once its whole chunk is done; with long chunks that can take minutes, the frames of a chunk stay together\n"
+            "in one process (a node that reads the frames around it finds them in its cache).\n"
+            "A process handing its place to another render, or closing because the memory holds the places down,\n"
+            "goes the same way. After every chunk and Close after this chunk are always after the chunk.")
+        note(perf, "Frame: right after the frame it is on, the rest of its chunk goes to the others; nothing is lost. "
+                   "Chunk: once its chunk is done, the chunk's frames stay in one process.")
+        self.s_reload_ram, self.s_reload_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        reload_parts = []
+        for name, box, key in (("RAM", self.s_reload_ram, "reload_ram"), ("VRAM", self.s_reload_vram, "reload_vram")):
+            box.setRange(50, 98)
+            box.setSuffix(" %")
+            box.setValue(int(self.settings.get(key, 95)))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            reload_parts += [lab, box]
+        self.s_reload_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_reload_vram.setEnabled)
+        row(perf, "Reload Nuke at", reload_parts,
+            "Once the RAM or the VRAM has stayed at or over this %% for Reload Nuke after (Reload Nuke: When memory is full),\n"
+            "the process holding the most of it reloads Nuke after its frame or chunk (Reload after) and starts small again, one process at a time.\n"
+            "It starts again as soon as it fits: at once when it had grown (a leak), or once there is room, so one\n"
+            "process fewer runs while the script needs that much. Places closed for memory come back only under this %%." % ())
+        note(perf, "Held at this for Reload Nuke after, the process holding the most reloads after its frame or chunk; it starts again once it fits.")
+        self.s_reload_hold = QtWidgets.QSpinBox()
+        self.s_reload_hold.setRange(1, 600)
+        self.s_reload_hold.setSuffix(" s")
+        self.s_reload_hold.setValue(int(reload_hold(self.settings)))
+        self.s_reload_hold.valueChanged.connect(lambda v: self._save_setting("reload_hold", v))
+        row(perf, "Reload Nuke after", [self.s_reload_hold],
+            "How long the RAM or VRAM has to stay at or over Reload Nuke at before the process holding the most reloads.\n"
+            "Short: memory is given back sooner, but a moment over the mark (one heavy frame) already costs a script load.\n"
+            "Long: fewer reloads, but the PC stays nearer to Kill at for longer. %d s unless set." % FRESH_HOLD)
+        note(perf, "How long the memory stays over Reload Nuke at before a process reloads.")
+        self.s_kill_ram, self.s_kill_vram = QtWidgets.QSpinBox(), QtWidgets.QSpinBox()
+        kill_parts = []
+        for name, box, key, default, limit_box in (("RAM", self.s_kill_ram, "kill_ram", 98, self.s_reload_ram),
+                                                    ("VRAM", self.s_kill_vram, "kill_vram", 98, self.s_reload_vram)):
+            box.setRange(limit_box.value(), 99)  # never under Reload Nuke at
+            box.setSuffix(" %")
+            box.setValue(max(limit_box.value(), int(self.settings.get(key, default))))
+            box.valueChanged.connect(lambda v, key=key: self._save_setting(key, v))
+            limit_box.valueChanged.connect(box.setMinimum)
+            lab = QtWidgets.QLabel(name)
+            lab.setStyleSheet("background: transparent;")
+            kill_parts.append(lab)
+            kill_parts.append(box)
+        self.s_kill_vram.setEnabled(self.c_gpu.isChecked())
+        self.c_gpu.toggled.connect(self.s_kill_vram.setEnabled)
+        row(perf, "Kill at", kill_parts,
+            "Nearly out of memory: one process closes at once, mid-frame. While some are still starting, the least loaded of\n"
+            "those (it has done no work yet); otherwise the one holding the most, so one close is enough. A movie goes last.\n"
+            "Its half-written frame is deleted and its chunk goes back to the queue: a little work is lost, the memory is free at once.\n"
+            "Never under Reload Nuke at, so the reload always comes first.\n"
+            "Lower it if the PC freezes before (Windows and the graphics driver need some memory left).")
+        note(perf, "Nearly full, one process closes at once, mid-frame: a starting one first, else the biggest.")
+
+        # -- Processes and Chunks (Processes, Threads and Cache are shared by every render; locked while rendering)
+        procs = card("Processes and Chunks")
+        row(procs, "Processes", [self.s_workers])
+        row(procs, "Threads", [self.s_threads])
+        row(procs, "Cache", [self.s_ram])
+        # Auto | Fixed as two joined buttons; checkable, so they read like radio buttons in the code
+        self.r_chunk_auto = QtWidgets.QPushButton("Auto")
+        self.r_chunk_auto.setToolTip("About 4 chunks per Nuke process, at most 10 frames each:\n"
+                                     "46 frames with 8 processes -> 2, 96 -> 3, 320 and more -> 10.")
+        self.r_chunk_set = QtWidgets.QPushButton("Fixed")
+        self.r_chunk_set.setToolTip("The same chunk size for every render, set on the right")
+        group = QtWidgets.QButtonGroup(w)
+        group.setExclusive(True)
+        for i, b in enumerate((self.r_chunk_auto, self.r_chunk_set)):
+            b.setCheckable(True)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            group.addButton(b)
+            near, far = ("left", "right") if i == 0 else ("right", "left")
+            b.setStyleSheet(
+                "QPushButton { background: %s; border: 1px solid %s; padding: 3px 12px; min-width: 34px;"
+                " border-top-%s-radius: 3px; border-bottom-%s-radius: 3px;"
+                " border-top-%s-radius: 0px; border-bottom-%s-radius: 0px; }"
+                "QPushButton:checked { background: %s; color: #111111; }"
+                "QPushButton:disabled { color: #666666; }"
+                % (C["panel2"], C["line"], near, near, far, far, C["accent"]))
+        self._chunk_group = group
+        auto = bool(self.settings.get("chunk_auto", True))
+        self.r_chunk_auto.setChecked(auto)
+        self.r_chunk_set.setChecked(not auto)
+        self.s_chunk.setToolTip("Frames per chunk for every render. Applies to renders that are not running.")
+        seg_w = QtWidgets.QWidget()
+        seg_w.setStyleSheet("background: transparent;")
+        seg = QtWidgets.QHBoxLayout(seg_w)
+        seg.setContentsMargins(0, 0, 0, 0)
+        seg.setSpacing(0)
+        seg.addWidget(self.r_chunk_auto)
+        seg.addWidget(self.r_chunk_set)
+        row(procs, "Chunk", [seg_w, self.s_chunk])
+        self.r_chunk_auto.toggled.connect(self._chunk_mode_changed)
+        self.c_chunk_auto = toggle("auto_chunk", True)
+        row(procs, "Smaller chunks at the end", [self.c_chunk_auto],
+            "Chunks get smaller towards the end of a render, down to single frames,\n"
+            "so every Nuke process finishes at about the same time.\n"
+            "Off: every chunk keeps the size set under Chunk.")
+        note(procs, "Every process finishes at about the same time.")
+        self._chunk_mode_changed(self.r_chunk_auto.isChecked(), save=False)
+        # Job and Processes and Chunks have a tab of their own, Job, before Settings
+        job_cards = [jobs, procs]
+        for c in job_cards:
+            cards.remove(c)
+        w2 = QtWidgets.QWidget()
+        outer2 = QtWidgets.QGridLayout(w2)
+        outer2.setContentsMargins(12, 12, 12, 12)
+        outer2.setSpacing(12)
+        self._job_scroll = ReflowScroll(w2, outer2, job_cards)
+        self._job_scroll.reflow(10000)
+        scroll = ReflowScroll(w, outer, cards)
+        scroll.reflow(10000)
+        return scroll
+
+    def _chunk_mode_changed(self, auto, save=True):
+        if save:
+            self._save_setting("chunk_auto", auto)
+            if not auto:
+                self._save_setting("chunk_size", self.s_chunk.value())
+        self._apply_chunks()
+
+    def _apply_chunks(self):
+        for e in self.manager.engines:
+            e.apply_chunk_setting()
+        self._show_chunk()
+        self.frame_map.update()
+
+    def _show_chunk(self):
+        """The chunk box shows the size of the picked render; it can only be typed into with the size set by hand."""
+        self.s_chunk.blockSignals(True)
+        self.s_chunk.setValue(self.engine.chunk_size)
+        self.s_chunk.blockSignals(False)
+        self._sync_controls()
+
+    def _tables(self):
+        # A new name when a table gets a column: restoreState takes an older layout whole, with its widths on the wrong columns
+        return {"system": self.worker_table, "chunks": self.chunk_table, "frames_checks": self.frames_view}
+
+    def _restore_headers(self):
+        """Column widths and order of every table as they were when the window last closed."""
+        for name, table in self._tables().items():
+            head = table.horizontalHeader()
+            self._header_defaults.setdefault(name, head.saveState())
+            saved = self.settings.get("headers", {}).get(name)
+            if saved:
+                built = head.saveState()
+                head.restoreState(QtCore.QByteArray.fromBase64(saved.encode("ascii")))
+                if head.count() != table.model().columnCount():  # saved before a column was added or removed
+                    head.restoreState(built)
+                    continue
+                if name == "chunks":
+                    self._chunk_cols_sized = True  # keep the saved widths instead of fitting them to the first chunks
+
+    def _save_headers(self):
+        self._save_setting("headers", {name: bytes(t.horizontalHeader().saveState().toBase64()).decode("ascii")
+                                       for name, t in self._tables().items()})
+
+    def _reset_headers(self):
+        for name, table in self._tables().items():
+            table.horizontalHeader().restoreState(self._header_defaults[name])
+        self._chunk_cols_sized = False
+        for col in range(1, self.worker_table.columnCount()):
+            self.worker_table.setColumnHidden(col, self.worker_table.horizontalHeaderItem(col).text() in SYSTEM_HIDDEN)
+
+    def _reset_settings(self):
+        if (QtWidgets.QMessageBox.question(self, "Reset to defaults",
+                                          "Put every setting back to how JKrender comes?\n"
+                                          "The columns of every table go back to their widths and order too.")
+                != QtWidgets.QMessageBox.Yes):
+            return
+        plan = auto_plan(10 ** 6, False)
+        kept = {k: self.settings[k] for k in ("pass_env",) if k in self.settings}  # no switch for it: lost for good otherwise
+        self.settings.clear()
+        self.settings.update(DEFAULT_SETTINGS)
+        self.settings.update(kept)
+        write_settings(self.settings)
+        for box, value in ((self.s_workers, plan["workers"]), (self.s_threads, plan["threads"]), (self.s_ram, plan["ram"]),
+                           (self.s_max, MAX_RENDERS), (self.s_days, 15),
+                           (self.s_reload_ram, 95), (self.s_reload_vram, 95), (self.s_reload_hold, int(FRESH_HOLD)),
+                           (self.s_kill_ram, 98), (self.s_kill_vram, 98)):
+            box.setValue(value)
+        for box, on in ((self.c_auto, False), (self.c_next, False), (self.c_clear, False), (self.c_frames, True), (self.c_pixels, True), (self.c_open, True), (self.c_sound, True), (self.c_slate, True), (self.c_all_workers, True), (self.c_dim, True), (self.c_hooks, True), (self.c_clean, True),
+                        (self.c_gpu, True), (self.c_chunk_auto, True),
+                        (self.r_chunk_auto, True)):
+            box.setChecked(on)
+        self.c_fresh.setCurrentIndex(max(0, self.c_fresh.findData(DEFAULT_SETTINGS["fresh_after_chunk"])))
+        self.c_reload_after.setCurrentIndex(max(0, self.c_reload_after.findData(DEFAULT_SETTINGS["reload_after"])))
+        self._apply_chunks()
+        self._reset_headers()
+        self.settings.pop("system_hidden", None)
+        self.settings.pop("system_order", None)
+        write_settings(self.settings)
+        self.engine.note("Settings reset to defaults", "ok")
+
+    def _hooks_shown_changed(self, on):
+        self._save_setting("show_hooks", on)
+        self.gantt.show_hooks = on
+        self.gantt.update()
+
+    def _dim_changed(self, on):
+        self._save_setting("dim_others", on)
+        self.gantt.dim_others = on
+        self.gantt.update()
+
+    def _all_workers_changed(self, on):
+        self._save_setting("show_all_workers", on)
+        self.gantt.show_all = on
+        self.gantt.update()
+        self._update_system()
+
+    def _slate_changed(self, key, value):
+        """Renders that are not running take the new range straight away; running ones keep theirs."""
+        self._save_setting(key, value)
+        for e in self.manager.engines:
+            if e.state in ("ready", "stopped", "done", "failed") and e.set_range(e.default_range()):
+                e.scan_disk()
+                e.done_if_on_disk()
+        self.frames_model.refilter()
+        self._sync_controls()
+        self._slow_tick()
+        self.frame_map.update()
+
+    def _chunks_table(self):
+        self.chunk_table = QtWidgets.QTableWidget(0, 9)
+        self.chunk_table.setHorizontalHeaderLabels(
+            ["Chunk", "Frames", "Count", "State", "Process", "Done", "Time", "s / frame", "Note"])
+        self.chunk_table.verticalHeader().hide()
+        self.chunk_table.setAlternatingRowColors(True)
+        self.chunk_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.chunk_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.chunk_table.horizontalHeader().setStretchLastSection(True)
+        self.chunk_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.chunk_table.customContextMenuRequested.connect(self._chunk_menu)
+        return self.chunk_table
+
+    def _output_tab(self):
+        """Frames list for image sequences; one movie file with its details for MOV / MP4 / MXF."""
+        self.out_pages = QtWidgets.QStackedWidget()
+        for page in (self._frames_page(), self._movie_page()):
+            # In a low window the pane is lower than what the page needs (preview, player bar, frame info, list): the page
+            # then scrolls instead of the player bar and the info being drawn over the picture.
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidget(page)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.out_pages.addWidget(scroll)
+        return self.out_pages
+
+    def _movie_page(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)  # list above, preview below
+        lay.setContentsMargins(8, 8, 8, 8)
+        left = QtWidgets.QVBoxLayout()
+        bar = QtWidgets.QHBoxLayout()
+        for text, fn in (("Check video", self._movie_check), ("Open folder", self._open_folder),
+                         ("Delete video", lambda: self._delete_all())):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(lambda _=False, fn=fn: fn())  # clicked(checked) must not reach fn
+            bar.addWidget(b)
+        self.b_delete_movie = b
+        self.b_delete_movie.setToolTip("Delete the rendered video file from disk")
+        bar.addStretch(1)
+        left.addLayout(bar)
+        self.movie_view = QtWidgets.QTextBrowser()
+        left.addWidget(self.movie_view, 1)
+        lay.addLayout(left, 3)
+        right = QtWidgets.QVBoxLayout()
+        self.movie_box = QtWidgets.QWidget()  # preview, bar and frame number: moves to the big view and back
+        mbox = QtWidgets.QVBoxLayout(self.movie_box)
+        mbox.setContentsMargins(0, 0, 0, 0)
+        mbox.setSpacing(6)
+        right.addWidget(self.movie_box, 1)
+        self._movie_home = right
+        self.movie_preview = ZoomView()
+        self.movie_preview.setToolTip("Mouse wheel zooms, drag moves, double-click fits the frame again")
+        mbox.addWidget(self.movie_preview, 1)
+        nav = QtWidgets.QHBoxLayout()
+        self.b_play = QtWidgets.QToolButton()
+        self.b_play.setFixedSize(34, 30)
+        self.b_play.setIconSize(QtCore.QSize(22, 22))
+        self.b_play.setIcon(play_icon(False))
+        self.b_play.setToolTip("Play / Pause (loops)")
+        self.b_play.setStyleSheet(
+            "QToolButton { background: %s; border: 1px solid %s; border-radius: 3px; }"
+            "QToolButton:hover { border-color: %s; } QToolButton:disabled { background: %s; }"
+            % (C["panel2"], C["line"], C["accent"], C["bg"]))
+        self.b_play.clicked.connect(self._movie_toggle)
+        nav.addWidget(self.b_play)
+        self.movie_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.movie_slider.setRange(0, 0)
+        self.movie_slider.sliderPressed.connect(self._movie_stop)
+        self.movie_slider.sliderReleased.connect(lambda: self._movie_still(self.movie_slider.value()))
+        nav.addWidget(self.movie_slider, 1)
+        self._player = None
+        self._movie_index = 0
+        self._play_timer = QtCore.QTimer(self)
+        self._play_timer.timeout.connect(self._movie_next)
+        self.b_big_movie = QtWidgets.QToolButton()
+        self.b_big_movie.setFixedSize(34, 30)
+        self.b_big_movie.setIconSize(QtCore.QSize(20, 20))
+        self.b_big_movie.setIcon(nav_icon("big"))
+        self.b_big_movie.setToolTip("Player as big as the three panes (Esc goes back)")
+        self.b_big_movie.setStyleSheet(self.b_play.styleSheet())
+        self.b_big_movie.clicked.connect(self._toggle_big)
+        nav.addWidget(self.b_big_movie)
+        mbox.addLayout(nav)
+        self.movie_frame_label = QtWidgets.QLabel("")
+        self.movie_frame_label.setObjectName("dim")
+        mbox.addWidget(self.movie_frame_label)
+        lay.insertLayout(0, right, 2)  # preview on top, the list under it
+        self._movie_size_last = None
+        return w
+
+    def _frames_page(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)  # list above, preview below
+        lay.setContentsMargins(8, 8, 8, 8)
+        left = QtWidgets.QVBoxLayout()
+        bar = QtWidgets.QHBoxLayout()
+        self.out_filter = QtWidgets.QComboBox()
+        self.out_filter.addItems(["All", "Rendered", "Problems", "Framerange"])
+        self.out_filter.currentTextChanged.connect(self._out_filter)
+        bar.addWidget(self.out_filter)
+        for text, fn in (("Check frames", self._verify), ("Check pixels", self._check_pixels), ("Open folder", self._open_folder),
+                         ("Delete", self._delete_dialog)):
+            b = QtWidgets.QPushButton(text)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+            if text == "Check frames":
+                b.setToolTip("Looks at the files of all frames again: there, not empty, whole and readable, and not far smaller than the rest.")
+            if text == "Check pixels":
+                b.setToolTip("Looks at the RGB of every rendered frame, in the background: NaN and inf, black, empty or one-colour frames,\n"
+                             "frames exactly the same as another anywhere in the sequence, and a size, bit depth or compression unlike the rest.\n"
+                             "The other layers of a multi-layer EXR (AOVs, utility passes) are not looked at.")
+        self.b_delete = b
+        self.b_delete.setToolTip("Delete rendered frames of this render from disk: a frame range, or all of them")
+        bar.addStretch(1)
+        left.addLayout(bar)
+        self.out_summary = QtWidgets.QLabel("")
+        self.out_summary.setObjectName("dim")
+        self.out_summary.setWordWrap(True)
+        left.addWidget(self.out_summary)
+        self.pixels_bar = QtWidgets.QProgressBar()
+        self.pixels_bar.setTextVisible(False)
+        self.pixels_bar.setMaximumHeight(6)
+        self.pixels_bar.hide()
+        left.addWidget(self.pixels_bar)
+        self.frames_model = FramesModel(self.engine)
+        self.frames_view = QtWidgets.QTableView()
+        self.frames_view.setModel(self.frames_model)
+        self.frames_view.verticalHeader().hide()
+        self.frames_view.verticalHeader().setDefaultSectionSize(20)
+        self.frames_view.setAlternatingRowColors(True)
+        self.frames_view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.frames_view.horizontalHeader().setStretchLastSection(True)
+        for col, width in enumerate((60, 66, 54, 64, 64, 70, 121)):  # narrow, so the checks (last) fit in the pane
+            self.frames_view.setColumnWidth(col, width)
+        self.frames_view.selectionModel().currentRowChanged.connect(
+            lambda cur, prev: self._show_frame(self.frames_model.rows[cur.row()]) if cur.isValid() else None)
+        self.frames_view.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.frames_view.customContextMenuRequested.connect(self._frames_menu)
+        left.addWidget(self.frames_view, 1)
+        lay.addLayout(left, 3)
+        right = QtWidgets.QVBoxLayout()
+        self.preview = ZoomView()  # zooms like the movie player
+        self.preview.set_text("Click a frame to see it")
+        # Small minimum, and it takes what is left: in a low panel the picture shrinks instead of being drawn over the
+        # frame info under it. Not "Ignored": with the frame info's word wrap, Qt then counted 0 px for the picture
+        # and the player bar and the info landed on it (0.99.72).
+        self.preview.setMinimumSize(200, 120)
+        self.preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.preview.zoomed_in.connect(lambda: self._preview_frame is not None and self._show_frame(self._preview_frame))
+        self.preview_info = QtWidgets.QLabel("")
+        self.preview_info.setObjectName("dim")
+        self.preview_info.setWordWrap(True)
+        self.preview_info.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.preview.installEventFilter(self)  # double-click: big preview
+        self.preview.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.preview.customContextMenuRequested.connect(self._preview_menu)
+        self.preview.setToolTip("Mouse wheel zooms, drag moves. Double-click fits the frame again, or, when it fits,\n"
+                                "makes the preview as big as the three panes (Esc goes back)")
+        # the preview, its frame bar and the frame info in one box, so the box can move to the big view and back
+        self.preview_box = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(self.preview_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
+        box.addWidget(self.preview, 1)
+        box.addLayout(self._frame_bar())
+        box.addWidget(self.preview_info)
+        right.addWidget(self.preview_box, 1)
+        self._preview_home = right
+        lay.insertLayout(0, right, 2)  # preview on top, the list under it
+        return w
+
+    def _frame_bar(self):
+        """Previous / Play / next, a slider over every frame of the render, the frame number, and Enlarge."""
+        bar = QtWidgets.QHBoxLayout()
+        bar.setSpacing(4)
+
+        def tool(icon, tip, slot):
+            b = QtWidgets.QToolButton()
+            b.setFixedSize(30, 26)
+            b.setIconSize(QtCore.QSize(18, 18))
+            b.setIcon(icon)
+            b.setToolTip(tip)
+            b.setStyleSheet("QToolButton { background: %s; border: 1px solid %s; border-radius: 3px; }"
+                            "QToolButton:hover { border-color: %s; }" % (C["panel2"], C["line"], C["accent"]))
+            b.clicked.connect(slot)
+            bar.addWidget(b)
+            return b
+
+        tool(nav_icon("prev"), "Previous frame", lambda: self._step_frame(-1))
+        self.b_frame_play = tool(play_icon(False), "Play / Pause the rendered frames (loops)", self._frame_play_toggle)
+        tool(nav_icon("next"), "Next frame", lambda: self._step_frame(1))
+        self.frame_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.frame_slider.setRange(0, 0)
+        self.frame_slider.valueChanged.connect(self._frame_slider_moved)
+        self.frame_slider.sliderPressed.connect(self._frame_play_stop)
+        bar.addWidget(self.frame_slider, 1)
+        self.frame_label = QtWidgets.QLabel("")
+        self.frame_label.setMinimumWidth(56)
+        self.frame_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        bar.addWidget(self.frame_label)
+        self.b_big = tool(nav_icon("big"), "Preview as big as the three panes (Esc goes back)", self._toggle_big)
+        self._frame_timer = QtCore.QTimer(self)
+        self._frame_timer.timeout.connect(self._frame_play_step)
+        self._pix_cache = collections.OrderedDict()  # (frame, size or "full", mtime) -> QImage: a second loop plays smoothly
+        self._big = False
+        esc = QtGui.QShortcut(QtGui.QKeySequence("Esc"), self)
+        esc.activated.connect(lambda: self._big and self._toggle_big())
+        return bar
+
+    def _frame_order(self):
+        return self.engine.all_frames()
+
+    def _sync_frame_bar(self, frame):
+        frames = self._frame_order()
+        self.frame_slider.blockSignals(True)
+        self.frame_slider.setRange(0, max(0, len(frames) - 1))
+        if frame in frames:
+            self.frame_slider.setValue(frames.index(frame))
+        self.frame_slider.blockSignals(False)
+        self.frame_label.setText(str(frame) if frame is not None else "")
+
+    def _frame_slider_moved(self, i):
+        frames = self._frame_order()
+        if 0 <= i < len(frames):
+            self._pick_frame(frames[i])
+
+    def _step_frame(self, step):
+        self._frame_play_stop()
+        frames = self._frame_order()
+        if not frames:
+            return
+        cur = frames.index(self._preview_frame) if self._preview_frame in frames else -step
+        self._pick_frame(frames[max(0, min(len(frames) - 1, cur + step))])
+
+    def _frame_playable(self, f):
+        fr = self.engine.frame_info(f)
+        return fr is not None and (fr.state in ("done", "skipped", "bad") or (fr.state == "queued" and fr.old is not None))
+
+    def _frame_play_toggle(self):
+        if self._frame_timer.isActive():
+            self._frame_play_stop()
+            return
+        fps = float(self.engine.job.get("fps") or 24) or 24.0
+        self._frame_timer.start(max(15, int(1000 / fps)))
+        self.b_frame_play.setIcon(play_icon(True))
+
+    def _frame_play_stop(self):
+        if self._frame_timer.isActive():
+            self._frame_timer.stop()
+            self.b_frame_play.setIcon(play_icon(False))
+            if self.preview.zoom > 1.001 and self._preview_frame is not None:
+                self._show_frame(self._preview_frame)  # stopped while zoomed in: real pixels again
+
+    def _preview_menu(self, pos):
+        """Right click on the preview: the EXR on its whole format, or its bbox alone, filling the preview."""
+        menu = QtWidgets.QMenu(self)
+        act = menu.addAction("Show the whole format")
+        act.setCheckable(True)
+        act.setChecked(bool(self.settings.get("preview_format", True)))
+        act.setToolTip("On: an EXR whose bbox is smaller than its format sits in its place on black.\n"
+                       "Off: the bbox alone fills the preview, for a close look at a small element.")
+        menu.setToolTipsVisible(True)
+
+        def switched(on):
+            self._save_setting("preview_format", on)
+            if self._preview_frame is not None:
+                self._show_frame(self._preview_frame)
+
+        act.toggled.connect(switched)
+        menu.exec(self.preview.mapToGlobal(pos))
+
+    def _frame_image(self, frame, path, full):
+        """The frame's picture, at the preview's size or at its own; kept, about 300 MB of them, for a smooth second loop."""
+        ratio = self.preview.devicePixelRatioF()
+        size = (10 ** 6, 10 ** 6) if full else (max(200, int(self.preview.width() * ratio)), max(150, int(self.preview.height() * ratio)))
+        on_format = bool(self.settings.get("preview_format", True))
+        key = (frame, "full" if full else size, os.path.getmtime(path), on_format)
+        image = self._pix_cache.get(key)
+        if image is not None:
+            self._pix_cache.move_to_end(key)
+            return image
+        if full:
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            image = preview_image(path, *size, on_format=on_format)
+        finally:
+            if full:
+                QtWidgets.QApplication.restoreOverrideCursor()
+        self._pix_cache[key] = image
+        while len(self._pix_cache) > 1 and sum(i.sizeInBytes() for i in self._pix_cache.values()) > 300e6:
+            self._pix_cache.popitem(last=False)
+        return image
+
+    def _frame_play_step(self):
+        """Next rendered frame, looping; frames not on disk yet are skipped."""
+        frames = [f for f in self._frame_order() if self._frame_playable(f)]
+        if not frames:
+            self._frame_play_stop()
+            return
+        later = [f for f in frames if self._preview_frame is None or f > self._preview_frame]
+        self._pick_frame(later[0] if later else frames[0])
+
+    def _toggle_big(self):
+        """The preview (or the movie player), with its bar, as big as the three panes; again, Esc or a
+        double-click on a frame preview goes back."""
+        self._big = not self._big
+        if self._big:
+            movie = bool(self.engine.movie)
+            self._big_parts = (self.movie_box, self._movie_home) if movie else (self.preview_box, self._preview_home)
+            self.big_lay.addWidget(self._big_parts[0], 1)
+            self.main_split.hide()
+            self.big_box.show()
+        else:
+            box, home = self._big_parts
+            home.insertWidget(0, box, 1)
+            self.big_box.hide()
+            self.main_split.show()
+        for b in (self.b_big, self.b_big_movie):
+            b.setIcon(nav_icon("small" if self._big else "big"))
+        if self._preview_frame is not None and not self.engine.movie:
+            QtCore.QTimer.singleShot(0, lambda: self._show_frame(self._preview_frame))
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "preview", None) and event.type() == QtCore.QEvent.MouseButtonDblClick:
+            if self.preview.zoom > 1.001:
+                self.preview.reset_view()  # like the movie player: back to the whole frame
+            else:
+                self._toggle_big()
+            return True
+        if event.type() in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease) and event.key() == QtCore.Qt.Key_Space \
+                and isinstance(obj, QtWidgets.QWidget):
+            # Space plays and stops the preview. It never presses a button: after a click on Stop, Qt would press Stop again
+            if obj.window() is self and not isinstance(obj, (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox)):
+                if event.type() == QtCore.QEvent.KeyPress and not event.isAutoRepeat():
+                    button = self.b_play if self.engine.movie else self.b_frame_play
+                    if button.isVisible():
+                        button.click()
+                return True
+            if isinstance(obj, QtWidgets.QAbstractButton):
+                return True
+        if event.type() == QtCore.QEvent.MouseButtonPress and len(getattr(self, "picked", ())) > 1 \
+                and isinstance(obj, QtWidgets.QWidget) and obj.window() is self:
+            # a click anywhere but on a render card (or Render / Pause / Stop) drops the cards picked with Shift
+            w = obj
+            while w is not None:
+                if isinstance(w, RenderCard) or w in (self.b_start, self.b_pause, self.b_stop):
+                    break
+                w = w.parentWidget()
+            else:
+                self.picked = set()
+                self._refresh_cards()
+                self._sync_controls()
+        return super().eventFilter(obj, event)
+
+    def _system_tab(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        tiles = QtWidgets.QHBoxLayout()
+        self.m_cpu = Tile("CPU")
+        self.m_gpu = Tile("GPU")
+        self.m_ram = Tile("RAM")
+        self.m_vram = Tile("VRAM")
+        self.m_dw = Tile("Disk write")
+        self.m_dr = Tile("Disk read")
+        self.m_net = Tile("Network")
+        for t in (self.m_cpu, self.m_ram, self.m_gpu, self.m_vram, self.m_dw, self.m_dr, self.m_net):
+            tiles.addWidget(t, 1)  # all the same width; a long line wraps instead of being cut
+        lay.addLayout(tiles)
+        graphs = QtWidgets.QHBoxLayout()
+        self.g_load = Graph("Load", [("cpu", "CPU", C["accent"]), ("ram", "RAM", C["ram"]),
+                                     ("gpu", "GPU", C["done"]), ("vram", "VRAM", C["vram"])], max_value=100)
+        self.g_load.setToolTip("CPU, RAM, GPU and VRAM use in %.")
+        self.g_io = Graph("Disk / network", [("dw", "write", C["accent"]), ("dr", "read", C["ram"]),
+                                             ("net", "net", C["done"])], unit="MB/s")
+        graphs.addWidget(self.g_load, 1)
+        graphs.addWidget(self.g_io, 1)
+        lay.addLayout(graphs)
+        self.cores = CoreGrid()
+        lay.addWidget(self.cores)
+        self.worker_table = QtWidgets.QTableWidget(0, 19)
+        self.worker_table.setHorizontalHeaderLabels(
+            ["Process", "Script", "PID", "State", "Chunk", "Frame", "CPU", "RAM", "Cache", "GPU", "VRAM", "Frames", "Avg frame",
+             "Script load", "Uptime", "Peak RAM", "Chunks", "Last frame", "File"])
+        self.worker_table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.worker_table.customContextMenuRequested.connect(self._worker_table_menu)
+        self._worker_rows = []
+        self.worker_table.verticalHeader().hide()
+        self.worker_table.setAlternatingRowColors(True)
+        self.worker_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.worker_table.horizontalHeader().setStretchLastSection(True)
+        head = self.worker_table.horizontalHeader()
+        head.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        head.customContextMenuRequested.connect(lambda pos: self._columns_menu(head.mapToGlobal(pos)))
+        head.sectionClicked.connect(lambda _: self._columns_menu(QtGui.QCursor.pos()))
+        names = [self.worker_table.horizontalHeaderItem(c).text() for c in range(self.worker_table.columnCount())]
+        if sys.platform == "darwin":  # Apple silicon: GPU % and GPU memory per process from macOS, the memory part of the RAM
+            self.worker_table.horizontalHeaderItem(names.index("GPU")).setToolTip("GPU use of this Nuke process, as Activity Monitor shows it")
+            self.worker_table.horizontalHeaderItem(names.index("VRAM")).setToolTip(
+                "GPU memory of this Nuke process (Metal, IOSurface, OpenCL), from macOS's footprint.\n"
+                "On a Mac it is part of the RAM: the RAM column (the footprint, as Activity Monitor shows it) includes it.")
+
+        def arrange(order, hidden):
+            for i, name in enumerate(n for n in order if n in names):
+                head.moveSection(head.visualIndex(names.index(name)), i)
+            for col in range(1, len(names)):
+                self.worker_table.setColumnHidden(col, names[col] in hidden)
+
+        arrange(SYSTEM_ORDER, SYSTEM_HIDDEN)
+        for name, width in SYSTEM_WIDTHS.items():
+            self.worker_table.setColumnWidth(names.index(name), width)
+        self._header_defaults = {"system": head.saveState()}
+        order = list(self.settings.get("system_order", SYSTEM_ORDER))
+        if "File" not in order:  # saved before it was there: after Script
+            order.insert(order.index("Script") + 1 if "Script" in order else 1, "File")
+        arrange(order, set(self.settings.get("system_hidden", SYSTEM_HIDDEN)))
+        head.setSectionsMovable(True)  # drag a column by its header, or use the arrows in the header menu
+        head.sectionMoved.connect(lambda *_: self._save_column_order())
+        lay.addWidget(self.worker_table, 1)
+        return w
+
+    def _save_column_order(self):
+        t = self.worker_table
+        head = t.horizontalHeader()
+        self._save_setting("system_order", [t.horizontalHeaderItem(head.logicalIndex(v)).text()
+                                            for v in range(t.columnCount())])
+
+    def _columns_menu(self, global_pos):
+        """A click on the System table's header: tick the columns to show, arrows to change their order.
+        Process always shows."""
+        t = self.worker_table
+        head = t.horizontalHeader()
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("Columns")
+        panel = QtWidgets.QWidget()  # one widget for every row, so the menu stays open while ticking and moving
+        rows = QtWidgets.QVBoxLayout(panel)
+        rows.setContentsMargins(6, 2, 6, 2)
+        rows.setSpacing(0)
+        order = [c for c in sorted(range(t.columnCount()), key=head.visualIndex) if c != 0]
+
+        def move(col, step):
+            i = order.index(col)
+            j = i + step
+            if not 0 <= j < len(order):
+                return
+            head.moveSection(head.visualIndex(col), head.visualIndex(order[j]))  # saves via sectionMoved
+            order[i], order[j] = order[j], order[i]
+            row = rows.itemAt(i).widget()
+            rows.removeWidget(row)
+            rows.insertWidget(j, row)
+
+        for col in order:
+            row = QtWidgets.QWidget()
+            line = QtWidgets.QHBoxLayout(row)
+            line.setContentsMargins(8, 0, 0, 0)
+            box = QtWidgets.QCheckBox(t.horizontalHeaderItem(col).text())
+            box.setChecked(not t.isColumnHidden(col))
+            box.setStyleSheet("QCheckBox { padding: 4px 6px; }")
+            box.toggled.connect(lambda on, c=col: self._column_toggled(c, on))
+            line.addWidget(box, 1)
+            for arrow, step, tip in (("▲", -1, "Move left"), ("▼", 1, "Move right")):
+                b = QtWidgets.QToolButton()
+                b.setText(arrow)
+                b.setToolTip(tip)
+                b.setAutoRaise(True)
+                b.setFixedSize(22, 22)
+                b.clicked.connect(lambda _=False, c=col, s=step: move(c, s))
+                line.addWidget(b)
+            rows.addWidget(row)
+        act = QtWidgets.QWidgetAction(menu)
+        act.setDefaultWidget(panel)
+        menu.addAction(act)
+        menu.addSeparator()
+        menu.addAction("Show all columns", lambda: [self._column_toggled(c, True) for c in range(1, t.columnCount())])
+        menu.exec(global_pos)
+
+    def _column_toggled(self, col, on):
+        t = self.worker_table
+        t.setColumnHidden(col, not on)
+        self._save_setting("system_hidden", [t.horizontalHeaderItem(c).text() for c in range(1, t.columnCount())
+                                             if t.isColumnHidden(c)])
+
+    def _log_tab(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        lay.setContentsMargins(8, 8, 8, 8)
+        bar = QtWidgets.QHBoxLayout()
+        self.log_source = QtWidgets.QComboBox()
+        self.log_source.addItems(["All", "JKrender only", "Errors and warnings"])
+        self.log_source.currentTextChanged.connect(self._log_refilter)
+        bar.addWidget(self.log_source)
+        b = QtWidgets.QPushButton("Open log folder")
+        b.clicked.connect(lambda: self._open_path(self.engine.log_dir))
+        bar.addWidget(b)
+        bar.addStretch(1)
+        lay.addLayout(bar)
+        self.log_view = QtWidgets.QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMaximumBlockCount(30000)
+        self.log_view.setStyleSheet("font-family: Consolas, monospace; font-size: 8.5pt;")
+        lay.addWidget(self.log_view, 1)
+        return w
+
+    def _details_tab(self):
+        self.details = QtWidgets.QTextBrowser()
+        self.details.setOpenExternalLinks(False)
+        return self.details
+
+    # ---- controls -----------------------------------------------------------
+    def _save_setting(self, key, value):
+        self.settings[key] = value
+        write_settings(self.settings)
+
+    def _ask_clear_cache(self):
+        """Render: an open Nuke's cache is someone's work in progress, so it goes only on a yes, or always with Settings >
+        Clear Nuke cache without asking (1.0.7). The render starts either way."""
+        count = open_nukes()
+        if not count:
+            return
+        if self.settings.get("clear_cache_auto", False):
+            clear_open_nukes()
+            self.engine.note("Cleared the cache of %s (Settings > Clear Nuke cache without asking)"
+                             % ("the open Nuke" if count == 1 else "the %d open Nukes" % count))
+            return
+        what = "the open Nuke" if count == 1 else "the %d open Nukes" % count
+        ask = QtWidgets.QMessageBox.question(
+            self, "JKrender", "Clear the cache of %s?\n\nBuffers, playback cache and Blink cache, so the render has the memory. "
+            "The disk cache stays. The render starts either way." % what,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+        if ask == QtWidgets.QMessageBox.Yes:
+            clear_open_nukes()
+
+    @staticmethod
+    def _on_disk(e):
+        """Frames of a render on disk and fine at the last check."""
+        return sum(1 for fr in e.frames.values() if fr.state in ("done", "skipped"))
+
+    def _ask_render_again(self, engines):
+        """Render again on renders with frames on disk: True renders every frame anew, False only those missing or
+        broken on disk (the rest are skipped, dark green), None cancels. One question for all of them. A movie is one file:
+        always all of it, so it is not asked about. After Stop of a run that rendered every frame anew, "continue" goes
+        on with it (the default): what is on disk of the frames it had not reached is still the old version."""
+        engines = [e for e in engines if not e.movie]
+        on_disk, total = sum(self._on_disk(e) for e in engines), sum(len(e.frames) for e in engines)
+        of = " of %d renders" % len(engines) if len(engines) > 1 else ""
+        going = bool(engines) and all(e.run_all and e.state in ("stopped", "failed") for e in engines)
+        new = sum(1 for e in engines for fr in e.frames.values() if fr.state == "done")
+        if going:
+            text = ("The stopped render%s was rendering every frame again: %d of %d frames are new, the other %d on disk are "
+                    "still the old ones.\n\nGo on with the %d left, render only the frames missing or broken on disk, or "
+                    "start every frame again?" % (of, new, total, total - new, total - new))
+        else:
+            text = ("%d of %d frames%s were on disk at the last check.\n\nRender every frame again, or only the frames "
+                    "missing or broken on disk?" % (on_disk, total, of))
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Question, "JKrender", text, parent=self)
+        cont = box.addButton("Go on (%d left)" % (total - new), QtWidgets.QMessageBox.AcceptRole) if going else None
+        missing = box.addButton("Only missing", QtWidgets.QMessageBox.AcceptRole)
+        every = box.addButton("All frames again", QtWidgets.QMessageBox.AcceptRole)
+        box.addButton(QtWidgets.QMessageBox.Cancel)
+        box.setDefaultButton(cont or missing)
+        box.exec()
+        return {missing: False, every: True, cont: "continue"}.get(box.clickedButton())
+
+    def _start(self):
+        # every picked render that is not running, finished ones too: Render again on several at once
+        starting = [e for e in self._targets() if e.state in ("ready", "stopped", "failed", "done")]
+        asking = [e for e in starting if self._on_disk(e) and not e.movie]
+        choice = False
+        if asking:
+            # frames of them on disk, from this run or found there: every frame again, or only what is missing or broken
+            choice = self._ask_render_again(asking)
+            if choice is None:
+                return
+        if starting:
+            self._ask_clear_cache()
+        for e in self._targets():
+            if e.state == "paused":
+                e.resume()
+            elif e in starting:
+                # a finished movie, or nothing on disk: all of it
+                everything = choice if e in asking else (e.state == "done" or e.nothing_to_render())
+                self.manager.request_start(e, everything=everything)
+        self.frames_model.refilter()
+        self._sync_controls()
+        self._refresh_cards()
+
+    def _pause(self):
+        for e in self._targets():
+            if e.state == "rendering":
+                e.pause()
+        self._sync_controls()
+        self._refresh_cards()
+
+    def _stop(self):
+        for e in self._targets():
+            if e.state == "waiting":
+                self.manager.cancel(e)
+            elif e.state in ("rendering", "paused", "finishing"):
+                e.stop()
+                e.forget_workers()  # its processes leave the timeline and the System table
+        self.gantt.update()
+        self._update_system()
+        self._sync_controls()
+        self._refresh_cards()
+
+    def _show_run_info(self):
+        """What the row of the Render button says about the picked render."""
+        e, m = self.engine, self.manager
+        over = set(e.frames) - set(parse_frames(e.frames_text))  # a running render keeps the slate it started with
+        self.l_slate.setText(str(min(over)) if over else "off")
+        if hasattr(self, "l_slate_frame"):
+            self.l_slate_frame.setText(str(min(over)) if over else "")
+        self.range_edit.setText(e.frames_text)
+        if hasattr(self, "e_frames") and not self.e_frames.hasFocus():
+            self.e_frames.setText(e.frames_text)
+        threads = e._process_size()[0]
+        self.l_info["processes"].setText("1" if e.movie else str(m.total))  # a movie renders in one process
+        self.l_info["threads"].setText(str(threads))
+        self.l_info["cache"].setText("%d GB" % m.ram)
+        self.l_info["chunk"].setText("whole movie" if e.movie else "%d fr" % e.chunk_size)
+
+    def _frames_edited(self):
+        """Settings > Framerange: this render's frames, also when it is picked again later. Empty: what Nuke sent."""
+        e, box = self.engine, self.e_frames
+        text = box.text().strip() or e.sent_frames()
+        problem = frames_problem(text, e.movie)
+        spec = frames_to_spec(parse_frames(text)) if not problem else e.frames_text
+        box.setText(spec)
+        if problem:
+            self._banner("Framerange: " + problem, C["failed"])
+        if spec == e.frames_text or e.state not in ("ready", "stopped", "done", "failed"):
+            box.setText(e.frames_text)
+            return
+        e.frames_text = spec
+        e.set_range(e.default_range())
+        e.apply_chunk_setting()
+        e.scan_disk()
+        e.done_if_on_disk()
+        e.note("Framerange set to %s (Nuke sent %s)" % (spec, e.sent_frames()))
+        self.select(e)
+        self.frames_model.refilter()
+        self._state_changed()
+        self._refresh_cards()
+        self._slow_tick()
+        self.frame_map.update()
+        self._save_queue()
+
+    TIP_WORKERS = ("Nuke processes for all renders together. One render gets them all;\n"
+                   "renders side by side share them (8 -> 4 + 4 -> 3 + 3 + 2).")
+    TIP_THREADS = "Threads per Nuke process (-m)."
+
+    def _show_process_size(self):
+        """Settings > Processes and Threads as the picked render runs: a movie is one file, rendered in one process with
+        every thread, whatever is set for the other renders. Shown only: what is set for the rest stays as it is."""
+        e, m = self.engine, self.manager
+        movie = bool(e.movie)
+        for box, value in ((self.s_workers, 1 if movie else m.total), (self.s_threads, e._process_size()[0])):
+            if box.value() != value:
+                box.blockSignals(True)  # shown, not changed: nothing is saved
+                box.setValue(value)
+                box.blockSignals(False)
+            if movie:
+                box.setEnabled(False)
+        note = "A movie is one file: it renders in one Nuke process with all %d threads.\n" \
+               "The Processes and Threads set for the other renders stay as they are." % e._process_size()[0]
+        self.s_workers.setToolTip(note if movie else self.TIP_WORKERS)
+        self.s_threads.setToolTip(note if movie else self.TIP_THREADS)
+
+    def _workers_changed(self, v):
+        self.manager.set_budget(total=v)
+        self._save_setting("processes", v)
+        if self.settings.get("chunk_auto", True):
+            self._apply_chunks()  # Auto chunk follows the number of processes
+        self._show_run_info()
+
+    def _budget_changed(self, key, v):
+        self.manager.set_budget(**{key: v})
+        self._save_setting(key, v)
+        self._show_run_info()
+
+    def _chunk_changed(self, v):
+        if self.r_chunk_auto.isChecked():
+            return
+        self._save_setting("chunk_size", v)
+        self._apply_chunks()
+
+    def _sync_controls(self):
+        self._show_run_info()
+        s = self.engine.state
+        if hasattr(self, "e_frames"):
+            self.e_frames.setEnabled(s in ("ready", "stopped", "done", "failed"))
+        running = s in ("rendering", "paused", "finishing", "waiting")
+        self.b_start.setEnabled(s not in ("rendering", "finishing", "waiting"))
+        again = s == "done" or (s in ("ready", "stopped", "failed") and self.engine.nothing_to_render())
+        self.b_start.setText("Resume" if s == "paused" else ("Render again" if again else "Render"))
+        asks = s in ("ready", "stopped", "failed", "done") and not self.engine.movie and self._on_disk(self.engine) > 0
+        self.b_start.setToolTip("Frames of it are on disk: it asks, every frame again or only those missing or broken" if asks else "")
+        self.b_pause.setEnabled(s == "rendering")
+        self.b_stop.setEnabled(running)
+        # Render settings are fixed while a render runs (paused too); Stop makes them editable again.
+        # Processes, threads and RAM are shared by every render, so they wait until none runs.
+        any_running = bool(self.manager.running())
+        for widget in (self.b_delete, self.b_delete_movie):
+            widget.setEnabled(not running)
+        manual = hasattr(self, "r_chunk_auto") and not self.r_chunk_auto.isChecked()
+        self.s_chunk.setEnabled(manual and not running and not self.engine.movie)
+        for widget in (self.s_workers, self.s_threads, self.s_ram, self.c_gpu):
+            widget.setEnabled(not any_running)
+        self._show_process_size()
+        targets = self._targets()
+        if len(targets) > 1:  # several renders picked with Shift: the buttons act on all of them
+            startable = any(x.state in ("ready", "stopped", "failed") and not x.nothing_to_render() for x in targets)
+            paused = any(x.state == "paused" for x in targets)
+            self.b_start.setEnabled(startable or paused)
+            self.b_start.setText("Resume" if paused and not startable else "Render")
+            self.b_start.setToolTip("%d renders picked; finished ones are left as they are" % len(targets))
+            self.b_pause.setEnabled(any(x.state == "rendering" for x in targets))
+            self.b_stop.setEnabled(any(x.state in ("rendering", "paused", "finishing", "waiting") for x in targets))
+
+    # ---- timers -------------------------------------------------------------
+    def _tick(self):
+        changed = self.manager.tick()
+        for e in list(self.manager.engines):
+            if e.new_log:
+                if e is self.engine:
+                    self._append_log(e.new_log)
+                e.new_log = []
+            pending = bool(e.pixels_pending)
+            if self._pixels_were.get(e) and not pending:
+                if e is self.engine and e.state == "done":
+                    self._state_changed()  # the pixel check is through: the banner says what it found
+                if getattr(e, "sound_after_pixels", False):
+                    e.sound_after_pixels = False
+                    if e.state == "done":  # not when a new render stopped the check
+                        self._end_sound(e)
+            self._pixels_were[e] = pending
+            prev = self._last_states.get(e)
+            if e.state != prev:
+                self._last_states[e] = e.state
+                if e is self.engine:
+                    self._state_changed()
+                else:
+                    self._sync_controls()  # shared controls follow every render
+                self._refresh_cards()
+                self._save_queue()
+                if prev is not None and e.state in ("done", "failed"):
+                    QtWidgets.QApplication.alert(self)
+                    # "ready" to "done" is a render found whole on disk: nothing has just ended
+                    if self.settings.get("end_sound", True) and (e.state == "failed" or prev != "ready"):
+                        # The frames are checked by now (a render is done only when its frame checks are). With the pixel
+                        # check on, the sound waits for that too, so it says what both found.
+                        if e.state == "done" and e.pixels_pending:
+                            e.sound_after_pixels = True
+                            self._pixels_were[e] = True
+                        else:
+                            self._end_sound(e)
+        e = self.engine
+        if e.state == "done" and self._banner_says(e) != self._banner_was:
+            self._state_changed()  # Check frames or Check pixels by hand, Delete, a frame rendered again: the result changed
+        if self.exit_when_done and self.manager.engines and all(
+                e.state in ("done", "failed") for e in self.manager.engines):
+            self.exit_when_done = False
+            self._slow_tick()
+            QtCore.QTimer.singleShot(200, QtWidgets.QApplication.quit)
+        if changed or self.engine.state in ("rendering", "paused"):
+            self.frame_map.update()
+
+    def _end_sound(self, e):
+        """The done sound, or the error sound when the render failed, left broken frames or the pixel check found any."""
+        frames = e.frames.values()
+        broken = e.state == "failed" or any(fr.state == "bad" or pixels_broken(fr) or fr.same_as is not None for fr in frames)
+        if e.movie:
+            broken = e.state == "failed" or e.movie_verdict() == "bad"  # blank or frozen frames too (1.0.14)
+        play_sound("error_v1" if broken else "done_v4")
+
+    @staticmethod
+    def _banner_says(e):
+        """What the banner of a finished render is made of; when it changes, the banner is drawn again."""
+        if e.movie:  # the pixel check of a movie ends after it (1.0.14)
+            return (e, e.movie_verdict(), bool(e.pixels_pending))
+        frames = e.frames.values()
+        return (e, sum(fr.state == "bad" for fr in frames), sum(bool(fr.small) for fr in frames),
+                sum(pixels_broken(fr) or fr.same_as is not None for fr in frames), sum(not fr.checks for fr in frames),
+                bool(e.pixels_pending), e.pending_checks > 0)
+
+    def _state_changed(self):
+        e = self.engine
+        self._banner_was = self._banner_says(e) if e.state == "done" else None
+        done_in = ("Done in %s" % fmt_secs(e.elapsed())) if e.started else "Already rendered"
+        self._sync_controls()
+        if e.movie:
+            self._update_movie()
+            self._movie_show(0.5)  # while it renders this says the preview comes when the movie is finished
+        if e.state == "failed" and e.error:
+            self._banner(e.error, C["failed"])
+        elif e.state == "done" and e.movie:
+            checks = movie_checks(e.movie_info, e.movie_expected())
+            bad = [t for _, st, t in checks if st == "bad"]
+            warn = ["%s %s" % (what, t) for what, st, t in checks if st == "warn"]
+            found = e.movie_pixel_result() or {}
+            pixels = ["%s %s" % (what, t) for what, st, t in movie_checks(e.movie_info, e.movie_expected(), found)
+                      if st == "bad" and what in ("Black frames", "One-colour frames", "Frozen frames")]
+            if bad:
+                self._banner("%s, but the movie is not usable: %s" % (done_in, "; ".join(bad)),
+                             C["failed"])
+            elif pixels:  # blank or frozen frames (1.0.14): an error, as in a sequence
+                self._banner("%s, but the pixel check found: %s." % (done_in, "; ".join(pixels)), C["failed"])
+            else:
+                extra = ("  Check: %s." % "; ".join(warn)) if warn else ""
+                self._banner("%s. %s is complete: %d frames.%s" % (
+                    done_in, os.path.basename(e.movie_path()), len(e.frames), extra),
+                    C["small"] if warn else C["done"])
+        elif e.state == "done":
+            frames = list(e.frames.values())
+            bad = sum(1 for fr in frames if fr.state == "bad")
+            small = sum(1 for fr in frames if fr.small)
+            pixels = sum(1 for fr in frames if pixels_broken(fr) or fr.same_as is not None)
+            unchecked = sum(1 for fr in frames if not fr.checks)
+            if bad:
+                self._banner("%s, but %d frame(s) are broken on disk. Output: Problems, select them, right-click → Render again."
+                             % (done_in, bad), C["failed"])
+            elif pixels:
+                self._banner("%s, but the pixel check found %d frame(s) with NaN, inf, black, duplicated or different pixels. "
+                             "Output: Problems shows them." % (done_in, pixels), C["failed"])
+            else:
+                if unchecked:  # Check frames when a render ends was off: nothing says these files are whole
+                    text = "%s. All %d frames are on disk; %d of them were not checked (Check frames when a render ends is off)." % (
+                        done_in, len(frames), unchecked)
+                else:
+                    text = "%s. All %d frames are on disk and pass the check." % (done_in, len(frames))
+                if e.pending_checks > 0:
+                    text += " Checking frames…"
+                if e.pixels_pending:
+                    text += " Checking pixels…"
+                if small:
+                    text += " %d frame(s) are much smaller than the rest; worth a look." % small
+                self._banner(text, C["small"] if unchecked or small else C["done"])
+        elif e.notice and e.state in ("rendering", "paused"):
+            self._banner(e.notice[0], {"ok": C["done"], "warn": C["small"], "bad": C["failed"]}[e.notice[1]])
+        elif e.state == "waiting":
+            self._banner("Waiting: %d render(s) already use the PC. It starts as soon as one is on its last chunks "
+                         "(Settings > Max renders at once)." % self.manager.max_renders, C["loading"])
+        else:
+            self.banner.hide()
+
+    def _banner(self, text, color):
+        self.banner.setText(text)
+        self.banner.setToolTip(text)
+        self.banner.setStyleSheet("background: %s; color: #0e0f11; padding: 3px 10px; border-radius: 3px; font-weight: 600;" % color)
+        self.banner.show()
+
+    def _feed_vram(self):
+        self.manager.vram = self._gpu
+        self.manager.gpu_mem = self._gpu_procs or {}
+
+    def check_update(self):
+        """At every start (main() calls it once the window shows): the newest release in the background; a newer one
+        than this, not skipped with Don't show this again, comes up in the update window (_slow_tick opens it, in Qt's
+        own thread). JKRENDER_NO_UPDATE=1 turns it off."""
+        if os.environ.get("JKRENDER_NO_UPDATE") == "1":
+            return
+
+        def look():
+            info = latest_release()
+            if (info and version_tuple(info["version"]) > version_tuple(APP_VERSION)
+                    and self.settings.get("update_skip") != info["version"]):
+                self._update_offer = info
+
+        threading.Thread(target=look, daemon=True).start()
+
+    def _check_update_now(self):
+        """Settings > Check for updates: asks now; a newer release opens the update window even when skipped before."""
+        self.b_update.setEnabled(False)
+        self.update_status.setText("Checking…")
+        job = {"done": False, "info": None}
+
+        def look():
+            job["info"] = latest_release()
+            job["done"] = True
+
+        threading.Thread(target=look, daemon=True).start()
+
+        def check():
+            if not job["done"]:
+                QtCore.QTimer.singleShot(200, check)
+                return
+            self.b_update.setEnabled(True)
+            info, at = job["info"], datetime.datetime.now().strftime("%H:%M")
+            if info is None:
+                self.update_status.setText("Could not reach GitHub (%s)" % at)
+            elif version_tuple(info["version"]) > version_tuple(APP_VERSION):
+                self.update_status.setText("JKrender %s is out (%s)" % (info["version"], at))
+                self.update_dialog = UpdateDialog(self, info)
+                self.update_dialog.open()
+            else:
+                self.update_status.setText("JKrender %s is the newest (%s)" % (APP_VERSION, at))
+
+        QtCore.QTimer.singleShot(200, check)
+
+    def _slow_tick(self):
+        offer = getattr(self, "_update_offer", None)
+        if offer is not None:
+            self._update_offer = None
+            self.update_dialog = UpdateDialog(self, offer)
+            self.update_dialog.open()
+        self._feed_vram()
+        self._save_queue()
+        self._refresh_cards()
+        e = self.engine
+        if self._preview_frame is None and not e.movie and self.side_tabs.currentWidget() is self.output_page:
+            # nothing picked yet: the first frame rendered shows in the preview straight away
+            first = next((f for f in e.frame_list() if e.frames[f].state == "done"
+                          and e.frames[f].worker != "on disk"), None)
+            if first is not None:
+                self._pick_frame(first)
+        if e.notice and e.state in ("rendering", "paused") and self.banner.text() != e.notice[0]:
+            self._state_changed()
+        c = e.counts()
+        total = max(1, len(e.frames))
+        finished = c["done"] + c["skipped"] + c["bad"]
+        self.t_frames.set("%d / %d" % (finished, total), "%.0f %%  ·  %d rendering" % (100.0 * finished / total, c["rendering"]))
+        self.t_elapsed.set(fmt_secs(e.elapsed()) if e.started else "—",
+                           "started %s" % datetime.datetime.fromtimestamp(e.started).strftime("%H:%M:%S") if e.started else "")
+        eta = e.eta() if e.state in ("rendering", "paused") else None
+        self.t_eta.set(fmt_secs(eta) if eta is not None else "—",
+                       ("done at %s" % (datetime.datetime.now() + datetime.timedelta(seconds=eta)).strftime("%H:%M"))
+                       if eta else "")
+        rate = e.rate()
+        self.t_speed.set("%.2f fr/s" % rate if rate else "—", "%.1f fr/min" % (rate * 60) if rate else "")
+        secs = e.run_secs()
+        if secs:
+            conc = sum(secs) / max(1.0, e.elapsed())
+            self.t_avg.set("%.2f s" % (sum(secs) / len(secs)), "per frame in one process · ×%.1f at once" % conc)
+        else:
+            self.t_avg.set("—", "")
+        live = [w for w in e.workers.values() if w.state != "gone"]
+        busy = sum(1 for w in live if w.state == "busy")
+        m, movies = self.manager, self.manager.movie_count()
+        if any(not x.movie for x in m.engines):
+            whole = "%d of %d for all renders%s" % (m.live_count(), m.total, " + %d for movies" % movies if movies else "")
+        else:  # only movies open: the places of Processes are not theirs, so not "0 of 8"
+            whole = "%d for movies" % movies
+        self.t_workers.set("%d / %d" % (busy, len(live)), "rendering · " + whole)
+        checked = [fr for fr in e.frames.values() if fr.checks]
+        bad = sum(1 for fr in e.frames.values() if frame_broken(fr))
+        small = sum(1 for fr in e.frames.values() if fr.small)
+        self.t_check_frames.title.setText("Check video" if e.movie else "Check frames")
+        self.check_tiles.show_right(not e.movie)
+        if e.movie:
+            verdict = e.movie_verdict() if e.state not in ("rendering", "paused", "finishing") else None
+            words = {"ok": ("ok", C["done"]), "warn": ("check it", C["small"]), "bad": ("broken", C["failed"])}
+            text, color = words.get(verdict, ("—", C["text"]))
+            if e.pixels_pending and verdict != "bad":
+                text, color = "checking", C["text"]  # the pixels: blank and frozen frames (1.0.13)
+            self.t_check_frames.show_state(text, "one movie file", color)
+            self._update_movie()
+        else:
+            looking = e.pending_checks > 0 and e.state not in ("rendering", "paused", "finishing")
+            sub = "%d checked%s" % (len(checked), " · %d small" % small if small else "")
+            if not checked and not self.settings.get("check_frames", True):
+                sub = "off in Settings"
+            if bad:
+                self.t_check_frames.show_state("%d bad" % bad, sub, C["failed"])
+            elif looking:
+                self.t_check_frames.show_state("checking", sub, C["text"])
+            else:
+                self.t_check_frames.show_state("ok" if checked else "—", sub, C["done"] if checked else C["text"])
+            read = [fr for fr in e.frames.values() if fr.pixels and "error" not in fr.pixels and not fr.pixels.get("no_rgb")]
+            not_read = sum(1 for fr in e.frames.values() if fr.pixels and "error" in fr.pixels)
+            no_rgb = sum(1 for fr in e.frames.values() if fr.pixels and fr.pixels.get("no_rgb"))
+            broken_pixels = sum(pixels_broken(fr) or fr.same_as is not None for fr in e.frames.values())
+            sub = "%d checked%s" % (len(read), " · %d no RGB" % no_rgb if no_rgb else "")
+            if not read and not not_read and not no_rgb and not self.settings.get("check_pixels", True):
+                sub = "off in Settings"
+            if e.pixels_pending:
+                self.t_check_pixels.show_state("checking", "%d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total), C["text"])
+            elif broken_pixels:
+                self.t_check_pixels.show_state("%d bad" % broken_pixels, sub, C["failed"])
+            elif not_read:
+                self.t_check_pixels.show_state("not read", "%d frames, see the Log" % not_read, C["small"])
+            elif no_rgb and not read:  # utility passes only (1.0.26): nothing for the pixel check, and nothing wrong
+                self.t_check_pixels.show_state("no RGB", "%d frames of other layers only" % no_rgb, C["text"])
+            else:
+                self.t_check_pixels.show_state("ok" if read else "—", sub, C["done"] if read else C["text"])
+        self._update_chunks()
+        self._update_system()
+        self.frames_model.touch()
+        total_size = sum(ch[1] or 0 for fr in e.frames.values() for ch in fr.checks.values())
+        missing = sum(1 for fr in checked if any(ch[0] == "missing" for ch in fr.checks.values()))
+        broken = sum(1 for fr in checked if any(ch[0] in ("empty", "truncated", "unreadable") for ch in fr.checks.values()))
+        pixels = ""
+        if e.pixels_pending:
+            pixels = " · checking pixels %d of %d" % (e.pixels_total - e.pixels_pending, e.pixels_total)
+        elif any(fr.pixels and "error" in fr.pixels for fr in e.frames.values()):
+            pixels = " · pixels not checked, see the Log"
+        elif any(fr.pixels for fr in e.frames.values()):
+            pixels = " · %d with faults in the pixels · %d same as another" % (sum(pixels_broken(fr) for fr in e.frames.values()),
+                                                                              sum(fr.same_as is not None for fr in e.frames.values()))
+        self.pixels_bar.setVisible(bool(e.pixels_pending))
+        self.pixels_bar.setRange(0, max(1, e.pixels_total))
+        self.pixels_bar.setValue(e.pixels_total - e.pixels_pending)
+        self.out_summary.setText("%d frames · %d checked · %d missing · %d broken · %d suspiciously small%s · %s on disk"
+                                 % (len(e.frames), len(checked), missing, broken, small, pixels, fmt_size(total_size)))
+        self.gantt.update()
+        if self._details_shown():
+            self._update_details()
+
+    def _update_chunks(self):
+        e = self.engine
+        t = self.chunk_table
+        if t.rowCount() != len(e.chunks):
+            t.setRowCount(len(e.chunks))
+        now = time.time()
+        for row, c in enumerate(e.chunks):
+            done = sum(1 for f in c.all_frames if e.frames[f].state in ("done", "skipped", "bad"))
+            secs = [e.frames[f].secs for f in c.all_frames if e.frames[f].secs is not None]
+            dur = None
+            if c.started and c.state in ("rendering", "done"):
+                end = c.ended or (e.paused_at if e.state == "paused" and e.paused_at else now)
+                dur = end - c.started - e.paused_between(c.started, end)
+            note = c.error or ("try %d of %d" % (c.attempts + 1, MAX_ATTEMPTS) if c.attempts else "")
+            values = [c.name, c.spec, str(len(c.all_frames)), c.state, c.worker or "", "%d / %d" % (done, len(c.all_frames)),
+                      fmt_secs(dur) if dur is not None else "", "%.2f" % (sum(secs) / len(secs)) if secs else "", note]
+            for col, v in enumerate(values):
+                item = t.item(row, col)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem()
+                    t.setItem(row, col, item)
+                if item.text() != v:
+                    item.setText(v)
+                if col == 3:
+                    item.setForeground(QtGui.QColor(C.get(c.state, C["text"]) if c.state != "queued" else C["dim"]))
+        if not getattr(self, "_chunk_cols_sized", False) and e.chunks:
+            t.resizeColumnsToContents()
+            self._chunk_cols_sized = True
+
+    def _update_system(self):
+        m = self.manager
+        if not psutil:
+            self.m_cpu.set("psutil missing", "pip install psutil")
+            return
+        per = psutil.cpu_percent(percpu=True)
+        cpu = sum(per) / max(1, len(per))
+        vm = psutil.virtual_memory()
+        shown = m.engines if self.settings.get("show_all_workers", True) else [self.engine]
+        # what the Nuke processes hold in their caches (each reports it after every frame), part of the RAM in use
+        nuke_cache = sum((getattr(w, "cache", None) or (0, 0))[0] for x in shown for w in x.workers.values()
+                         if w.state != "gone") / 1024 ** 3
+        now = time.time()
+        io = psutil.disk_io_counters()
+        net = psutil.net_io_counters()
+        dw = dr = nmb = 0.0
+        if self._io_last and io:
+            dt = max(0.2, now - self._io_last[0])
+            dw = (io.write_bytes - self._io_last[1].write_bytes) / dt / 1024 ** 2
+            dr = (io.read_bytes - self._io_last[1].read_bytes) / dt / 1024 ** 2
+        if self._net_last and net:
+            dt = max(0.2, now - self._net_last[0])
+            nmb = ((net.bytes_recv + net.bytes_sent) - (self._net_last[1].bytes_recv + self._net_last[1].bytes_sent)) / dt / 1024 ** 2
+        self._io_last = (now, io)
+        self._net_last = (now, net)
+        # sum of every thread's load = how many threads' worth of work runs right now
+        self.m_cpu.set("%.0f %%" % cpu, "%d of %d threads in use" % (round(sum(per) / 100), len(per)))
+        guard = ("  ·  guard: %d of %d processes" % (m.ram_cap, m.total)) if m.ram_cap else ""
+        self.m_ram.set("%.0f %%" % vm.percent, "%.1f of %.0f GB – cache %.1f GB%s" % (
+            vm.used / 1024 ** 3, vm.total / 1024 ** 3, nuke_cache, guard))
+        self.m_ram.setToolTip("RAM: %.0f %%%s%.1f of %.0f GB in use, of it %.1f GB in the caches of the Nuke processes" % (
+            vm.percent, chr(10), vm.used / 1024 ** 3, vm.total / 1024 ** 3, nuke_cache))
+        self.m_dw.set("%.0f MB/s" % dw)
+        self.m_dr.set("%.0f MB/s" % dr)
+        self.m_net.set("%.1f MB/s" % nmb)
+        gpu = self._gpu
+        if gpu:
+            self.m_gpu.set("%.0f %%" % gpu[0], "whole card (WSL: none per process)" if IS_WSL else (self._gpu_name or ""))
+            vguard = ("  ·  guard: %d of %d processes" % (m.vram_cap, m.total)) if m.vram_cap else ""
+            self.m_vram.set("%.0f %%" % (gpu[1] / gpu[2] * 100 if gpu[2] else 0),
+                            "%.1f of %.0f GB%s" % (gpu[1] / 1024, gpu[2] / 1024, vguard))
+        elif getattr(self, "_gpu_mac", None):
+            mac = self._gpu_mac
+            self.m_gpu.set("%.0f %%" % mac[0], "Apple GPU")
+            self.m_vram.set("%.1f GB" % (mac[1] / 1024 ** 3) if mac[1] is not None else "—",
+                            "%.0f %% of the RAM, unified memory" % (mac[1] / vm.total * 100) if mac[1] is not None and vm.total
+                            else "unified memory, part of the RAM")
+        else:
+            self.m_gpu.set("—", "no graphics card read" if not shutil.which("nvidia-smi") else "")
+            self.m_vram.set("—", "")
+        vram = gpu[1] / gpu[2] * 100 if gpu and gpu[2] else None
+        gpu_use = gpu[0] if gpu else (self._gpu_mac[0] if getattr(self, "_gpu_mac", None) else None)
+        # Apple silicon: the GPU's memory is part of the RAM, so the graph draws it as a share of the RAM, under the RAM line
+        mac = getattr(self, "_gpu_mac", None)
+        shared = mac[1] / vm.total * 100 if not gpu and mac and mac[1] is not None and vm.total else None
+        self.g_load.add({"cpu": cpu, "ram": vm.percent, "gpu": gpu_use or 0, "vram": vram or shared or 0})
+        self._update_averages(now, cpu, vm.percent, gpu_use, vram)
+        self.g_io.add({"dw": dw, "dr": dr, "net": nmb})
+        self.cores.set_values(per)
+        t = self.worker_table
+        # one row per process number; a process that moved on to another render shows that render now
+        rows = [(wid, ews[-1]) for wid, ews in m.process_rows(shown)]
+        # every place of Processes, also the ones no process has taken yet, with why not
+        taken = {wid for wid, _ in rows}
+        # only movies open: one place each, so 3 movies show 3 rows, not the empty rest of Processes
+        places = m.total if any(not x.movie for x in m.engines) else sum(1 for x in m.engines if x.movie)
+        empty = [(wid, (None, wid)) for wid in range(1, places + 1) if wid not in taken]
+        rows = [r for _, r in sorted(rows + empty, key=lambda r: r[0])]
+        t.setRowCount(len(rows))
+        self._worker_rows = rows
+        gpus = self._gpu_procs or {}
+        gpus_mac = getattr(self, "_gpu_procs_mac", None) or {}  # macOS: GPU % only
+        idle_why = self._empty_place_state() if empty else ""
+        coming_back = self._coming_back(rows)
+        memory_why = self._memory_why() if coming_back else ""
+        for row, (x, w) in enumerate(rows):
+            if x is None:
+                values = ["W%02d" % w, "", "", idle_why] + [""] * (t.columnCount() - 4)
+                for col, v in enumerate(values):
+                    item = t.item(row, col)
+                    if item is None:
+                        item = QtWidgets.QTableWidgetItem()
+                        t.setItem(row, col, item)
+                    item.setText(v)
+                    item.setForeground(QtGui.QColor(C["dim"]))
+                    item.setToolTip(v if col == 3 else "")
+                continue
+            avg = (sum(w.frame_secs) / len(w.frame_secs)) if w.frame_secs else None
+            gone = w.state == "gone"
+            gpu = gpus.get(w.proc.pid)
+            if gpu is None and sys.platform == "darwin":
+                pct, mem = gpus_mac.get(w.proc.pid), MAC_MEM.get(w.proc.pid)
+                if pct is not None or mem:
+                    gpu = (pct, mem[1] if mem else None)
+            state = x.worker_state(w)
+            waits = (x, w) in coming_back
+            if waits:
+                state = self._short_why(memory_why)
+            values = [w.name, "%d  %s" % (x.number, x.name), str(w.proc.pid), state,
+                      w.chunk.name if w.chunk else "", str(w.frame) if w.frame is not None else "",
+                      "" if gone else "%.1f of %d threads" % (w.cpu, w.threads), "" if gone else "%.1f GB" % w.rss,
+                      "" if gone or not w.cache else "%.1f / %.0f GB" % (w.cache[0] / 1024 ** 3, w.cache[1] / 1024 ** 3),
+                      "" if gone or gpu is None or gpu[0] is None else "%.0f %%" % gpu[0],
+                      "" if gone or gpu is None or gpu[1] is None else "%.1f GB" % (gpu[1] / 1024 ** 3),
+                      str(w.frames_done), "%.2f s" % avg if avg else "", "%.1f s" % w.load_secs if w.load_secs else "",
+                      fmt_secs(self._worker_uptime(w)), "%.1f GB" % w.rss_peak if w.rss_peak else "",
+                      self._worker_chunks(w), "%.2f s" % w.frame_secs[-1] if w.frame_secs else "",
+                      x.output_names]  # the file it writes, not the Write node's name
+            for col, v in enumerate(values):
+                item = t.item(row, col)
+                if item is None:
+                    item = QtWidgets.QTableWidgetItem()
+                    t.setItem(row, col, item)
+                item.setText(v)
+                waiting_here = waits and col == 3
+                item.setForeground(QtGui.QColor(C["small"] if waiting_here else C["dim"] if gone or x is not self.engine else C["text"]))
+                item.setToolTip("%s. Comes back by itself when memory lets it: %s" % (x.worker_state(w).capitalize(), memory_why or "now")
+                                if waiting_here else "")
+        if coming_back:  # why it waits is the point of it: the column grows to show it, never shrinks
+            needed = t.fontMetrics().horizontalAdvance(self._short_why(memory_why)) + 24
+            if t.columnWidth(3) < needed:
+                t.setColumnWidth(3, needed)
+
+    @staticmethod
+    def _short_why(why):
+        """_memory_why for the State column, what it waits for in a few words; the tooltip has it whole."""
+        if not why:
+            return "coming back"
+        m = re.match(r"(V?RAM) must drop under (\d+) % \(now (\d+) %", why)
+        if m:  # now -> where one more fits, with room kept for the processes still starting
+            starting = re.search(r"and (\d+) starting", why)
+            return "wait: Reload at %s %% of %s%s" % (m.group(2), m.group(1),
+                                                    " (%s starting)" % starting.group(1) if starting else "")
+        m = re.match(r"(V?RAM) (\d+) %: one more fits, checking", why)
+        if m:
+            return "wait: %s ok, checking" % m.group(1)
+        m = re.match(r"(?:next try|one closed for memory, the next can try) in (\d+) s", why)
+        if m:
+            return "wait: %s s" % m.group(1)
+        m = re.match(r"(W\d+) has not rendered its first frame yet", why)
+        if m:
+            return "wait: %s 1st frame" % m.group(1)
+        return "wait: " + why.split(";")[0]
+
+    def _coming_back(self, rows):
+        """The closed processes that start again as soon as memory lets them, in the order they would: only as many as
+        there are free places, in a render with chunks left, and none you closed by hand."""
+        m = self.manager
+        closed = [(x, w) for x, w in rows if x is not None and w.state == "gone" and x.state == "rendering"
+                  and queued_left_for(x) and w.id not in x.held and not w.user_leaving]
+        held = sum(len(x.held) for x in m.engines if x.state == "rendering")  # their places stay empty
+        return closed[:max(0, m.total - held - m.live_count())]
+
+    def _memory_why(self):
+        """What a closed process waits for, in numbers: the same rules as coming back itself, or "" when nothing holds it."""
+        m = self.manager
+        wait = m.fall_wait() if m.settings.get("ram_guard", True) or m.settings.get("vram_guard", True) else 0
+        if wait:
+            return "next try in %d s: a process closed for memory a moment ago" % math.ceil(wait)
+        if m.live_count() >= m.budget():
+            first = m.starting()
+            if first is not None:  # one at a time: the next only once this one has rendered a frame
+                return "%s has not rendered its first frame yet" % first.name
+            if m.vram_bound() and m.vram and m.vram[2]:
+                pct, limit = float(m.vram[1]) / float(m.vram[2]) * 100, pct_limit(m.settings, "VRAM")
+                if m._vram_ok_since is not None:
+                    return "VRAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
+                growing, starting = m.vram_starting()
+                return m._vram_target(pct, limit, m.vram_one() or 10.0, growing, starting)
+            if m.ram_cap is not None:
+                pct, limit = m.ram_percent(), pct_limit(m.settings, "RAM")
+                if m._ram_ok_since is not None:
+                    return "RAM %.0f %%: one more fits, checking it stays free for %d s" % (pct, RETURN_CHECK)
+                return m._ram_target(pct, limit)
+            return ""
+        return m.no_room()
+
+    def _update_averages(self, now, cpu, ram, gpu, vram):
+        """Average CPU, RAM, GPU and VRAM use while rendering, in the tiles: from when renders start (a pause does
+        not count) until the next ones start after all have ended."""
+        states = [e.state for e in self.manager.engines]
+        if not any(x in ("rendering", "paused", "finishing", "waiting") for x in states):
+            self._avg_going = False
+        elif "rendering" in states:
+            if not getattr(self, "_avg_going", False):
+                self._avg_going = True
+                self._avg = {}
+            if now - getattr(self, "_avg_last", 0.0) >= 1.0:  # this also runs on clicks; samples stay even
+                self._avg_last = now
+                for key, value in (("cpu", cpu), ("ram", ram), ("gpu", gpu), ("vram", vram)):
+                    if value is not None:
+                        total, n = self._avg.get(key, (0.0, 0))
+                        self._avg[key] = (total + value, n + 1)
+        values = {k: t / n for k, (t, n) in getattr(self, "_avg", {}).items()}
+        self.m_cpu.set_avg("average %.0f %%  ·  %.1f threads" % (values["cpu"], values["cpu"] * (os.cpu_count() or 1) / 100.0)
+                           if "cpu" in values else "")
+        self.m_ram.set_avg("average %.0f %%" % values["ram"] if "ram" in values else "")
+        self.m_gpu.set_avg("average %.0f %%" % values["gpu"] if "gpu" in values else "")
+        self.m_vram.set_avg("average %.0f %%" % values["vram"] if "vram" in values else "")
+
+    def _empty_place_state(self):
+        """State of a place no process has: why nothing runs there now."""
+        m = self.manager
+        if not any(e.state in ("rendering", "paused", "finishing") for e in m.engines):
+            return "not running"
+        if m.live_count() >= m.budget():
+            if m.vram_cap is not None and m.vram_cap <= (m.ram_cap or m.total):
+                return "not running (VRAM limit)"
+            if m.ram_cap is not None:
+                return "not running (RAM limit)"
+            return "not running"
+        why = m.no_room()
+        if why:
+            return "not running: %s" % why.replace("; ", " · ")
+        if not any(e.state == "rendering" and queued_left_for(e) for e in m.engines):
+            return "not needed (no chunks left)"
+        return "starting"
+
+    @staticmethod
+    def _worker_uptime(w):
+        if w.state != "gone":
+            return time.time() - w.spawned
+        ends = [seg[3] for seg in w.segments if seg[3]]
+        return (max(ends) if ends else w.spawned) - w.spawned
+
+    @staticmethod
+    def _worker_chunks(w):
+        """Chunks done, and how many it did not finish (failed, stopped, handed back)."""
+        ended = [seg[4] for seg in w.segments if seg[0] == "chunk" and seg[3]]
+        done = ended.count("done")
+        return "%d" % done + ("  ·  %d back" % (len(ended) - done) if len(ended) > done else "")
+
+    # ---- one process: right-click in System or on the Workers timeline -------------------
+    def _worker_table_menu(self, pos):
+        row = self.worker_table.rowAt(pos.y())
+        if 0 <= row < len(self._worker_rows):
+            e, w = self._worker_rows[row]
+            if e is None:
+                self._empty_place_menu(w, self.worker_table.viewport().mapToGlobal(pos))
+            else:
+                self._worker_menu(e, w, self.worker_table.viewport().mapToGlobal(pos))
+        else:
+            menu = QtWidgets.QMenu(self)
+            actions = {}
+            self._add_process_item(menu, actions)
+            act = menu.exec(self.worker_table.viewport().mapToGlobal(pos))
+            if act in actions:
+                actions[act]()
+                self._update_system()
+
+    def _add_process_item(self, menu, actions):
+        """Add process: into the render still handing out chunks, or a choice of them. Greyed out when none has any left."""
+        renders = [x for x in self.manager.engines if x.state == "rendering" and not x.is_tail()]
+        room = self.manager.total < self.s_workers.maximum()
+        if len(renders) > 1:
+            sub = menu.addMenu("Add process to")
+            sub.setEnabled(room)
+            for x in renders:
+                actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: self._add_process(x))
+        else:
+            act = menu.addAction("Add process")
+            act.setEnabled(room and bool(renders))
+            if renders:
+                actions[act] = lambda: self._add_process(renders[0])
+
+    def _add_process(self, e):
+        """One process more: Processes goes up with it and stays there. It takes the next chunk from the queue."""
+        m = self.manager
+        self.s_workers.setValue(m.total + 1)
+        e.place_offset += 1
+        e.user_start_here(m.take_wid(e))
+        cpu = os.cpu_count() or 1
+        if m.total * m.threads > cpu:
+            e.note("%d processes x %d threads is more than the %d threads of this PC: they may not go faster"
+                   % (m.total, m.threads, cpu), "warn")
+
+    def _close_after_chunk(self, e, w):
+        """One process less: Processes goes down with it and stays there, so nothing takes its place."""
+        m = self.manager
+        e.place_offset -= 1
+        e.user_close_after_chunk(w)
+        if m.ram_cap is not None:
+            m.ram_cap = max(1, m.ram_cap - 1)
+        if m.vram_cap is not None:
+            m.vram_cap = max(1, m.vram_cap - 1)
+        self.s_workers.setValue(m.total - 1)
+
+    def _remove_place(self):
+        """A place no process has taken, waiting for memory or for a render: one less."""
+        m = self.manager
+        if m.ram_cap is not None:
+            m.ram_cap = max(1, m.ram_cap - 1)
+        if m.vram_cap is not None:
+            m.vram_cap = max(1, m.vram_cap - 1)
+        self.s_workers.setValue(m.total - 1)
+
+    def _empty_place_menu(self, wid, global_pos):
+        """A place no process has taken: start one there by hand, in a render still going."""
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("W%02d" % wid)
+        running = [x for x in self.manager.engines if x.state in ("rendering", "paused")]
+        actions = {}
+        sub = menu.addMenu("Start in")
+        sub.setEnabled(bool(running))
+        for x in running:
+            actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: x.user_start_here(wid))
+        act = menu.addAction("Remove process")
+        act.setEnabled(self.manager.total > 1)
+        act.setToolTip("One place less: Processes goes down by 1")
+        actions[act] = self._remove_place
+        self._add_process_item(menu, actions)
+        act = menu.exec(global_pos)
+        if act in actions:
+            actions[act]()
+            self._update_system()
+
+    def _worker_menu(self, e, w, global_pos):
+        menu = QtWidgets.QMenu(self)
+        menu.addSection("%s  (%s)" % (w.name, e.name))
+        actions = {}
+        running = [x for x in self.manager.engines if x.state in ("rendering", "paused")]
+        busy_ids = {i for x in self.manager.engines for i, y in x.workers.items() if y.state != "gone"}
+        if w.state == "gone" and e.state in ("rendering", "paused"):
+            act = menu.addAction("Start again")
+            act.setEnabled(w.id not in busy_ids)
+            actions[act] = lambda: e.user_start(w.id)
+        elif w.state == "gone":
+            # its render is through: it starts again in one still going
+            if len(running) == 1:
+                act = menu.addAction("Start again in %d  %s" % (running[0].number, running[0].name))
+                act.setEnabled(w.id not in busy_ids)
+                actions[act] = lambda x=running[0]: x.user_start_here(w.id, e)
+            else:
+                sub = menu.addMenu("Start again in")
+                sub.setEnabled(bool(running) and w.id not in busy_ids)
+                for x in running:
+                    actions[sub.addAction("%d  %s" % (x.number, x.name))] = (lambda x=x: x.user_start_here(w.id, e))
+        else:
+            if w.user_paused:
+                actions[menu.addAction("Resume")] = lambda: e.user_pause(w, False)
+            else:
+                act = menu.addAction("Pause")
+                act.setEnabled(w.state in ("loading", "idle", "busy") and e.state == "rendering")
+                actions[act] = lambda: e.user_pause(w, True)
+            act = menu.addAction("Close after this chunk")
+            act.setEnabled(self.manager.total > 1 and not getattr(w, "user_leaving", False))
+            act.setToolTip("One process less: it finishes its chunk and closes, and Processes goes down by 1")
+            actions[act] = lambda: self._close_after_chunk(e, w)
+            actions[menu.addAction("Close")] = lambda: e.user_close(w)
+        if w.state == "gone" and e.state in ("rendering", "paused") and not w.user_leaving:
+            # closed for memory and waiting to come back, or closed after a crash: one place less, it stays closed
+            act = menu.addAction("Remove process")
+            act.setEnabled(self.manager.total > 1)
+            act.setToolTip("One process less: it does not come back, and Processes goes down by 1")
+            actions[act] = lambda: self._close_after_chunk(e, w)
+        others = [x for x in self.manager.engines if x is not e and x.state in ("rendering", "paused")]
+        if others and w.state != "gone":
+            sub = menu.addMenu("Work on")
+            for x in others:
+                act = sub.addAction("%d  %s" % (x.number, x.name))
+                actions[act] = (lambda x=x: self.manager.move_worker(e, w, x))
+        menu.addSeparator()
+        self._add_process_item(menu, actions)
+        menu.addSeparator()
+        actions[menu.addAction("Show process log")] = lambda: self._open_path(w.log_path)
+        act = menu.exec(global_pos)
+        if act in actions:
+            actions[act]()
+            self._update_system()
+            self.gantt.update()
+
+    def _gpu_loop(self):
+        per_process = None
+        if sys.platform.startswith("win"):
+            try:
+                per_process = GpuPerProcess()
+            except Exception:
+                per_process = None
+        elif sys.platform.startswith("linux") and not IS_WSL and shutil.which("nvidia-smi"):
+            per_process = NvidiaSmiPerProcess()
+        apple_procs = AppleGpuPerProcess() if sys.platform == "darwin" else None
+        # 1.0.28: a card without nvidia-smi (AMD, Intel Arc): Windows tells its load and memory; on Linux amdgpu does
+        card = None
+        if sys.platform.startswith("win") and not shutil.which("nvidia-smi"):
+            try:
+                card = WindowsGpuCard()
+            except Exception:
+                card = None
+        amd_dev = amdgpu_card() if sys.platform.startswith("linux") and not shutil.which("nvidia-smi") else None
+        amd_procs = AmdgpuPerProcess() if amd_dev else None
+        self._gpu_name = card.card["name"] if card else ("AMD (amdgpu)" if amd_dev else None)
+        while True:
+            if sys.platform == "darwin":
+                self._gpu_mac = apple_gpu()
+                try:
+                    self._gpu_procs_mac = apple_procs.sample()
+                except Exception:
+                    self._gpu_procs_mac = {}
+                try:
+                    pids = [w.proc.pid for e in list(self.manager.engines) for w in list(e.workers.values()) if w.state != "gone"]
+                except Exception:
+                    pids = []
+                global MAC_MEM
+                MAC_MEM = mac_footprints(pids)
+            if shutil.which("nvidia-smi"):
+                try:
+                    out = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=5, **hidden()).stdout
+                    vals = [float(x) for x in out.strip().splitlines()[0].split(",")]
+                    self._gpu = vals
+                except Exception:
+                    self._gpu = None
+            elif card is not None:
+                try:
+                    self._gpu = card.sample()
+                except Exception:
+                    self._gpu = None
+            elif amd_dev:
+                self._gpu = amdgpu_sample(amd_dev)
+            if per_process:
+                try:
+                    self._gpu_procs = per_process.sample()
+                except Exception:
+                    self._gpu_procs = {}
+            elif amd_procs:
+                try:
+                    pids = [w.proc.pid for e in list(self.manager.engines) for w in list(e.workers.values()) if w.state != "gone"]
+                    self._gpu_procs = amd_procs.sample(pids)
+                except Exception:
+                    self._gpu_procs = {}
+            time.sleep(2)
+
+    # ---- log ----------------------------------------------------------------
+    def _keep(self, entry):
+        mode = self.log_source.currentText()
+        if mode == "JKrender only":
+            return not entry[0]
+        if mode == "Errors and warnings":
+            return entry[2] in ("err", "warn")
+        return True
+
+    def _html(self, entry):
+        src, text, level = entry
+        color = {"err": C["failed"], "warn": C["small"], "ev": C["accent"], "ok": C["done"]}.get(level, C["text"])
+        prefix = '<span style="color:%s">[%s]</span> ' % (C["dim"], src) if src else ""
+        safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return '%s<span style="color:%s">%s</span>' % (prefix, color, safe)
+
+    def _append_log(self, entries):
+        lines = [self._html(x) for x in entries if self._keep(x)]
+        if lines:
+            bar = self.log_view.verticalScrollBar()
+            at_end = bar.value() >= bar.maximum() - 4
+            self.log_view.appendHtml("<br>".join(lines))
+            if at_end:
+                bar.setValue(bar.maximum())
+
+    def _log_refilter(self):
+        self.log_view.clear()
+        self._append_log(list(self.engine.log))
+
+    # ---- chunks / frames ----------------------------------------------------
+    def _chunk_menu(self, pos):
+        rows = sorted({i.row() for i in self.chunk_table.selectedIndexes()})
+        chunks = [self.engine.chunks[r] for r in rows if r < len(self.engine.chunks)]
+        if not chunks:
+            return
+        menu = QtWidgets.QMenu(self)
+        again = menu.addAction("Render again")
+        log = menu.addAction("Show process log")
+        menu.addSeparator()
+        delete = menu.addAction("Delete frames from chunk" if len(chunks) == 1 else
+                                "Delete frames from %d chunks" % len(chunks))
+        delete.setEnabled(self.engine.state not in ("rendering", "paused", "finishing", "waiting"))
+        act = menu.exec(self.chunk_table.viewport().mapToGlobal(pos))
+        if act == again:
+            for c in chunks:
+                self.engine.requeue_chunk(c)
+            self._after_requeue()
+        elif act == delete:
+            self._delete_all(sorted({f for c in chunks for f in c.all_frames}))  # asks first
+        elif act == log and chunks[0].worker:
+            wid = int(chunks[0].worker[1:])
+            w = self.engine.workers.get(wid)
+            if w:
+                self._open_path(w.log_path)
+
+    def _frames_menu(self, pos):
+        frames = sorted({self.frames_model.rows[i.row()] for i in self.frames_view.selectedIndexes()})
+        if not frames:
+            return
+        menu = QtWidgets.QMenu(self)
+        one = len(frames) == 1
+        again = menu.addAction("Render this frame" if one else "Render this batch (%d frames)" % len(frames))
+        delete = menu.addAction("Delete this frame" if one else "Delete this batch (%d frames)" % len(frames))
+        e = self.engine
+        again.setEnabled(e.state not in ("finishing", "waiting") and any(f in e.frames for f in frames))  # not one left out by Framerange
+        delete.setEnabled(e.state not in ("rendering", "paused", "finishing", "waiting"))
+        act = menu.exec(self.frames_view.viewport().mapToGlobal(pos))
+        if act == again:
+            # only these frames, unless the whole render is running anyway: then they just join it
+            e.rerender(frames, only=True)
+            self._after_requeue()
+        elif act == delete:
+            self._delete_all(frames)  # asks first
+
+    def _after_requeue(self):
+        self.frames_model.refilter()
+        self._sync_controls()
+        self._slow_tick()
+
+    def _verify(self):
+        self.engine.verify_all()
+
+    def _check_pixels(self):
+        self.engine.check_all_pixels()
+
+    def _out_filter(self, text):
+        self.frames_model.mode = text
+        self.frames_model.refilter()
+
+    def _show_first(self, e, frame):
+        """Preview a render's first rendered frame without switching away from the tab that is open."""
+        if self.engine is not e or self._preview_frame is not None:
+            return
+        self._quiet_pick = True
+        try:
+            self._pick_frame(frame)
+        finally:
+            self._quiet_pick = False
+
+    def _pick_frame(self, frame):
+        """A click on the chunk map: the frame is selected in the Output list, which scrolls to it, and previewed."""
+        rows = self.frames_model.rows
+        if frame in rows:
+            idx = self.frames_model.index(rows.index(frame), 0)
+            self.frames_view.selectionModel().setCurrentIndex(
+                idx, QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows)
+            self.frames_view.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+            if self._preview_frame != frame:  # setCurrentIndex shows it, unless it was the current row already
+                self._show_frame(frame)
+        else:  # not in the list with the filter set now
+            self._show_frame(frame)
+
+    def _show_frame(self, frame):
+        e = self.engine
+        fr = e.frame_info(frame)
+        if fr is None:
+            return
+        self._preview_frame = frame
+        self._sync_frame_bar(frame)
+        files = e.output_files(frame)
+        info = ["<b>Frame %d</b> — %s, chunk %s, %s" % (frame, fr.state, fr.chunk or "—", fr.worker or "no process yet")]
+        if fr.secs is not None:
+            info.append("Rendered in %.2f s" % fr.secs)
+        for i, p in enumerate(files):
+            chk = fr.checks.get(i)
+            info.append("%s<br><span style='color:%s'>%s</span>" % (
+                p, C["failed"] if chk and chk[0] != "ok" else C["dim"],
+                ("%s · %s %s" % (chk[0], fmt_size(chk[1]), chk[2])) if chk else "not checked yet"))
+        self.preview_info.setText("<br>".join(info))
+        target = next((p for p in files if os.path.exists(p)), None)
+        if fr.state == "rendering" or not target:
+            self.preview.set_text("Still rendering" if fr.state == "rendering" else "No file on disk yet")
+            return
+        try:
+            # zoomed in: the frame at its own size, so the pixels are real; playing stays at the preview's size
+            self.preview.set_image(self._frame_image(frame, target, self.preview.zoom > 1.001 and not self._frame_timer.isActive()))
+        except Exception as exc:
+            self.preview.set_text("No preview: %s" % exc)
+        if self.side_tabs.currentWidget() is not self.output_page and not getattr(self, "_quiet_pick", False):
+            self.side_tabs.setCurrentWidget(self.output_page)
+
+    # ---- movie output -------------------------------------------------------
+    def _movie_check(self):
+        self.engine.probe()
+        self._update_movie()
+        self._movie_show(0.5)
+
+    def _movie_ready(self):
+        e = self.engine
+        info = e.movie_info or {}
+        return (not info.get("error") and info.get("fps") and info.get("frames")
+                and e.state not in ("rendering", "paused", "finishing"))
+
+    def _movie_show(self, where):
+        """Show the frame at 0..1 through the movie."""
+        self._movie_stop()
+        e = self.engine
+        info = e.movie_info or {}
+        if not self._movie_ready():
+            self.movie_preview.set_text("Preview when the movie is finished" if e.state in (
+                "rendering", "paused", "finishing") else ("No movie on disk" if not info or info.get("error") == "missing"
+                                                          else "No preview"))
+            self.movie_frame_label.setText("")
+            self.movie_slider.setRange(0, 0)
+            self.b_play.setEnabled(False)
+            return
+        frames = int(info["frames"])
+        self.movie_slider.setRange(0, frames - 1)
+        self.b_play.setEnabled(True)
+        self._movie_still(int(round(where * (frames - 1))))
+
+    def _movie_label(self, index):
+        e = self.engine
+        first = e.frame_list()[0] if e.frames else 0
+        frames = int((e.movie_info or {}).get("frames") or 0)
+        self.movie_frame_label.setText("Frame %d of %d  ·  script frame %d" % (index + 1, frames, first + index))
+        self.movie_slider.blockSignals(True)
+        self.movie_slider.setValue(index)
+        self.movie_slider.blockSignals(False)
+
+    def _movie_still(self, index):
+        """Show one frame (0-based) and remember it as the place Play starts from."""
+        if not self._movie_ready():
+            return
+        e = self.engine
+        info = e.movie_info
+        index = max(0, min(int(info["frames"]) - 1, index))
+        self._movie_index = index
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            # A still is decoded at the movie's own size, so zooming in shows real pixels.
+            image = movie_frame(e.movie_path(), movie_seek(info, index), int(info.get("width") or 1920) // 2 * 2)
+            self._movie_paint(image)
+            self._movie_label(index)
+        except Exception as exc:
+            self.movie_preview.set_text("No preview: %s" % exc)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+    def _movie_paint(self, image):
+        self.movie_preview.set_image(image)
+
+    def _movie_toggle(self):
+        if self._player:
+            self._movie_stop()
+            self._movie_still(self._movie_index)  # paused: the frame at full size, for zooming in
+        else:
+            self._movie_play()
+
+    def _movie_play(self):
+        """Play at the movie's own frame rate: ffmpeg decodes ahead into a small queue, a timer shows each frame."""
+        if not self._movie_ready() or not find_tool("ffmpeg"):
+            return
+        e = self.engine
+        info = e.movie_info
+        frames = int(info["frames"])
+        if self._movie_index >= frames - 1:
+            self._movie_index = 0  # on the last frame: play from the start
+        width = max(640, min(1920, self.movie_preview.width() * 2, int(info.get("width") or 1920))) // 2 * 2
+        height = max(2, int(round(width * info["height"] / float(info["width"]) / 2)) * 2)
+        cmd = [find_tool("ffmpeg"), "-v", "error", "-ss", "%.4f" % movie_seek(info, self._movie_index),
+               "-i", e.movie_path(), "-vf", "scale=%d:%d" % (width, height), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **hidden())
+        except Exception as exc:
+            self.movie_preview.set_text("Cannot play: %s" % exc)
+            return
+        frames_q = pyqueue.Queue(maxsize=12)
+        stop = threading.Event()
+
+        def reader():
+            size = width * height * 3
+            while not stop.is_set():
+                data = proc.stdout.read(size)
+                if len(data) < size:
+                    break
+                while not stop.is_set():
+                    try:
+                        frames_q.put(data, timeout=0.5)
+                        break
+                    except pyqueue.Full:
+                        pass
+            frames_q.put(None)
+
+        threading.Thread(target=reader, daemon=True).start()
+        self._player = {"proc": proc, "queue": frames_q, "stop": stop, "w": width, "h": height}
+        self._play_timer.start(max(5, int(round(1000.0 / info["fps"]))))
+        self.b_play.setIcon(play_icon(True))
+
+    def _movie_next(self):
+        player = self._player
+        if not player:
+            return
+        try:
+            data = player["queue"].get_nowait()
+        except pyqueue.Empty:
+            return  # ffmpeg is a little behind; show the frame on the next tick
+        if data is None:
+            # The end: start again from the first frame.
+            self._movie_stop()
+            self._movie_index = 0
+            self._movie_play()
+            return
+        image = QtGui.QImage(data, player["w"], player["h"], 3 * player["w"], QtGui.QImage.Format_RGB888).copy()
+        self._movie_paint(image)
+        self._movie_label(self._movie_index)
+        player["shown"] = self._movie_index
+        frames = int((self.engine.movie_info or {}).get("frames") or 1)
+        if self._movie_index < frames - 1:
+            self._movie_index += 1
+
+    def _movie_stop(self):
+        self._play_timer.stop()
+        player, self._player = self._player, None
+        if player:
+            player["stop"].set()
+            try:
+                player["proc"].kill()
+            except Exception:
+                pass
+            if "shown" in player:
+                self._movie_index = player["shown"]  # Play goes on from the frame on screen
+        self.b_play.setIcon(play_icon(False))
+
+    def _update_movie(self):
+        e = self.engine
+        info = e.movie_info
+
+        def row(k, v, color=None):
+            return "<tr><td style='color:%s;padding-right:18px'>%s</td><td style='color:%s'>%s</td></tr>" % (
+                C["dim"], k, color or C["text"], v)
+
+        def esc(v):
+            return str(v).replace("&", "&amp;").replace("<", "&lt;")
+
+        path = e.movie_path()
+        parts = ["<h3>File</h3><table>", row("Path", esc(path))]
+        if e.state in ("rendering", "paused", "finishing"):
+            # The movie grows as Nuke writes it; finished details come when the render ends.
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            now = time.time()
+            speed = None
+            if self._movie_size_last and now > self._movie_size_last[0]:
+                speed = max(0.0, (size - self._movie_size_last[1]) / (now - self._movie_size_last[0]))
+            self._movie_size_last = (now, size)
+            done = sum(1 for fr in e.frames.values() if fr.state == "done")
+            parts += [row("Writing", "%s  ·  %d of %d frames" % (fmt_size(size), done, len(e.frames))),
+                      row("Write speed", "%s/s" % fmt_size(speed) if speed is not None else "—"),
+                      row("Size at the end", "~%s" % fmt_size(size / done * len(e.frames)) if done else "—")]
+            parts.append("</table><p style='color:%s'>Codec, colour and checks appear when the movie is finished.</p>"
+                         % C["dim"])
+        elif not info or info.get("error") == "missing":
+            parts.append("</table><p style='color:%s'>Not rendered yet.</p>" % C["dim"])
+        else:
+            parts += [row("Size", fmt_size(info.get("size"))),
+                      row("Written", datetime.datetime.fromtimestamp(info["modified"]).strftime("%Y-%m-%d %H:%M:%S")
+                          if info.get("modified") else "—")]
+            if not info.get("error") and not info.get("no_probe"):
+                dur = info.get("duration") or 0
+                parts += [row("Container", esc(info.get("container"))),
+                          row("Duration", "%s  ·  %d frames" % (fmt_secs(dur) if dur >= 1 else "%.2f s" % dur,
+                                                                 info.get("frames") or 0)),
+                          row("Start timecode", esc(info.get("timecode") or "none")),
+                          row("Bit rate", "%.1f MB/s" % (info["bitrate"] / 8 / 1024 ** 2) if info.get("bitrate") else "—")]
+                parts.append("</table><h3>Video</h3><table>")
+                colour = " / ".join(esc(info.get(k) or "?") for k in ("primaries", "transfer", "matrix"))
+                parts += [row("Codec", "%s%s" % (esc(info.get("codec_long") or info.get("codec")),
+                                                  ("  ·  " + esc(info["profile"])) if info.get("profile") else "")),
+                          row("Resolution", "%sx%s  ·  pixel aspect %s" % (info.get("width"), info.get("height"),
+                                                                         esc(info.get("sar") or "1:1"))),
+                          row("Frame rate", "%.3f fps" % (info.get("fps") or 0)),
+                          row("Pixels", "%s%s%s" % (esc(info.get("pix_fmt")),
+                                                    ("  ·  %s-bit" % info["bits"]) if info.get("bits") else "",
+                                                    "  ·  alpha" if (info.get("pix_fmt") or "").startswith(
+                                                        ("yuva", "rgba", "argb", "bgra", "gbrap", "ya")) else "")),
+                          row("Colour tags", "%s  ·  %s range" % (colour, esc(info.get("range") or "?"))),
+                          row("Field order", esc(info.get("field_order") or "—")),
+                          row("Encoder", esc(info.get("encoder") or "—"))]
+                parts.append("</table><h3>Audio</h3><table>")
+                if info.get("audio"):
+                    for codec, channels, rate in info["audio"]:
+                        parts.append(row("Track", "%s  ·  %s ch  ·  %s Hz" % (esc(codec), channels, rate)))
+                else:
+                    parts.append(row("", "no audio"))
+            parts.append("</table><h3>Check</h3><table>")
+            icons = {"ok": ("ok", C["done"]), "warn": ("check", C["small"]), "bad": ("problem", C["failed"])}
+            for what, state, text in movie_checks(info, e.movie_expected(), e.movie_pixel_result()):
+                label, color = icons[state]
+                parts.append(row(what, "%s  —  %s" % (label, esc(text)), color))
+            parts.append("</table>")
+        bar = self.movie_view.verticalScrollBar().value()
+        self.movie_view.setHtml("".join(parts))
+        self.movie_view.verticalScrollBar().setValue(bar)
+
+    def _open_path(self, path):
+        path = Path(path)
+        target = path if path.exists() else next((p for p in path.parents if p.exists()), None)
+        if target:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
+
+    def _open_folder(self):
+        if self.engine.outputs:
+            self._open_path(Path(frame_path(self.engine.outputs[0][1], 0)).parent)
+
+    def _delete_dialog(self):
+        """Delete: all frames to start with, or a frame range (the frames selected in the list filled in)."""
+        e = self.engine
+        if e.state in ("rendering", "paused", "finishing"):
+            return
+        picked = sorted({self.frames_model.rows[i.row()] for i in self.frames_view.selectedIndexes()})
+        d = QtWidgets.QDialog(self)
+        d.setWindowTitle("Delete rendered frames")
+        lay = QtWidgets.QVBoxLayout(d)
+        r_range = QtWidgets.QRadioButton("Frames")
+        r_all = QtWidgets.QRadioButton("All frames  (%s)" % e.range_text)
+        edit = QtWidgets.QLineEdit(frames_to_spec(picked) if picked else "")
+        edit.setPlaceholderText("e.g. 1001-1010, 1050")
+        edit.textEdited.connect(lambda _: r_range.setChecked(True))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(r_range)
+        row.addWidget(edit, 1)
+        lay.addLayout(row)
+        lay.addWidget(r_all)
+        r_all.setChecked(True)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("Delete…")
+        buttons.accepted.connect(d.accept)
+        buttons.rejected.connect(d.reject)
+        lay.addWidget(buttons)
+        d.resize(380, d.sizeHint().height())
+        if d.exec() != QtWidgets.QDialog.Accepted:
+            return
+        if r_all.isChecked():
+            self._delete_all()
+            return
+        frames = sorted(set(parse_frames(edit.text())) & set(e.all_frames()))
+        if not frames:
+            QtWidgets.QMessageBox.information(self, "JKrender", "None of those frames is in this render (%s)." % e.range_text)
+            return
+        self._delete_all(frames)
+
+    @staticmethod
+    def _files_of(e, frames=None):
+        frames = e.frame_list() if frames is None else frames
+        return sorted({p for f in frames for p in e.output_files(f) if os.path.isfile(p)})
+
+    def _delete_files(self, e, files):
+        """Delete these files of render e and make it ready to render again. The paths that could not be deleted."""
+        size = sum(os.path.getsize(p) for p in files if os.path.isfile(p))
+        failed = []
+        for p in files:
+            try:
+                os.remove(p)
+            except OSError as exc:
+                failed.append("%s: %s" % (os.path.basename(p), exc))
+        e.note("Deleted %d rendered file(s) (%s)" % (len(files) - len(failed), fmt_size(size)), "ok")
+        for line in failed[:20]:
+            e.note("!! could not delete " + line, "err")
+        e.rebuild_plan()
+        e.state = "ready"
+        e.movie_info = None
+        e.scan_disk()  # anything that could not be deleted still counts as rendered
+        e.done_if_on_disk()
+        return failed
+
+    def _delete_all(self, frames=None):
+        """Delete the output files of these frames (all of the render's when None), after asking."""
+        e = self.engine
+        if e.state in ("rendering", "paused", "finishing"):
+            return
+        frames = e.frame_list() if frames is None else frames
+        files = self._files_of(e, frames)
+        if not files:
+            QtWidgets.QMessageBox.information(self, "JKrender", "There are no rendered frames on disk.")
+            return
+        size = sum(os.path.getsize(p) for p in files)
+        folders = sorted({os.path.dirname(p) for p in files})
+        ask = QtWidgets.QMessageBox.warning(
+            self, "Delete rendered frames",
+            "Delete %d file(s), %s, from disk?\n\n%s\n\nFrames %s. This cannot be undone."
+            % (len(files), fmt_size(size), "\n".join(folders), frames_to_spec(frames)),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel, QtWidgets.QMessageBox.Cancel)
+        if ask != QtWidgets.QMessageBox.Yes:
+            return
+        self._after_delete(self._delete_files(e, files))
+
+    def _after_delete(self, failed):
+        e = self.engine
+        if e.movie:
+            self._update_movie()
+            self._movie_show(0.5)
+        self._preview_frame = None
+        self.preview.reset_view()
+        self.preview.set_text("Click a frame to see it")
+        self.preview_info.setText("")
+        self.frames_model.refilter()
+        self._sync_controls()
+        self._refresh_cards()
+        self._slow_tick()
+        if failed:
+            QtWidgets.QMessageBox.warning(self, "JKrender", "%d file(s) could not be deleted. See the Log." % len(failed))
+
+    # ---- details ------------------------------------------------------------
+    def _update_details(self):
+        e = self.engine
+        j = e.job
+        secs = e.frame_secs()
+
+        def row(k, v):
+            return "<tr><td style='color:%s;padding-right:18px'>%s</td><td>%s</td></tr>" % (C["dim"], k, v)
+
+        def esc(v):
+            return str(v).replace("&", "&amp;").replace("<", "&lt;")
+
+        parts = ["<h3>Render</h3><table>"]
+        parts += [row("Script", esc(j.get("script"))), row("Snapshot rendered", esc(j.get("snapshot") or "(the script itself)") + (
+            "  (packed as .gz; unpacked when it renders again)" if j.get("snapshot") and not os.path.isfile(j["snapshot"])
+            and os.path.isfile(j["snapshot"] + ".gz") else "")),
+                  row("Nuke", esc(j.get("nuke_exe"))), row("Nuke version", esc(j.get("nuke_version", ""))),
+                  row("Frames", "%s (%d)" % (esc(e.range_text), len(e.frames))),
+                  row("Format", esc(j.get("format", ""))), row("fps", esc(j.get("fps", ""))),
+                  row("Sent from Nuke", esc(j.get("created", ""))), row("Render folder", esc(e.dir))]
+        parts.append("</table><h3>Write nodes</h3><table>")
+        for w in j.get("writes", []):
+            desc = ", ".join("%s %s" % (k, esc(w[k])) for k in ("file_type", "datatype", "compression", "channels", "colorspace") if w.get(k))
+            parts.append(row(esc(w["name"]), esc(w.get("output", "")) + "<br><span style='color:%s'>%s</span>" % (C["dim"], desc)))
+        parts.append("</table><h3>Split</h3><table>")
+        parts += [row("Nuke processes", e.workers_target), row("Threads each (-m)", e.threads), row("RAM each (-c)", "%d GB" % e.ram),
+                  row("Chunk size", "whole range (movie file)" if e.movie else "%d frames" % e.chunk_size),
+                  row("Chunks", "%d (%d done, %d failed)" % (len(e.chunks), sum(1 for c in e.chunks if c.state == "done"),
+                                                            sum(1 for c in e.chunks if c.state == "failed"))),
+                  row("Retries per chunk", MAX_ATTEMPTS), row("Processes started", len(e.workers)),
+                  row("Crashes", e.crashes)]
+        parts.append("</table><h3>Times</h3><table>")
+        if secs:
+            loads = [w.load_secs for w in e.workers.values() if w.load_secs]
+            fastest = min((fr.secs, f) for f, fr in e.frames.items() if fr.secs is not None)
+            slowest = max((fr.secs, f) for f, fr in e.frames.items() if fr.secs is not None)
+            parts += [row("Wall time", fmt_secs(e.elapsed())),
+                      row("Frame time, average", "%.2f s" % (sum(secs) / len(secs))),
+                      row("Frame time, median", "%.2f s" % statistics.median(secs)),
+                      row("Fastest frame", "%d: %.2f s" % (fastest[1], fastest[0])),
+                      row("Slowest frame", "%d: %.2f s" % (slowest[1], slowest[0])),
+                      row("Sum of frame times", fmt_secs(sum(secs))),
+                      row("Frames rendering at once", "×%.1f on average" % (sum(e.run_secs()) / max(1.0, e.elapsed()))),
+                      row("Script load per process", "%.1f s average" % (sum(loads) / len(loads)) if loads else "—")]
+        else:
+            parts.append(row("", "No frames rendered yet"))
+        parts.append("</table><h3>Command of one process</h3><p style='font-family:Consolas'>%s</p>"
+                     % esc(subprocess.list2cmdline(e._command(gpu=bool(self.settings.get("use_gpu", True))))))
+        env = j.get("env") or {}
+        parts.append("<h3>Environment from Nuke</h3><table>")
+        for k in sorted(env):
+            parts.append(row(esc(k), esc(env[k]) or "<i>(cleared)</i>"))
+        parts.append("</table>")
+        bar = self.details.verticalScrollBar().value()
+        self.details.setHtml("".join(parts))
+        self.details.verticalScrollBar().setValue(bar)
+
+    # ---- close --------------------------------------------------------------
+    def closeEvent(self, event):
+        running = self.manager.running()
+        if running and not self.exit_when_done:
+            ask = QtWidgets.QMessageBox.question(
+                self, "JKrender", "%d render(s) still running.\n\nStop them and close?" % len(running),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No, QtWidgets.QMessageBox.No)
+            if ask != QtWidgets.QMessageBox.Yes:
+                event.ignore()
+                return
+        for dialog in self.findChildren(QtWidgets.QDialog):  # a test still running has Nukes and frames of its own
+            if isinstance(dialog, ScriptTest):
+                dialog.close()
+        for e in running:
+            if e.state == "waiting":
+                self.manager.cancel(e)
+            else:
+                e.stop("Stopped: window closed")
+        for e in self.manager.engines:
+            e.write_report()
+        self._save_headers()  # every table's column widths and order, for the next window
+        self.manager.shutdown()
+        try:
+            QUEUE_FILE.unlink()  # closed properly: nothing to bring back
+        except OSError:
+            pass
+        event.accept()
+
+
+def dark_palette():
+    """JKrender's greys for whatever the style sheet does not paint: dialogs, message boxes, scroll bars, scroll areas.
+    Windows and macOS hand Qt their dark theme; Linux (WSL above all) often has none, and Qt drew those white."""
+    P = QtGui.QPalette
+    pal = P()
+    for role, col in ((P.Window, C["bg"]), (P.WindowText, C["text"]), (P.Base, C["panel"]), (P.AlternateBase, "#2d2d2d"),
+                      (P.Text, C["text"]), (P.Button, C["panel2"]), (P.ButtonText, C["text"]), (P.Highlight, "#6b4a22"),
+                      (P.HighlightedText, "#ffffff"), (P.ToolTipBase, C["panel2"]), (P.ToolTipText, C["text"]),
+                      (P.PlaceholderText, C["dim"]), (P.Link, C["accent"]), (P.BrightText, "#ffffff"), (P.Light, "#4a4a4a"),
+                      (P.Midlight, "#3f3f3f"), (P.Mid, "#2c2c2c"), (P.Dark, "#1e1e1e"), (P.Shadow, "#111111")):
+        pal.setColor(role, QtGui.QColor(col))
+    for role in (P.WindowText, P.Text, P.ButtonText):
+        pal.setColor(P.Disabled, role, QtGui.QColor("#5e5e5e"))
+    return pal
+
+
+def make_icon():
+    """Grey tile, orange JK and a strip of chunks (orange, green, orange), drawn at every size Windows asks for."""
+    icon = QtGui.QIcon()
+    for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+        img = QtGui.QImage(size, size, QtGui.QImage.Format_ARGB32)
+        img.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(img)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setRenderHint(QtGui.QPainter.TextAntialiasing)
+        p.scale(size / 256.0, size / 256.0)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor("#222222"))
+        p.drawRoundedRect(QtCore.QRectF(8, 8, 240, 240), 52, 52)
+        font = QtGui.QFont("Segoe UI", 1, QtGui.QFont.Black)
+        font.setPixelSize(140)
+        p.setFont(font)
+        p.setPen(QtGui.QColor(C["accent"]))
+        p.drawText(QtCore.QRectF(8, 8, 240, 200), QtCore.Qt.AlignCenter, "JK")
+        p.setPen(QtCore.Qt.NoPen)
+        x = 44.0
+        for frac, color in ((0.28, C["accent"]), (0.28, C["done"]), (0.44, C["accent"])):  # three chunks
+            p.setBrush(QtGui.QColor(color))
+            p.drawRoundedRect(QtCore.QRectF(x, 190, 168 * frac - 10, 22), 5.5, 5.5)
+            x += 168 * frac
+        p.end()
+        icon.addPixmap(QtGui.QPixmap.fromImage(img))
+    return icon
+
+
+def _send_to_running(message):
+    try:
+        with socket.create_connection(("127.0.0.1", APP_PORT), timeout=1.0) as sock:
+            sock.sendall(json.dumps(message).encode("utf-8") + b"\n")
+            sock.settimeout(10)
+            return sock.recv(64).startswith(b"OK")
+    except OSError:
+        return False
+
+
+def hand_to_running(job_paths):
+    """Give the renders to the JKrender already open, in one message so it picks them together. The ones it did not
+    take: all of them when none is open. A JKrender before 1.0.4 knows only one "job" a message: one by one then."""
+    paths = [str(Path(p).resolve()) for p in job_paths]
+    if not paths or _send_to_running({"jobs": paths}):
+        return []
+    return [p for p in paths if not _send_to_running({"job": p})]
+
+
+def main():
+    move_old_home()
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    alone = "--exit-when-done" in sys.argv  # scripted runs keep to themselves
+    if not alone:
+        # One render per Write: hand each to the JKrender already open; whatever is left opens a window here.
+        if not args:  # only what was open before a crash: nothing to do if a window is open
+            try:
+                socket.create_connection(("127.0.0.1", APP_PORT), timeout=1.0).close()
+                return
+            except OSError:
+                pass
+        else:
+            args = hand_to_running(args)
+            if not args:
+                return
+    saved = read_queue() if not alone else None
+    restored = []
+    if saved:
+        end_leftovers(saved.get("pids") or [])
+        restored = [r for r in saved.get("renders") or [] if Path(r.get("job") or "").is_file()]
+    if not args and not restored:
+        raise SystemExit("Usage: JKrender.py <job.json> [<job.json> ...]   (the JKrender menu in Nuke creates them)")
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            # Its own taskbar button and icon, instead of being grouped under python.exe.
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("JK.JKrender")
+        except Exception:
+            pass
+    app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("JKrender")
+    app.setWindowIcon(make_icon())
+    app.setStyle("Fusion")
+    app.setPalette(dark_palette())
+    app.setStyleSheet(STYLE)
+    win = MainWindow(restored[0]["job"] if restored else args[0], exit_when_done=alone, restoring=bool(restored))
+    from_nuke = [] if restored else [win.engine]  # the Writes this start brings: picked together, as in add_jobs
+    going = []
+    for i, saved_card in enumerate(restored):
+        if i:
+            win.add_job(saved_card["job"], auto=False)
+        if win.restore(win.engine, saved_card):
+            going.append(win.engine)
+    for job in args[0 if restored else 1:]:
+        e = win.add_job(job)
+        if e is not None:
+            from_nuke.append(e)
+    missing = len(saved.get("renders") or []) - len(restored) if saved else 0
+    if missing:
+        win.engine.note("!! %d render(s) from before the crash could not come back: their folders are gone" % missing, "err")
+    if len(from_nuke) > 1:
+        win.pick(from_nuke)
+    else:
+        win.select(win.manager.engines[0])
+    if not alone:
+        win.listen()
+    win.show()
+    QtCore.QTimer.singleShot(1500, win.check_update)  # a newer release: the update window
+    code = app.exec()
+    win.manager.shutdown()
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()

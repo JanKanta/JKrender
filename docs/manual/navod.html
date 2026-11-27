@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<title>JKrender – návod</title>
+<style>
+@page { size: A4; margin: 14mm 13mm 16mm 13mm; }
+:root { --or: #f7931e; --gr: #7fae58; --rd: #d4503f; --ye: #e3c63d; --bl: #5aa9e6; --ink: #1d1d1f; --dim: #6b6b70; --line: #e3e3e6; --soft: #f6f6f7; --dark: #282828; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); font-size: 10.2pt; line-height: 1.45; background: #fff; }
+h1 { font-size: 26pt; margin: 0 0 4mm; letter-spacing: -0.5px; }
+h2 { font-size: 16pt; margin: 0 0 3mm; padding-top: 1mm; border-bottom: 3px solid var(--or); padding-bottom: 1.5mm; break-after: avoid; }
+h3 { font-size: 11.5pt; margin: 5mm 0 1.5mm; color: #000; break-after: avoid; }
+p { margin: 0 0 2.5mm; }
+.page { break-before: page; }
+.dim { color: var(--dim); }
+.small { font-size: 8.8pt; }
+code, .k { font-family: Consolas, monospace; font-size: 9pt; background: var(--soft); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+.btn { display: inline-block; background: #3b3b3b; color: #e6e6e6; border-radius: 3px; padding: 0 6px; font-size: 8.8pt; font-weight: 600; white-space: nowrap; }
+.btn.p { background: var(--or); color: #111; }
+.shot { position: relative; margin: 2mm 0 3mm; border-radius: 6px; overflow: hidden; border: 1px solid #111; break-inside: avoid; }
+.shot img { display: block; width: 100%; }
+.cap { font-size: 8.6pt; color: var(--dim); margin: -1.5mm 0 3mm; }
+.n { position: absolute; transform: translate(-50%, -50%); width: 5mm; height: 5mm; border-radius: 50%; background: #e8336b; color: #fff; font-weight: 700; font-size: 7.5pt;
+     display: flex; align-items: center; justify-content: center; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.ni { display: inline-flex; width: 5mm; height: 5mm; border-radius: 50%; background: #e8336b; color: #fff; font-weight: 700; font-size: 7.6pt; align-items: center; justify-content: center; margin-right: 1.5mm; flex: none; }
+.legend { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6mm 6mm; margin: 2mm 0 3mm; }
+.legend div { display: flex; align-items: flex-start; font-size: 9.2pt; }
+table { width: 100%; border-collapse: collapse; margin: 1.5mm 0 3.5mm; font-size: 9.1pt; break-inside: auto; }
+th { text-align: left; background: var(--dark); color: #fff; padding: 1.6mm 2mm; font-weight: 600; }
+td { padding: 1.5mm 2mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr { break-inside: avoid; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+.def { color: var(--dim); white-space: nowrap; }
+.box { background: var(--soft); border-left: 4px solid var(--or); padding: 2.5mm 3.5mm; border-radius: 0 5px 5px 0; margin: 2mm 0 3.5mm; break-inside: avoid; }
+.box.g { border-color: var(--gr); } .box.r { border-color: var(--rd); } .box.b { border-color: var(--bl); }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+.cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4mm; }
+.card { border: 1px solid var(--line); border-radius: 6px; padding: 3mm; break-inside: avoid; }
+.card h4 { margin: 0 0 1.5mm; font-size: 10pt; }
+.sw { display: inline-block; width: 3.2mm; height: 3.2mm; border-radius: 1px; vertical-align: -0.4mm; margin-right: 1mm; }
+svg { display: block; }
+.cover { height: 265mm; display: flex; flex-direction: column; justify-content: space-between; }
+.cover .hero { background: var(--dark); color: #fff; border-radius: 10px; padding: 14mm 12mm 10mm; }
+.cover .hero h1 { color: #fff; font-size: 40pt; }
+.cover .hero h1 span { color: var(--or); }
+.toc { columns: 2; column-gap: 8mm; font-size: 10pt; }
+.toc div { break-inside: avoid; padding: 0.8mm 0; border-bottom: 1px dotted #ccc; }
+.toc b { color: var(--or); display: inline-block; width: 7mm; }
+.menu img { max-width: 100%; border: 1px solid #111; border-radius: 4px; }
+.tight table { font-size: 0.92em; } .tight td { padding: 1mm 2mm; } .tight p { margin-bottom: 1.8mm; }
+.dense { line-height: 1.32; } .dense p { margin-bottom: 1.4mm; }
+.kbd { display: inline-block; border: 1px solid #bbb; border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; font-size: 8.6pt; font-family: Consolas, monospace; background: #fff; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<!-- ============ TITULNÍ STRANA ============ -->
+<section class="cover">
+  <div class="hero">
+    <div style="font-size:11pt; letter-spacing:3px; color:#bbb; margin-bottom:6mm">NÁVOD K POUŽITÍ · VERZE 1.0</div>
+    <h1>JK<span>render</span></h1>
+    <p style="font-size:14pt; color:#ddd; max-width:150mm">Rychlý lokální render pro Nuke. Render se rozdělí na kousky (chunky) a ty se počítají v několika Nuke procesech najednou. Po renderu JKrender zkontroluje každý frame na disku.</p>
+    <div style="margin-top:8mm"><img src="shots/03_rendering_workers.png" style="width:100%; border-radius:6px; border:1px solid #000"></div>
+  </div>
+  <div>
+    <h3 style="margin-top:0">Obsah</h3>
+    <div class="toc">
+      <div><b>1</b>Jak JKrender funguje</div>
+      <div><b>2</b>Instalace a spuštění z Nuku</div>
+      <div><b>3</b>Mapa okna</div>
+      <div><b>4</b>Karty renderů a ovládací řádek</div>
+      <div><b>5</b>Dlaždice a mapa framů</div>
+      <div><b>6</b>Panel Output: náhled a framy</div>
+      <div><b>7</b>Panely Chunks a Details</div>
+      <div><b>8</b>Panely Workers a Log</div>
+      <div><b>9</b>Panel System</div>
+      <div><b>10</b>Taby Job a Settings</div>
+      <div><b>11</b>Jak nastavit render</div>
+      <div><b>12</b>Test this script</div>
+      <div><b>13</b>Hlídání RAM a VRAM</div>
+      <div><b>14</b>Kontroly, zvuky, pád, data</div>
+      <div><b>15</b>Myš a klávesy: tahák</div>
+      <div><b>16</b>Když něco nejde</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 1 JAK FUNGUJE ============ -->
+<section class="page" style="font-size:9.6pt">
+<h2>1  Jak JKrender funguje</h2>
+<p>Klasický render v Nuku běží v jednom procesu, který frame po framu počítá celý script. Jeden Nuke ale málokdy vytíží všech 32 vláken procesoru. JKrender proto pustí <b>několik Nuke procesů vedle sebe</b>. Každý <b>otevře script jen jednou</b> a pak dostává kousky práce, takzvané <b>chunky</b>: třeba 10 framů za sebou.</p>
+
+<svg viewBox="0 0 760 300" width="100%">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#888"/></marker></defs>
+  <rect x="10" y="110" width="120" height="80" rx="8" fill="#282828"/>
+  <text x="70" y="143" fill="#fff" font-size="15" font-weight="700" text-anchor="middle">Nuke</text>
+  <text x="70" y="163" fill="#bbb" font-size="11" text-anchor="middle">vybrané Writy</text>
+  <text x="70" y="178" fill="#f7931e" font-size="11" text-anchor="middle">Ctrl+Alt+R</text>
+  <line x1="130" y1="150" x2="178" y2="150" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="180" y="80" width="150" height="140" rx="8" fill="#f7931e"/>
+  <text x="255" y="118" fill="#111" font-size="16" font-weight="700" text-anchor="middle">JKrender</text>
+  <text x="255" y="140" fill="#111" font-size="11" text-anchor="middle">snapshot scriptu</text>
+  <text x="255" y="156" fill="#111" font-size="11" text-anchor="middle">rozdělí framy</text>
+  <text x="255" y="172" fill="#111" font-size="11" text-anchor="middle">na chunky</text>
+  <text x="255" y="196" fill="#111" font-size="11" text-anchor="middle">hlídá RAM a VRAM</text>
+  <g font-size="11">
+    <g transform="translate(380,20)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W01</text></g>
+    <g transform="translate(380,62)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W02</text></g>
+    <g transform="translate(380,104)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W03</text></g>
+    <g transform="translate(380,146)"><rect width="170" height="34" rx="5" fill="#3b3b3b"/><rect x="60" y="7" width="40" height="20" rx="3" fill="#7fae58"/><rect x="104" y="7" width="40" height="20" rx="3" fill="#f7931e"/><text x="10" y="22" fill="#fff">W04</text></g>
+    <text x="465" y="205" fill="#666" text-anchor="middle">… až W08 (Processes)</text>
+    <text x="465" y="225" fill="#666" text-anchor="middle">každý s Threads vlákny a Cache</text>
+  </g>
+  <g stroke="#888" stroke-width="1.6" marker-end="url(#ar)"><line x1="330" y1="130" x2="378" y2="37"/><line x1="330" y1="140" x2="378" y2="79"/><line x1="330" y1="155" x2="378" y2="121"/><line x1="330" y1="165" x2="378" y2="163"/></g>
+  <line x1="552" y1="110" x2="598" y2="110" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <rect x="600" y="60" width="150" height="100" rx="8" fill="#fff" stroke="#7fae58" stroke-width="2"/>
+  <text x="675" y="88" font-size="14" font-weight="700" text-anchor="middle">Disk</text>
+  <text x="675" y="108" font-size="11" text-anchor="middle" fill="#444">framy se zapisují,</text>
+  <text x="675" y="124" font-size="11" text-anchor="middle" fill="#444">nic je přitom nečte</text>
+  <text x="675" y="146" font-size="11" text-anchor="middle" fill="#7fae58" font-weight="700">✔ hotovo</text>
+  <rect x="600" y="180" width="150" height="70" rx="8" fill="#fff" stroke="#5aa9e6" stroke-width="2"/>
+  <text x="675" y="205" font-size="12" font-weight="700" text-anchor="middle">Po renderu</text>
+  <text x="675" y="224" font-size="11" text-anchor="middle" fill="#444">1. Check frames: soubory</text>
+  <text x="675" y="239" font-size="11" text-anchor="middle" fill="#444">2. Check pixels: NaN, černé…</text>
+  <line x1="675" y1="160" x2="675" y2="178" stroke="#888" stroke-width="2" marker-end="url(#ar)"/>
+  <text x="10" y="282" font-size="12" fill="#333">Chunky se ke konci zmenšují, takže všechny procesy doběhnou zhruba zároveň.</text>
+</svg>
+
+<h3>Tři čísla, která rozhodují o rychlosti</h3>
+<div class="cols3">
+  <div class="card"><h4>Processes</h4>Kolik Nuke procesů běží najednou (pro všechny rendery dohromady). Víc procesů znamená víc práce naráz, ale i víc RAM a VRAM.</div>
+  <div class="card"><h4>Threads</h4>Kolik vláken procesoru má každý proces (Nuke <code>-m</code>). <b>Processes × Threads</b> by mělo dát zhruba počet vláken PC (tady 32).</div>
+  <div class="card"><h4>Cache</h4>Limit cache jednoho procesu v GB (Nuke <code>-c</code>). Proces si ve skutečnosti vezme víc. Kolik, ukáže System › RAM.</div>
+</div>
+<div class="box">Výchozí nastavení je <b>8 procesů × 4 vlákna</b>. Těžké comp scripty, které jeden Nuke vytíží sám (Defocus, Denoise), bývají rychlejší na <b>4 × 8</b> a zaberou poloviční RAM. Scripty, kterým roste VRAM, chtějí méně procesů. Co je nejlepší pro tvůj script, změří <b>Test this script</b> (kapitola 12).</div>
+
+<h3>Co je kde uložené</h3>
+<table>
+<tr><th>Co</th><th>Kde</th></tr>
+<tr><td>Nastavení</td><td><code>~/.nuke/JKrender/settings/settings.json</code> (každý uživatel má svoje). Starší verze ho měly v <code>~/.jkrender</code>; JKrender ho při prvním spuštění sám přesune.</td></tr>
+<tr><td>Logy renderů</td><td><code>~/.nuke/JKrender/log/</code>: jedna složka na render (snapshot scriptu, job, log každého Nuke procesu a <code>report.json</code>). Starší než 15 dní se mažou; kopie scriptů renderů, které nejsou otevřené, se po hodině zabalí (.gz).</td></tr>
+<tr><td>Stažené knihovny</td><td><code>~/.nuke/JKrender/lib/</code>: numpy a OpenEXR (náhled EXR) a ffmpeg (filmy). Nová verze JKrenderu je nechá být.</td></tr>
+<tr><td>Výsledky testů</td><td><code>~/.nuke/JKrender/settings/test_results</code></td></tr>
+<tr><td>Vyrenderované framy</td><td>Tam, kam je posílá Write. JKrender je sám nikdy nemaže, jen přes tlačítko Delete.</td></tr>
+</table>
+</section>
+
+<!-- ============ 2 INSTALACE ============ -->
+<section class="page tight" style="font-size:8.0pt">
+<h2>2  Instalace a spuštění z Nuku</h2>
+<div class="cols">
+<div>
+<h3>Instalace (jednou)</h3>
+<p><span class="ni">1</span>Zkopíruj celou složku <code>JKrender</code> do <code>%USERPROFILE%\.nuke\</code>. Složka se může jmenovat jinak (zip z GitHubu dává <code>JKrender-main</code>): vždycky ji přejmenuj na <code>JKrender</code>.</p>
+<p><span class="ni">2</span>Do <code>~/.nuke/init.py</code> přidej řádek (soubor případně vytvoř):</p>
+<p><code>nuke.pluginAddPath("./JKrender")</code></p>
+<p><span class="ni">3</span>Restartuj Nuke. Při prvním startu se JKrender jedním dotazem zeptá, jestli stáhnout, co Nuke nemá:</p>
+<table class="small">
+<tr><th>Co</th><th>Velikost</th><th>K čemu</th></tr>
+<tr><td>numpy a OpenEXR</td><td>asi 15 MB</td><td>náhled EXR a kontrola pixelů</td></tr>
+<tr><td>ffmpeg a ffprobe</td><td>asi 77 MB</td><td>kontrola a přehrávání filmů (MOV, MP4, MXF)</td></tr>
+</table>
+<p>Stahuje se na pozadí do <code>JKrender/lib</code>, Nuke se mezitím dá používat. ffmpeg je LGPL build z <code>github.com/BtbN/FFmpeg-Builds</code>, ověřený proti SHA-256 z vydání. Nabídne se jen tehdy, když ho PC ještě nemá: ffmpeg na PATH nebo z WinGet se použije přednostně.</p>
+<p><b>Když odmítneš</b>, render funguje dál, jen bez náhledu EXR nebo bez kontroly a přehrávání filmů. Znovu se zeptá po smazání <code>lib/DECLINED</code> (numpy, OpenEXR) nebo <code>lib/DECLINED_FFMPEG</code> (ffmpeg) a restartu Nuka. Když stažení nevyjde, Nuke napíše proč a jak to nainstalovat ručně (<code>winget install ffmpeg</code>).</p>
+<p class="small dim">Nuke 16 a novější spouští okno ve vlastním Pythonu Nuka. Nuke 13–15 mají PySide2: nainstaluj Python 3.10 nebo novější a <code>pip install PySide6 psutil</code>, JKrender si ho najde (nebo nastav <code>JKRENDER_PYTHON</code>). Windows, macOS i Linux.</p>
+<p class="small dim"><b>Nová verze:</b> JKrender ji nabídne při otevření (What's new, Update, Later) nebo přes Settings › <span class="btn">Check for updates</span>; složky <code>lib</code>, <code>log</code> a <code>settings</code> zůstanou. Pak restartuj Nuke.</p>
+</div>
+<div>
+<h3>Menu JKrender v Nuku</h3>
+<table>
+<tr><th>Položka</th><th>Co dělá</th></tr>
+<tr><td>Render Selected Write(s)<br><span class="kbd">Ctrl+Alt+R</span></td><td>Pošle vybrané Writy (nebo Groupy s Writy) do JKrenderu. Každý Write dostane vlastní kartu. Když okno ještě neběží, otevře se.</td></tr>
+<tr><td>Open Renders Folder</td><td>Otevře složku s logy renderů.</td></tr>
+</table>
+<p class="small">Když script není uložený, zeptá se <i>Save it and render?</i>: renderuje se uložená verze. Write, jehož cesta nemá číslo framu (<code>sh010.exr</code> místo <code>sh010.####.exr</code>), odmítne: každý frame by přepsal stejný soubor. Scripty z Nuke Non-commercial a Indie (<code>.nknc</code>, <code>.nkind</code>) se renderují ve stejném režimu.</p>
+</div>
+</div>
+
+<h3>Co se stane po odeslání</h3>
+<svg viewBox="0 0 760 110" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="85" y="50" fill="#fff" text-anchor="middle" font-weight="700">Uloží se snapshot</text><text x="85" y="68" fill="#bbb" text-anchor="middle">kopie scriptu v tu chvíli</text>
+    <rect x="195" y="20" width="170" height="70" rx="8" fill="#282828"/><text x="280" y="50" fill="#fff" text-anchor="middle" font-weight="700">Karta v JKrenderu</text><text x="280" y="68" fill="#bbb" text-anchor="middle">stav Ready, čeká</text>
+    <rect x="390" y="20" width="170" height="70" rx="8" fill="#f7931e"/><text x="475" y="50" fill="#111" text-anchor="middle" font-weight="700">Klikneš Render</text><text x="475" y="68" fill="#111" text-anchor="middle">dotaz na cache Nuka</text>
+    <rect x="585" y="20" width="170" height="70" rx="8" fill="#7fae58"/><text x="670" y="50" fill="#111" text-anchor="middle" font-weight="700">Render běží</text><text x="670" y="68" fill="#111" text-anchor="middle">v Nuku můžeš pracovat dál</text>
+    <g fill="#999"><path d="M172,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M367,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/><path d="M562,55 l18,0 l-6,-5 m6,5 l-6,5" stroke="#999" stroke-width="2" fill="none"/></g>
+  </g>
+</svg>
+<div class="box b"><b>Snapshot:</b> renderuje se script v podobě, jakou měl při odeslání. V Nuku můžeš hned dál pracovat a ukládat, na běžící render to nemá vliv. Když script změníš a chceš ho renderovat znovu, pošli ho z Nuku znovu: novější odeslání nahradí starou kartu.</div>
+<div class="box"><b>Dotaz na cache:</b> když je otevřený nějaký Nuke, Render se zeptá, jestli mu vyčistit buffery, playback cache a Blink cache, aby měl render víc paměti. Výchozí odpověď je <b>No</b> a render se spustí v obou případech; Settings › <i>Clear Nuke cache without asking</i> ji čistí bez ptaní. Diskovou cache to nemaže.</div>
+</section>
+
+<!-- ============ 3 MAPA OKNA ============ -->
+<section class="page">
+<h2>3  Mapa okna</h2>
+<p>Okno má nahoře karty renderů a ovládací řádek, pod nimi čísla a mapu framů. Zbytek tvoří tři panely: vlevo <b>Output / Chunks / Details</b>, vpravo nahoře <b>Workers / Log</b> a vpravo dole taby <b>System / Job / Settings / Donation / Author</b>. Hranice mezi panely jde táhnout myší.</p>
+<div class="shot" id="map">
+  <img src="shots/03_rendering_workers.png">
+  <div class="n" style="left:12.4%;top:2.4%">1</div>
+  <div class="n" style="left:87.3%;top:1.6%">2</div>
+  <div class="n" style="left:8.6%;top:9.8%">3</div>
+  <div class="n" style="left:34.2%;top:9.8%">4</div>
+  <div class="n" style="left:11.6%;top:14.2%">5</div>
+  <div class="n" style="left:0.8%;top:19.1%">6</div>
+  <div class="n" style="left:3.0%;top:30.0%">7</div>
+  <div class="n" style="left:24.0%;top:56.3%">8</div>
+  <div class="n" style="left:45.0%;top:24.2%">9</div>
+  <div class="n" style="left:45.0%;top:59.8%">10</div>
+</div>
+<div class="legend">
+  <div><span class="ni">1</span>Karty renderů: jeden Write (render) na kartu. Kliknutím ho vybereš.</div>
+  <div><span class="ni">2</span>Odhad, kdy budou hotové všechny rendery.</div>
+  <div><span class="ni">3</span>Render, Pause, Stop pro vybraný render.</div>
+  <div><span class="ni">4</span>Slate, Framerange, Processes, Threads, Cache a Chunk tohoto renderu (jen pro čtení).</div>
+  <div><span class="ni">5</span>Dlaždice s čísly: framy, čas, rychlost, procesy, kontroly.</div>
+  <div><span class="ni">6</span>Mapa framů po chuncích. Kliknutím na frame ho zobrazíš.</div>
+  <div><span class="ni">7</span>Output: náhled framu s přehráváním.</div>
+  <div><span class="ni">8</span>Output: filtr, kontroly, složka, mazání a seznam framů.</div>
+  <div><span class="ni">9</span>Workers: časová osa každého Nuke procesu.</div>
+  <div><span class="ni">10</span>System: zátěž PC a tabulka procesů. Vedle něj taby Job, Settings, Donation a Author.</div>
+</div>
+</section>
+
+<!-- ============ 4 KARTY A OVLÁDÁNÍ ============ -->
+<section class="page tight" style="font-size:9.1pt">
+<h2>4  Karty renderů a ovládací řádek</h2>
+<h3>Karta renderu</h3>
+<p>Každý odeslaný Write je jedna karta: číslo, název scriptu, soubor, který Write renderuje (<i>sh010_comp_v003.####.png</i>; tooltip ukáže node Writu a celou cestu), pruh postupu a stav (Ready, Waiting, Rendering, Paused, Checking output, afterRender hooks, Done, Failed, Stopped). <b>Klik</b> kartu vybere a celé okno pak ukazuje tento render. <b>Shift+klik</b> vybere víc karet; Render, Pause a Stop pak platí pro všechny, Render again i pro hotové (zeptá se jednou za všechny). Křížek <b>×</b> render zavře, framy na disku zůstanou. <b>Červená karta</b>: v renderu je chyba (selhal, Nuke nevyrenderoval frame, rozbité framy, chyba Nuka, render hook, který selhal), i během renderu; co přesně, řekne tooltip karty. <b>Pád Nuke procesu kartu nečervená</b>: chunk se vyrenderuje znovu v novém Nuku a tooltip karty řekne, kolikrát Nuke spadl. Ani proces zavřený kvůli RAM nebo VRAM chyba není.</p>
+<p>Rendery sdílejí jeden rozpočet procesů. Vedle sebe jich běží nejvýš tolik, kolik je v Settings <i>Max renders at once</i> (výchozí 3); procesy se mezi ně dělí (8 → 4 + 4 → 3 + 3 + 2). Film (MOV, MP4…) má vlastní proces navíc a do Max renders se nepočítá (kapitola 6). Čísla karet jdou podle místa: zavřeš kartu a další dostanou čísla znovu od 1.</p>
+<h3>Karta vpravo: ALL RENDERS DONE IN</h3>
+<p>Kdy by měly být hotové všechny rendery, které běží nebo čekají, při rychlosti, jakou PC renderuje teď. Pod tím: v kolik skončí, jak dlouho už běží a kolik framů zbývá. Když všechny doběhnou, karta ukáže <b>ALL RENDERS TOOK</b>, tedy jak dlouho to celé trvalo.</p>
+
+<h3>Ovládací řádek</h3>
+<table>
+<tr><th style="width:34mm">Prvek</th><th>Co dělá</th></tr>
+<tr><td><span class="btn p">Render</span></td><td>Spustí vybraný render (nebo víc vybraných). Framy, které už jsou na disku v pořádku, přeskočí. Po Stopu render pokračuje tam, kde skončil (Resume). Když má render framy na disku (hotový, zastavený nebo s framy z dřívějška), zeptá se: <b>Only missing</b> dorenderuje jen framy, které na disku chybí nebo jsou rozbité (ostatní jsou v mapě tmavě zelené), <b>All frames again</b> vyrenderuje všechno znovu, <b>Cancel</b> nic. Po Stopu běhu <i>All frames again</i> nabídne nejdřív <b>Go on (N left)</b>: vyrenderují se i framy, ke kterým ten běh nedošel.</td></tr>
+<tr><td><span class="btn">Pause</span></td><td>Zmrazí všechny Nuke procesy renderu uprostřed framu (procesor se uvolní, paměť zůstane držená). Další klik pokračuje.</td></tr>
+<tr><td><span class="btn">Stop</span></td><td>Zastaví render, ukončí procesy a smaže napůl zapsané framy a dočasné soubory Nuka. Hotové framy zůstanou.</td></tr>
+<tr><td>Slate</td><td>Číslo slatu: frame před Framerange, když je slate zapnutý (tab Job).</td></tr>
+<tr><td>Framerange</td><td>Framy tohoto renderu: rozsah z Nuku, pokud jsi ho nezměnil v tabu Job.</td></tr>
+<tr><td>Processes · Threads · Cache · Chunk</td><td>S čím render běží. Mění se v tabu Job › Processes and Chunks; počet procesů i za běhu pravým tlačítkem v System.</td></tr>
+<tr><td>Barevný pruh</td><td>Výsledek renderu, viz níže.</td></tr>
+</table>
+<h3>Barevný pruh s výsledkem</h3>
+<table>
+<tr><th style="width:34mm">Barva</th><th>Co znamená</th><th>Příklad</th></tr>
+<tr><td><span class="sw" style="background:var(--gr)"></span>Zelená</td><td>Hotovo, všechny framy jsou na disku a prošly kontrolou.</td><td class="small">Done in 2:06. All 97 frames are on disk and pass the check.</td></tr>
+<tr><td><span class="sw" style="background:var(--ye)"></span>Žlutá</td><td>Hotovo, ale něco není ověřené nebo vypadá podezřele (framy nezkontrolované, podezřele malé; slate se jako malý nehlásí).</td><td class="small">frames not checked · 2 suspiciously small</td></tr>
+<tr><td><span class="sw" style="background:var(--rd)"></span>Červená</td><td>Chyba: render selhal, rozbité framy, nebo Check pixels našel problém (NaN, černý frame…).</td><td class="small">2 broken frames · Output: Problems shows them</td></tr>
+<tr><td><span class="sw" style="background:#888"></span>Šedá</td><td>Probíhá: <i>Checking pixels…</i>, čekání na volné procesy a podobně.</td><td class="small">Waiting: 1 render already uses the PC</td></tr>
+</table>
+</section>
+
+<!-- ============ 5 DLAŽDICE A MAPA ============ -->
+<section class="page tight" style="font-size:9pt">
+<h2>5  Dlaždice a mapa framů</h2>
+<div class="shot"><img src="shots/c_tiles.png"></div>
+<table>
+<tr><th style="width:34mm">Dlaždice</th><th>Co ukazuje</th></tr>
+<tr><td>Frames</td><td>Hotové / všechny framy renderu, procenta a kolik se jich právě renderuje.</td></tr>
+<tr><td>Elapsed</td><td>Jak dlouho render běží (bez pauz).</td></tr>
+<tr><td>Remaining</td><td>Odhad zbývajícího času při současné rychlosti.</td></tr>
+<tr><td>Speed</td><td>Framy za sekundu a za minutu, všechny procesy dohromady. Nejlepší číslo pro porovnání nastavení.</td></tr>
+<tr><td>Frame time</td><td>Kolik trvá jeden frame v jednom procesu a kolik framů se počítá najednou (× N at once).</td></tr>
+<tr><td>Nuke processes</td><td>Kolik procesů renderuje / kolik jich běží a kolik míst z Processes zabírají všechny rendery. Filmy navíc jako <i>+ N for movies</i>; když jsou otevřené jen filmy, <i>N for movies</i>.</td></tr>
+<tr><td>Check frames</td><td>Kontrola souborů: chybějící, prázdné, useknuté, nečitelné a podezřele malé framy.</td></tr>
+<tr><td>Check pixels</td><td>Kontrola pixelů v R, G a B (EXR, PNG, JPEG, TIFF, DPX): černé, prázdné a jednobarevné framy, framy stejné jako jiný a frame, jehož velikost nebo bitová hloubka se liší od ostatních. U EXR navíc NaN, inf a komprese; jeho další vrstvy (AOV, utility passy) se neposuzují a framy jen z nich ukážou <i>no RGB</i>. Film má místo těchto dvou jedinou dlaždici <b>Check video</b>: ok, check it, broken, nebo checking, dokud se čtou jeho framy.</td></tr>
+</table>
+
+<h3>Mapa framů</h3>
+<div class="shot"><img src="shots/c_map.png"></div>
+<p>Každý obdélníček je jeden frame, seskupené po chuncích (C01, C02…). <b>Klik na frame</b> ho otevře v náhledu; jeho tooltip ukáže stav, proces, čas, kontroly a sekundy beforeFrameRender / afterFrameRender z Writu. Barvy:</p>
+<p>
+<span class="sw" style="background:#4a4a4a"></span>čeká (queued) &nbsp;
+<span class="sw" style="background:var(--or)"></span>renderuje se &nbsp;
+<span class="sw" style="background:var(--gr)"></span>hotovo &nbsp;
+<span class="sw" style="background:#556b45"></span>na disku: přeskočen (Only missing), nebo po All frames again zatím starý frame, dokud se nezapíše nový &nbsp;
+<span class="sw" style="background:var(--ye)"></span>podezřele malý &nbsp;
+<span class="sw" style="background:var(--rd)"></span>selhal / rozbitý</p>
+<h3>Render again: všechno, nebo jen chybějící</h3>
+<div class="cols"><div><div class="shot" style="max-width:80mm"><img src="shots/d3_render_again.png"></div></div>
+<div><p style="margin-top:0">Když má render framy na disku a klikneš na <b>Render again</b>, zeptá se: <b>Only missing</b> (výchozí) dorenderuje jen framy, které chybí nebo jsou rozbité; ostatní přeskočí a v mapě jsou <b>tmavě zelené</b>. <b>All frames again</b> vyrenderuje všechno znovu, <b>Cancel</b> nic. U filmu (MOV, MP4) se nic neptá: film je jeden soubor a renderuje se celý. Když jsou všechny framy už na disku a projdou kontrolou, nic se nerenderuje a Log napíše <i>Nothing to render</i>.</p>
+<p>S víc kartami vybranými přes <b>Shift</b> se zeptá jednou za všechny (např. <i>27 of 27 frames of 3 renders…</i>). Framy, které byly na disku už při otevření nebo z běhu před Stopem, jsou tmavě zelené. V Output pak filtr <b>Rendered</b> ukazuje jen framy z tohoto běhu, <b>All</b> všechny.</p></div></div>
+</section>
+
+<!-- ============ 6 OUTPUT ============ -->
+<section class="page tight" style="font-size:8.7pt">
+<h2>6  Panel Output: náhled a framy</h2>
+<div class="cols">
+<div><div class="shot"><img src="shots/c_output.png"></div></div>
+<div>
+<h3 style="margin-top:0">Náhled</h3>
+<ul style="padding-left:5mm; margin:0 0 2mm">
+<li><b>Kolečko myši</b>: zoom, <b>tažení</b> posouvá obraz.</li>
+<li><b>Dvojklik</b>: obraz se vrátí na celý frame. Když už je celý, náhled se zvětší přes všechny tři panely; zpět klávesou <span class="kbd">Esc</span>.</li>
+<li>Při zoomu se načte plné rozlišení (EXR i 4K).</li>
+<li>EXR je ukázaný na svém formátu: bbox menší než formát sedí na svém místě na černé, overscan se ořízne. Pravé tlačítko › <b>Show the whole format</b> vypnuté: náhled vyplní jen bbox.</li>
+<li><span class="kbd">Space</span> spustí a zastaví přehrávání. Nikdy nestiskne tlačítko, takže render nezastaví.</li>
+</ul>
+<h3>Lišta pod náhledem</h3>
+<p>Předchozí frame · <b>Play/Pause</b> (přehrává hotové framy dokola ve fps scriptu) · další frame · posuvník přes všechny framy · číslo framu · <b>zvětšit</b> (náhled přes tři panely, <span class="kbd">Esc</span> zpět). Pod lištou jsou informace o framu: cesta, velikost, rozlišení, kanály a výsledky kontrol.</p>
+</div>
+</div>
+<h3>Tlačítka</h3>
+<table>
+<tr><th style="width:34mm">Prvek</th><th>Co dělá</th></tr>
+<tr><td>Filtr</td><td><b>All</b>: všechny framy najednou: vyrenderované, přeskočené, rozbité, <i>not on disk</i> i ty, které se teprve budou renderovat, a framy na disku mimo Framerange. Ostatní filtry jsou jeho části: <b>Rendered</b>: jen framy vyrenderované v tomto běhu. <b>Problems</b>: chyby, podezřele malé framy a nálezy pixelové kontroly. <b>Framerange</b>: jen framy zvoleného rozsahu.</td></tr>
+<tr><td><span class="btn">Check frames</span></td><td>Znovu projde soubory všech framů: existuje, není prázdný, je celý a čitelný a není výrazně menší než ostatní. Frame, který na disku ještě není, zůstane <i>not on disk</i>, za rozbitý se nepočítá.</td></tr>
+<tr><td><span class="btn">Check pixels</span></td><td>Na pozadí projde RGB každého framu (EXR, PNG, JPEG, TIFF, DPX): černé, prázdné a jednobarevné framy, framy stejné jako jiný kdekoli v sekvenci, odlišná velikost nebo bitová hloubka; u EXR i NaN, inf a komprese, ne jeho další vrstvy. Slate přesně stejný jako první frame (nic na něm není) ukáže červeně <i>same as 1000</i>. Zhruba 0,1 s na 4K frame. Jen hlásí, nic znovu nerenderuje.</td></tr>
+<tr><td><span class="btn">Open folder</span></td><td>Otevře složku s výstupem.</td></tr>
+<tr><td><span class="btn">Delete</span></td><td>Smaže vyrenderované framy z disku: všechny (výchozí) nebo zadaný rozsah. Předtím se zeptá.</td></tr>
+</table>
+<h3>Seznam framů</h3>
+<p>Sloupce: <b>Frame</b>, <b>State</b>, <b>Chunk</b>, <b>Worker</b> (který proces ho počítal), <b>Time</b>, <b>Size</b>, <b>Check frames</b>, <b>Check pixels</b>. S filtrem All jsou v seznamu od začátku všechny framy a stav se mění, jak se renderují. Po <b>Render again</b> framy nezmizí: zůstanou jako <i>on disk, queued again</i> se starou velikostí a časem (jdou prohlížet i přehrávat), dokud je nový render nepřepíše. Framy na disku mimo zvolený Framerange zůstávají v seznamu s poznámkou <i>not in Framerange</i>.</p>
+<div class="cols">
+<div class="menu"><img src="shots/m4_frame_menu.png" style="width:34%"></div>
+<div><b>Pravé tlačítko na framu</b> (nebo na víc vybraných):<br>
+<b>Render this frame / batch</b>: vyrenderuje jen tyto framy znovu (když render běží, přidají se do něj).<br>
+<b>Delete this frame / batch</b>: smaže je z disku (jen když render neběží).</div>
+</div>
+</section>
+
+<!-- ============ 7 CHUNKS + DETAILS ============ -->
+<section class="page">
+<h2>7  Panely Chunks a Details</h2>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Chunks</h3>
+<div class="shot"><img src="shots/c_chunks.png"></div>
+<p>Jeden řádek na chunk: <b>Chunk</b> (C01…), <b>Frames</b> (rozsah), <b>Count</b>, <b>State</b>, <b>Process</b> (který ho počítá), <b>Done</b>, <b>Time</b>, <b>s / frame</b> a <b>Note</b> (proč byl chunk zopakován, <i>try 2 of 3</i> a podobně). Frame, který selže třikrát, pokaždé v novém Nuku, se vzdá sám, ve vlastním chunku; zbytek jeho chunku se renderuje dál.</p>
+<div class="menu"><img src="shots/m3_chunk_menu.png" style="width:70%"></div>
+<p><b>Pravé tlačítko:</b> <b>Render again</b> (chunk znovu), <b>Show process log</b> (log procesu, který ho počítal), <b>Delete frames from chunk</b> (jen když render neběží).</p>
+</div>
+<div>
+<h3 style="margin-top:0">Details</h3>
+<div class="shot"><img src="shots/c_details.png"></div>
+<p>Všechno o renderu na jednom místě: script a jeho snapshot, Writy a výstupní cesty, formát, fps, rozsah, verze Nuka, s jakými Processes × Threads × Cache běží, časy a cesty ke logům. Hodí se, když potřebuješ zjistit, co přesně se renderovalo.</p>
+</div>
+</div>
+<div class="box b small" style="margin-top:3mm"><b>MOV / MP4 / MXF:</b> místo seznamu framů se ukáže jeden filmový soubor s detaily (kodek, profil, fps, rozlišení, timecode, počet framů proti nastavení Writu) a přehrávač s lupou. Tlačítka <span class="btn">Check video</span>, <span class="btn">Open folder</span>, <span class="btn">Delete video</span>. Po renderu ffmpeg přečte i všechny framy: černé, jednobarevné a zamrzlé framy (stejné jako ten předchozí) jsou chyba, červeně jako u sekvence; kvůli nim se nic znovu nerenderuje. Film se nedá rozdělit, takže ho renderuje <b>jeden proces se všemi vlákny</b>. Ten běží <b>navíc, vedle míst z Processes</b>: spustí se hned, i když jedou jiné rendery, a sekvence vedle něj o žádný proces nepřijde. Do Max renders at once se nepočítá; víc filmů má každý svůj proces. Když vedle něj renderuje sekvence, jmenuje se proces filmu podle míst (s Processes 8 je to W09), jinak dostane W01; v System má vlastní řádek. Počká jen tehdy, když je paměť nad Reload Nuke at. Paměťová pravidla ho zavírají až úplně nakonec, protože by film začínal znovu od začátku.</div>
+</section>
+
+<!-- ============ 8 WORKERS + LOG ============ -->
+<section class="page tight" style="font-size:9.1pt">
+<h2>8  Panely Workers a Log</h2>
+<h3 style="margin-top:0">Workers: časová osa procesů</h3>
+<div class="shot"><img src="shots/c_workers.png"></div>
+<p>Jeden řádek na Nuke proces (W01–W08), zleva doprava čas. <span class="sw" style="background:#626262"></span><b>šedá</b>: Nuke startuje a otevírá script (i po Reload Nuke, popisek <i>again: reload</i>). <span class="sw" style="background:var(--gr)"></span><b>zelená</b>: hotové chunky (s číslem chunku). <span class="sw" style="background:var(--or)"></span><b>oranžová</b>: chunk, který se právě renderuje. <span class="sw" style="background:#8f7fc4"></span><b>fialová</b>: render hooky, beforeRender mezi načtením scriptu a prvním chunkem, afterRender po posledním chunku (Settings › <i>Show render hooks in Workers</i>). Chunky ostatních renderů jsou ztlumené (Settings › <i>Dim other renders in Workers</i>). Je hned vidět, jestli některý proces stojí, startuje znovu nebo dlouho otevírá script. Prázdný čas mezi dvěma rendery se vystřihne, uvnitř renderu úsek 30 s a delší bez jediného procesu: zůstane jen úzká mezera, takže rendery si nechají šířku. Časová osa tu není; jak dlouho chunk trval, řekne jeho tooltip.</p>
+<p><b>Najetí myší na chunk</b> ukáže jeho framy a kolik z nich se vyrenderovalo, jak chunk skončil (<i>every frame rendered</i>, <i>stopped after frame 1012 for a reload (VRAM over 95 %)</i>, <i>stopped mid-chunk: GPU frozen</i>, <i>Nuke crashed (exit code …)</i>) a co proces udělal potom (<i>then: on to C07</i>, <i>closed: RAM 98 %</i>). Zbytek přerušeného chunku se vrátí do fronty a dodělá ho jiný proces.</p>
+<p><b>Pravé tlačítko na řádku procesu</b> otevře stejné menu jako v panelu System (kapitola 9).</p>
+
+<h3>Log</h3>
+<div class="shot"><img src="shots/c_log.png"></div>
+<p>Zprávy JKrenderu a výstup každého Nuke procesu s časem. Filtr: <b>All</b>, <b>JKrender only</b> (jen zprávy JKrenderu), <b>Errors and warnings</b>. <span class="btn">Open log folder</span> otevře složku s logy tohoto renderu: snapshot scriptu, <code>job.json</code> a <code>worker_NN.log</code> každého procesu.</p>
+<div class="box">Každý proces v logu hlásí, za jak dlouho byl připravený, rozepsané na <b>start Nuka</b> a <b>otevření scriptu</b>. Pokud start trvá 15 s a víc, JKrender varuje. Pomalý start bývá licence nebo startovací skripty pipeline, ne script samotný.</div>
+<div class="box b">Log také píše, jak dlouho trvaly render hooky (<i>W01 ran the beforeRender hooks (2) in 0.31 s</i>, hooky Writu na každý frame sečtené na konci renderu), a varuje, když několik procesů čekalo ve stejnou chvíli: zpravidla na disk, a pak víc procesů render nezrychlí.</div>
+</section>
+
+<!-- ============ 9 SYSTEM ============ -->
+<section class="page">
+<h2>9  Panel System</h2>
+<div class="shot"><img src="shots/c_system.png"></div>
+<h3>Dlaždice a grafy</h3>
+<p>Dlaždice jsou stejně široké, v pořadí <b>CPU</b> (využití a vlákna), <b>RAM</b> (<i>X of Y GB – cache Z GB</i>: kolik je obsazeno a kolik z toho drží cache Nuků; tooltip rozepíše, kolik berou Nuke procesy a kolik zbytek PC), <b>GPU</b> (využití karty), <b>VRAM</b> (paměť karty), <b>Disk write</b>, <b>Disk read</b> a <b>Network</b>. Graf <b>Load</b> ukazuje CPU, RAM, GPU a VRAM v %, graf <b>Disk / network</b> přenosy v MB/s. <b>CPU threads</b>: jeden sloupeček na vlákno procesoru, takže je vidět, jestli je PC vytížené celé.</p>
+<h3>Tabulka procesů</h3>
+<p>Jeden řádek na místo z Processes, i na prázdné místo, kde proces zrovna neběží (zavřený, čeká na paměť), plus řádek pro každý běžící film. Když jsou otevřené jen filmy, je řádek na film.</p>
+<table>
+<tr><th style="width:30mm">Sloupec</th><th>Význam</th></tr>
+<tr><td>Process</td><td>Číslo procesu (W01…).</td></tr>
+<tr><td>Script · File</td><td>Script, který proces renderuje, a soubor, který zapisuje.</td></tr>
+<tr><td>State</td><td>Co proces dělá a co udělá dál, např. <i>busy → reload (VRAM over 95 %)</i>, <i>closed (GPU frozen)</i>, <i>wait: Reload at 85 % of VRAM</i>, <i>running afterRender hooks</i>. Všechny texty jsou v tabulce v kapitole 13. Tooltip u čekajícího místa řekne, na co přesně čeká.</td></tr>
+<tr><td>CPU</td><td>Kolik vláken procesoru proces opravdu vytěžuje (z kolika má).</td></tr>
+<tr><td>RAM · Cache</td><td>Skutečná paměť procesu a jeho cache Nuka proti limitu.</td></tr>
+<tr><td>GPU · VRAM</td><td>Využití grafické karty a VRAM tohoto procesu. Jakákoli karta: NVIDIA, AMD nebo Intel Arc (na Linuxu NVIDIA a AMD).</td></tr>
+<tr><td>Frames · Avg frame · Last frame</td><td>Kolik framů udělal, jak dlouho trvaly v průměru a poslední.</td></tr>
+<tr><td>Script load</td><td>Za jak dlouho Nuke nastartoval a otevřel script.</td></tr>
+<tr><td>Uptime · Chunk · Chunks</td><td>Jak dlouho běží, na jakém chunku je a kolik jich udělal.</td></tr>
+<tr><td>PID · Frame · Peak RAM</td><td>Skryté sloupce: ID procesu ve Windows, aktuální frame, nejvyšší RAM.</td></tr>
+</table>
+</section>
+
+<section class="page">
+<div class="cols">
+<div><p><b>Klik na hlavičku tabulky</b> otevře seznam sloupců: zaškrtnutím sloupec ukážeš nebo skryješ, šipkami změníš pořadí. Sloupce jde přetahovat i myší za hlavičku. Šířky a pořadí se uloží při zavření okna.</p>
+<p><b>Pravé tlačítko na procesu</b> (v tabulce nebo na řádku ve Workers) otevře menu vpravo. S víc běžícími rendery má <i>Add process to</i> podmenu s výběrem renderu.</p></div>
+<div class="menu" style="display:flex; gap:4mm; align-items:flex-start"><img src="shots/m2_columns_menu.png" style="height:62mm; width:auto"><img src="shots/m1_process_menu.png" style="height:30mm; width:auto"></div>
+</div>
+<table>
+<tr><th style="width:42mm">Položka menu</th><th>Co dělá</th></tr>
+<tr><td>Pause / Resume</td><td>Zastaví nebo pustí jen tento proces.</td></tr>
+<tr><td>Close after this chunk</td><td>Proces dodělá svůj chunk a zavře se (State <i>busy → closes by me</i>, pak <i>closed by me</i>), i pozastavený nebo už zavíraný kvůli paměti. <b>Processes</b> se sníží o 1 a zůstane tak.</td></tr>
+<tr><td>Close</td><td>Zavře proces hned. Jeho chunk se vrátí do fronty. Na jeho místo pak může naskočit jiný.</td></tr>
+<tr><td>Work on › render</td><td>Přesune proces na jiný běžící render (State <i>busy → move to</i> a jméno Writu), po framu nebo chunku podle Reload after.</td></tr>
+<tr><td>Add process</td><td>Spustí ještě jeden proces (i kliknutím do prázdného místa tabulky). <b>Processes</b> se zvýší o 1 a zůstane tak. Paměťová pravidla platí dál.</td></tr>
+<tr><td>Start again · Remove process</td><td>U zavřeného procesu: spustí ho znovu, nebo ho odebere (i prázdné místo, kde žádný proces neběží). Odebraný se nevrátí a <b>Processes</b> se sníží o 1.</td></tr>
+<tr><td>Show process log</td><td>Otevře log tohoto procesu.</td></tr>
+</table>
+</section>
+
+<!-- ============ 10 SETTINGS ============ -->
+<section class="page tight" style="font-size:9.2pt">
+<h2>10  Taby Job a Settings: každé nastavení</h2>
+<p class="small dim">Nastavení se ukládá hned. U každého je po najetí myší nápověda, pod důležitými je šedá poznámka.</p>
+<div class="cols"><div><div class="shot"><img src="shots/02c_job_panel.png"></div></div>
+<div>
+<h3 style="margin-top:0">Tab Job: Job (render vybraný nahoře)</h3>
+<table>
+<tr><th style="width:30mm">Nastavení</th><th>Co dělá</th><th style="width:14mm">Výchozí</th></tr>
+<tr><td>Slate frame</td><td>Zapnuto: každý render navíc vyrenderuje jako slate frame před svým Framerange (1001-1020 → slate 1000). Vedle přepínače je číslo slatu vybraného renderu.</td><td class="def">zap.</td></tr>
+<tr><td>Framerange</td><td>Framy renderu, např. <code>1001-1100</code> nebo <code>1001-1010,1050</code>. Každý render má svůj. Prázdné pole vrátí rozsah z Nuku. Potvrdíš Enterem nebo kliknutím jinam. Během renderu zamčené.</td><td class="def">z Nuku</td></tr>
+<tr><td>Test</td><td><span class="btn">Test this script…</span> změří nastavení podle tohoto PC a ukáže nejrychlejší (kapitola 12).</td><td class="def">—</td></tr>
+</table></div></div>
+<h3>Tab Job: Processes and Chunks (pro všechny rendery)</h3>
+<table>
+<tr><th style="width:52mm">Nastavení</th><th>Co dělá</th><th style="width:16mm">Výchozí</th></tr>
+<tr><td>Processes</td><td>Nuke procesy pro všechny rendery dohromady. Filmy mají proces navíc.</td><td class="def">8</td></tr>
+<tr><td>Threads</td><td>Vlákna na proces (<code>-m</code>).</td><td class="def">4</td></tr>
+<tr><td>Cache</td><td>Limit cache Nuka na proces v GB (<code>-c</code>). Kolik proces opravdu bere, ukazuje System › RAM. Příliš malá cache render zpomalí: Nuke pak zahazuje a přepočítává.</td><td class="def">podle RAM</td></tr>
+<tr><td>Chunk: Auto / Fixed</td><td><b>Auto</b>: asi 4 chunky na proces, nejvýš 10 framů (46 framů s 8 procesy → 2, 96 → 3, 320+ → 10). <b>Fixed</b>: velikost zadáš vpravo. Platí pro chunky, které ještě nezačaly.</td><td class="def">Auto</td></tr>
+<tr><td>Smaller chunks at the end</td><td>Ke konci renderu se chunky zmenšují až na jednotlivé framy, takže všechny procesy doběhnou zhruba zároveň.</td><td class="def">zap.</td></tr>
+</table>
+<div class="box">Processes, Threads a Cache jsou během renderu zamčené. Počet procesů za běhu změníš pravým tlačítkem v System (<i>Add process</i>, <i>Close after this chunk</i>, <i>Remove process</i>).</div>
+</section>
+
+<section class="page tight" style="font-size:9.3pt">
+<div class="shot"><img src="shots/02b_settings_panel.png"></div>
+<h3>Tab Settings: General</h3>
+<table>
+<tr><th style="width:52mm">Nastavení</th><th>Co dělá</th><th style="width:16mm">Výchozí</th></tr>
+<tr><td>Start render on open</td><td>Render začne hned po otevření okna, bez kliknutí na Render.</td><td class="def">vyp.</td></tr>
+<tr><td>Start next render when one ends</td><td>Když render skončí nebo selže, sám se spustí další dosud nespuštěný render v pořadí karet. Render, který jsi zastavil, nic dalšího nespustí.</td><td class="def">vyp.</td></tr>
+<tr><td>Clear Nuke cache without asking</td><td>Render pokaždé bez ptaní vyčistí cache otevřených Nuků (buffery, playback cache, Blink cache). Vyp.: nejdřív se zeptá.</td><td class="def">vyp.</td></tr>
+<tr><td>Sound when a render ends</td><td>Zvuk po skončení renderu, až doběhnou zapnuté kontroly. Jiný zvuk při chybě, rozbitých framech nebo problému v pixelech. Zastavený render je potichu.</td><td class="def">zap.</td></tr>
+<tr><td>Check frames when a render ends</td><td>Po skončení renderu (i po Stopu) jednou projde každý vyrenderovaný frame: je tam, není prázdný, je celý a čitelný, není výrazně menší než ostatní. Vypnuto: rozbitý frame se počítá jako hotový, dokud nestiskneš Check frames.</td><td class="def">zap.</td></tr>
+<tr><td>Check pixels when a render ends</td><td>Hned po kontrole framů na pozadí zkontroluje RGB všech framů (černé, jednobarevné, stejné, odlišný formát; u EXR i NaN a inf; u filmu černé, jednobarevné a zamrzlé framy). Jen hlásí.</td><td class="def">zap.</td></tr>
+<tr><td>Check pixels when a render opens</td><td>Stejná kontrola framů, které už jsou na disku, hned po otevření renderu. Render ji zastaví.</td><td class="def">zap.</td></tr>
+<tr><td>Max renders at once</td><td><b>1</b>: rendery jdou po sobě, další se začne načítat, když předchozí dodělává poslední chunky. <b>2–3</b>: běží vedle sebe a dělí se o procesy (celkově ne rychlejší, ale z každého shotu vidíš framy brzo). Filmy se nepočítají.</td><td class="def">3</td></tr>
+<tr><td>Show processes of all renders</td><td>Workers a System ukazují procesy všech renderů. Vypnuto: jen vybraného.</td><td class="def">zap.</td></tr>
+<tr><td>Dim other renders in Workers</td><td>Na časové ose svítí chunky vybraného renderu, ostatní jsou ztlumené.</td><td class="def">zap.</td></tr>
+<tr><td>Show render hooks in Workers</td><td>beforeRender a afterRender hooky scriptu jako fialové bloky na časové ose Workers. Vypnuté: nekreslí se; běží tak jako tak a Log je zapisuje.</td><td class="def">zap.</td></tr>
+<tr><td>Delete old render logs</td><td>Při otevření JKrenderu smaže složky logů starší než nastavený počet dní. Framy nikdy. Kopie scriptů renderů, které nejsou otevřené, zabalí (.gz, pětina velikosti) a při dalším renderu je rozbalí.</td><td class="def">zap., 15 dní</td></tr>
+</table>
+<p class="small dim"><span class="btn">Check for updates</span> se hned zeptá GitHubu na nejnovější vydání (JKrender se ptá i při každém startu); novější otevře okno aktualizace. <span class="btn">Reset to defaults</span> vrátí všechno na výchozí hodnoty včetně sloupců tabulek.</p>
+</section>
+
+<section class="page" style="font-size:9.6pt">
+<h3>Tab Settings: Performance and Optimization</h3>
+<table>
+<tr><th style="width:52mm">Nastavení</th><th>Co dělá</th><th style="width:16mm">Výchozí</th></tr>
+<tr><td>Use GPU</td><td>Spouští Nuke s <code>--gpu</code>, takže GPU nody (Kronos, ZDefocus, Denoise…) počítá grafická karta. Každý proces má vlastní VRAM. Platí pro procesy spuštěné od teď.</td><td class="def">zap.</td></tr>
+<tr><td>Reload Nuke</td><td>Proces zavře Nuke a otevře script v novém, s RAM a VRAM zase na začátku; stojí to jedno načtení scriptu. <b>When memory is full</b>: když je RAM nebo VRAM po dobu Reload Nuke after nad Reload Nuke at, a to jen proces, který drží paměti nejvíc, po jednom. <b>After every chunk</b>: každý proces po každém chunku.</td><td class="def">When memory is full</td></tr>
+<tr><td>Reload after</td><td>Kdy proběhne reload kvůli paměti. <b>Frame</b>: hned po framu, který proces právě dopsal; zbytek chunku se vrátí do fronty pro ostatní, nic se neztratí a paměť je volná do jednoho framu. <b>Chunk</b>: až po celém chunku; framy chunku zůstanou v jednom procesu (node, který čte okolní framy, je najde v cache). Stejně se řídí i předání místa jinému renderu, Work on a zavírání kvůli plné paměti. After every chunk a Close after this chunk jsou vždy po chunku.</td><td class="def">Frame</td></tr>
+<tr><td>Reload Nuke at</td><td>RAM % a VRAM %. Drží-li se paměť po dobu Reload Nuke after na této hodnotě nebo nad ní, proces, který jí drží nejvíc, načte Nuke znovu. Zavřená místa se vracejí jen pod touto hodnotou.</td><td class="def">RAM 95 %, VRAM 95 %</td></tr>
+<tr><td>Reload Nuke after</td><td>Jak dlouho musí RAM nebo VRAM vydržet na Reload Nuke at nebo nad ním, než se proces s největší pamětí načte znovu (1–600 s). Kratší vrátí paměť dřív, delší ušetří načítání scriptu, když se paměť hranice jen dotkne.</td><td class="def">10 s</td></tr>
+<tr><td>Kill at</td><td>RAM % a VRAM %. Paměť skoro plná: jeden proces se zavře hned, uprostřed framu. Napůl zapsaný frame se smaže a chunk se vrátí do fronty. Nikdy pod Reload Nuke at, takže reload přijde vždycky dřív. Když PC zamrzá ještě před tím, sniž ho.</td><td class="def">RAM 98 %, VRAM 98 %</td></tr>
+</table>
+<div class="box b small">VRAM pole jsou aktivní jen se zapnutým Use GPU. Paměť hlídá JKrender pořád, vypnout to nejde. Kapitola 13 popisuje všechna pravidla a časy.</div>
+<h3>Taby Donation a Author</h3>
+<p><b>Donation</b>: odkazy, kterými můžeš autora podpořit, když ti JKrender šetří čas (zatím PayPal). <b>Author</b>: Jan Kanta, odkazy na LinkedIn a GitHub.</p>
+</section>
+
+<!-- ============ 11 JAK NASTAVIT ============ -->
+<section class="page">
+<h2>11  Jak nastavit render</h2>
+<p>Doporučený postup u nového nebo těžkého scriptu:</p>
+<svg viewBox="0 0 760 150" width="100%">
+  <g font-size="11.5">
+    <rect x="0" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="70" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">1</text><text x="70" y="64" fill="#fff" text-anchor="middle" font-weight="700">Pošli Write</text><text x="70" y="82" fill="#bbb" text-anchor="middle">Ctrl+Alt+R</text>
+    <rect x="155" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="225" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">2</text><text x="225" y="64" fill="#fff" text-anchor="middle" font-weight="700">Create tests</text><text x="225" y="82" fill="#bbb" text-anchor="middle">nastavení podle PC</text>
+    <rect x="310" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="380" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">3</text><text x="380" y="64" fill="#fff" text-anchor="middle" font-weight="700">Start testu</text><text x="380" y="82" fill="#bbb" text-anchor="middle">Round 1 a Round 2</text>
+    <rect x="465" y="10" width="140" height="100" rx="10" fill="#282828"/><text x="535" y="40" fill="#f7931e" font-size="22" font-weight="700" text-anchor="middle">4</text><text x="535" y="64" fill="#fff" text-anchor="middle" font-weight="700">Use these settings</text><text x="535" y="82" fill="#bbb" text-anchor="middle">převezme zelený řádek</text>
+    <rect x="620" y="10" width="140" height="100" rx="10" fill="#f7931e"/><text x="690" y="40" fill="#111" font-size="22" font-weight="700" text-anchor="middle">5</text><text x="690" y="64" fill="#111" text-anchor="middle" font-weight="700">Render</text><text x="690" y="82" fill="#111" text-anchor="middle">a sleduj System</text>
+  </g>
+  <text x="0" y="140" font-size="11" fill="#555">Kroky 2–4 jsou v okně Test this script. Lehké scripty klidně rovnou na výchozí 8 × 4; test se vyplatí, když render potrvá desítky minut.</text>
+</svg>
+
+<h3>Orientační nastavení (Ryzen 9950X, 32 vláken, 94 GB RAM, RTX 3090 24 GB)</h3>
+<table>
+<tr><th>Typ scriptu</th><th>Processes × Threads</th><th>Proč</th><th>Naměřeno</th></tr>
+<tr><td>Lehký comp, keying, grade</td><td><b>8 × 4</b></td><td>Jeden Nuke nevytíží všechna vlákna, víc procesů ano.</td><td class="small">testovací 4K script: 8 × 4 nejrychlejší</td></tr>
+<tr><td>Těžký comp (Defocus, Denoise, hodně vrstev)</td><td><b>4 × 8</b> nebo <b>2 × 16</b></td><td>Jeden proces vytíží víc vláken. 8 procesů vyčerpá RAM, procesy se zavírají.</td><td class="small">heavy comp: 4 × 8 s cache 12 GB 17 fr/min, 2 × 16 16 fr/min</td></tr>
+<tr><td>Script, kterému roste VRAM (GPU nody)</td><td><b>1–2 × 32/16</b></td><td>VRAM roste s každým framem; víc procesů se na kartu nevejde.</td><td class="small">VRAM +1,7 GB na frame → 1 × 32</td></tr>
+</table>
+
+<h3>Jak poznat, že nastavení není dobré</h3>
+<div class="cols">
+<div class="card"><h4 style="color:var(--rd)">Málo paměti</h4>System › RAM je u Reload Nuke at, ve State je <i>wait: Reload at … of RAM</i> nebo <i>closed (RAM 98 %)</i>, procesy se zavírají a znovu startují (šedé bloky ve Workers). <b>Řešení:</b> méně procesů s více vlákny, nebo menší Cache.</div>
+<div class="card"><h4 style="color:var(--rd)">Plná grafická karta</h4>VRAM u 95 %, ve State často <i>busy → reload (VRAM over 95 %)</i>, <i>closed (VRAM 98 %)</i> nebo <i>closed (GPU frozen)</i>. Když se to opakuje, Log napíše, že méně procesů s více vlákny může být rychlejší (sám nic nemění). <b>Řešení:</b> méně procesů (Test this script ukáže kolik), případně vypnout Use GPU.</div>
+<div class="card"><h4 style="color:var(--or)">Nevyužité CPU</h4>CPU threads jsou z velké části prázdné a RAM má rezervu. <b>Řešení:</b> přidat proces (pravé tlačítko › Add process) nebo zvýšit Threads.</div>
+<div class="card"><h4 style="color:var(--or)">Dlouhé otevírání scriptu</h4>Šedé bloky ve Workers jsou dlouhé, Script load je vysoký. Při startu se Nuky přetahují o licence a startovací skripty. <b>Řešení:</b> delší chunky se tolik neprojeví; se samotným scriptem to obvykle nesouvisí.</div>
+</div>
+<div class="box g"><b>Nejlepší měřítko je dlaždice Speed</b> (framy za minutu). Porovnávej ji mezi nastaveními na stejném scriptu, nebo to nech na <i>Test this script</i>.</div>
+</section>
+
+<!-- ============ 12 TEST ============ -->
+<section class="page tight" style="font-size:8.2pt">
+<h2>12  Test this script</h2>
+<div class="shot"><img src="shots/11_test.png"></div>
+<p class="cap">Hotový test: zelený řádek je nejrychlejší, oranžový druhý. Winner test ukazuje, o kolik déle trval test s ostatními, Winner Whole Shot totéž pro celý shot.</p>
+<div class="cols">
+<div>
+<h3 style="margin-top:0">Tlačítka nahoře</h3>
+<p><span class="btn">Create tests</span> zjistí, jaký je počítač (řádek pod tlačítky: CPU, jádra a vlákna, u Intelu výkonná a úsporná jádra, RAM, grafika) a vytvoří <b>7 nastavení</b> od 1 procesu se všemi vlákny po tolik procesů, kolik PC unese: každý proces aspoň 4 vlákna a aspoň 4 GB cache. Na 32 vláknech a 94 GB: 1×32, 2×16, 3×10, 4×8, 5×6, 6×5, 8×4. Nad 64 vlákny dostane proces nejvýš 64 (jedna skupina procesoru ve Windows). Nahradí vše v tabulce.</p>
+<p><span class="btn">Add test</span> přidá vlastní nastavení (Processes, Threads, Cache, Reload Nuke a Reload after), <span class="btn">Remove test</span> odebere vybrané. <b>Pravé tlačítko</b> na řádku: <b>Edit test</b>. Vlastní testy se pamatují. Pravidlo každého nastavení je ve sloupci <b>Reload Nuke Rule</b> hned za Processes x threads: <i>memory full, frame</i>, <i>memory full, chunk</i> nebo <i>every chunk</i>.</p>
+<p><b>Cache</b> každého nastavení je RAM pro Nuke (bez rezervy pro Windows) dělená počtem procesů, minus 4 GB, které proces bere mimo cache. Nezáleží na tom, co zrovna běží.</p>
+<p>Řádek nad tabulkou říká, kolik framů test bere: <i>Round 1: 3 frames a process, Round 2: 8 a process, the same frames for every setup</i>.</p>
+</div>
+<div>
+<h3 style="margin-top:0">Jak test probíhá</h3>
+<p>Framy se berou z <b>6 míst rozprostřených po celém shotu</b> (od prvního po poslední frame), na každém pár framů za sebou. <b>Všechna nastavení v kole renderují stejné framy.</b></p>
+<p><b>Round 1:</b> každé nastavení krátce, 3 framy na proces nastavení s nejvíc procesy (na 32 vláknech 24 framů), nejvýš 3 minuty. <b>Round 2:</b> dvě nejrychlejší (a každé do 5 % od nejlepšího) znovu, s 8 framy na proces nastavení s nejvíc procesy (8 procesů → 64 framů), nejvýš 6 minut. Tak se v testu projeví i rostoucí paměť a Reload Nuke, ne jen první framy. Nastavení, které je 1,5× pomalejší než nejlepší, se zastaví; po dvou takových se větší počty procesů vynechají.</p>
+<p><b>Winner test</b>: o kolik déle trval test než u nejrychlejšího (stejné framy, se startem Nuka). <b>Winner Whole Shot</b>: odhad celého shotu = čas testu + zbylé framy rychlostí Frames / min. Start se platí jednou, pomalejší rychlost na každém framu, proto je rozdíl na dlouhém shotu větší (např. test +0:10, celý shot +0:43). Tooltip buňky ukazuje oba časy.</p>
+<p><b>Frames / min</b> se počítá, až procesy jedou: start Nuka a první frame každého procesu se nepočítají, v dlouhém renderu jsou jen jednou. <b>Frames / s</b> je totéž za sekundu.</p>
+<p>Sloupce: <b>Reload Nuke Rule</b>, <b>Avg processes</b> (kolik procesů v průměru renderovalo), <b>Round 1</b>, <b>Round 2</b> (čas kola, framy, start), <b>Frames / min</b>, <b>Frames / s</b>, <b>Frame</b>, <b>CPU / RAM / GPU / VRAM avg</b>, <b>Fell</b> (spadlé procesy), <b>Reloads</b> (kolikrát se Nuke načetl znovu), <b>Winner test</b>, <b>Winner Whole Shot</b>, <b>State</b>. Klik na záhlaví řadí, sloupce jdou roztáhnout a přesunout.</p>
+<p><span class="btn">Use these settings</span> převezme zelený řádek do Job a Settings, i s Reload Nuke a Reload after. Framy jdou do testovací složky a mažou se; hook knoby Writu se v testu nespouští a afterRender vůbec. Tabulky zůstávají v <code>~/.nuke/JKrender/settings/test_results</code>.</p>
+</div>
+</div>
+<div class="cols"><div><div class="shot" style="max-width:62mm"><img src="shots/d2_add_test.png"></div></div>
+<div><p class="small" style="margin-top:0">Okénko <b>Add test</b> (a stejné <b>Edit test</b> z pravého tlačítka).</p>
+<div class="box">Během testu by nemělo nic jiného renderovat: test by měřil dva rendery, které se perou o PC. Test běžící vedle renderu nepustí.</div></div></div>
+</section>
+
+<!-- ============ 13 RAM VRAM ============ -->
+<section class="page tight" style="font-size:8.8pt">
+<h2>13  Hlídání RAM a VRAM</h2>
+<p>JKrender hlídá paměť pořád, aby se Windows nezačaly swapovat a grafická karta se nezaplnila. Pravidla jsou obecná: neřídí se žádným číslem pro konkrétní PC nebo script, jen procenty v Settings a tím, kolik procesy opravdu berou. Platí pro každé místo zvlášť, ale zasahují vždy <b>po jednom procesu</b>.</p>
+<svg viewBox="0 0 760 250" width="88%">
+  <rect x="40" y="16" width="60" height="200" rx="4" fill="#eee" stroke="#ccc"/>
+  <rect x="40" y="60" width="60" height="156" rx="4" fill="#7fae58" opacity=".35"/>
+  <line x1="30" y1="24" x2="110" y2="24" stroke="#d4503f" stroke-width="2.5"/><text x="114" y="28" font-size="10" fill="#d4503f" font-weight="700">Kill at 98 %</text>
+  <line x1="30" y1="34" x2="110" y2="34" stroke="#f7931e" stroke-width="2.5"/><text x="114" y="44" font-size="10" fill="#f7931e" font-weight="700">Reload Nuke at 95 %</text>
+  <line x1="30" y1="60" x2="110" y2="60" stroke="#7fae58" stroke-width="1.5" stroke-dasharray="4 3"/><text x="114" y="64" font-size="9.5" fill="#557a3a">návrat míst: pod Reload at,</text><text x="114" y="76" font-size="9.5" fill="#557a3a">a aby se vešel další proces</text>
+  <text x="70" y="234" font-size="11" text-anchor="middle">paměť</text>
+  <g font-size="10.3">
+    <rect x="260" y="4" width="500" height="44" rx="6" fill="#fbeaea"/><text x="272" y="21" font-weight="700">Kill at (98 %)</text><text x="272" y="38">Jeden proces se zavře hned, uprostřed framu. Chunk zpět do fronty.</text>
+    <rect x="260" y="54" width="500" height="44" rx="6" fill="#fdf1e2"/><text x="272" y="71" font-weight="700">Reload Nuke at (95 %) po Reload Nuke after (10 s)</text><text x="272" y="88">Proces, který drží nejvíc, načte Nuke znovu po framu (nebo chunku).</text>
+    <rect x="260" y="104" width="500" height="44" rx="6" fill="#f6f6f7"/><text x="272" y="121" font-weight="700">GPU frozen (od 90 % VRAM)</text><text x="272" y="138">Procesy čekají na kartu a nic nedělají: zavře se naposled spuštěný.</text>
+    <rect x="260" y="154" width="500" height="44" rx="6" fill="#f6f6f7"/><text x="272" y="171" font-weight="700">Pravidlo 1.3</text><text x="272" y="188">Místo čeká 5 s, paměť nad hranicí: proces narostlý 1,3× se načte znovu.</text>
+    <rect x="260" y="204" width="500" height="44" rx="6" fill="#eef5e8"/><text x="272" y="221" font-weight="700">Návrat míst</text><text x="272" y="238">5 s po zavření, paměť pod hranicí 5 s v kuse, po jednom místě.</text>
+  </g>
+</svg>
+<h3>Pravidla</h3>
+<table>
+<tr><th style="width:36mm">Pravidlo</th><th>Kdy</th><th>Co se stane</th></tr>
+<tr><td>Reload Nuke<br><span class="small dim">When memory is full</span></td><td>RAM nebo VRAM je po dobu Reload Nuke after (bez nastavení 10 s) na Reload Nuke at nebo nad ním (jedno měření nestačí).</td><td>Jen proces, který drží nejvíc toho, co dochází, se zavře po framu (Reload after: Frame) nebo po chunku a otevře script v novém Nuku. Ten nastartuje 3 s potom, když je paměť pod hranicí návratu; jinak jeho místo počká. Další reload až když nový Nuke vyrenderuje první frame a paměť je pořád nahoře. Poslední běžící proces nastartuje vždycky.</td></tr>
+<tr><td>Reload Nuke<br><span class="small dim">After every chunk</span></td><td>Po každém chunku.</td><td>Každý proces po každém chunku načte Nuke znovu. U posledních chunků renderu ne, nový by neměl co dělat.</td></tr>
+<tr><td>Kill at</td><td>RAM nebo VRAM dosáhne Kill at.</td><td>Jeden proces se zavře hned. Když se některé procesy teprve rozjíždějí (ještě nemají frame), zavře se z nich ten nejméně zatížený: zatím nic neudělal. Jinak ten, který drží nejvíc, aby stačilo zavřít jeden. Film a proces spuštěný ručně jdou až nakonec. VRAM Kill at se přeskočí, když by zavření kartu pod Kill at nedostalo (VRAM drží jiné programy); Log to napíše každé 2 minuty.</td></tr>
+<tr><td>GPU frozen</td><td>VRAM od 90 % a všechny pracující procesy kromě jednoho (aspoň 2) jsou bez CPU 15 s a zároveň aspoň 2× dobu framu; nebo žádný frame 2,5× déle než obvyklá doba framu, aspoň 45 s.</td><td>Nuke čeká na plnou kartu. Zavře se proces spuštěný naposled (film nakonec), jeho chunk jde zpět do fronty. Další takové zavření nejdřív za 15 s.</td></tr>
+<tr><td>Pravidlo 1.3</td><td>Zavřené místo čeká na paměť 5 s a paměť je pořád nad hranicí, pod kterou se vrací.</td><td>Proces, který drží nejvíc toho, co dochází, se načte znovu, pokud od svého prvního chunku narostl aspoň 1,3× (Nuke drží paměť, kterou už nepotřebuje). Scriptu, který paměť prostě potřebuje, se nic nestane. Jakmile je paměť pod hranicí, místo se vrátí samo a nic se znovu nenačítá.</td></tr>
+<tr><td>Návrat místa</td><td>5 s po zavření; RAM i VRAM pod hranicí návratu a 5 s v kuse.</td><td>Hranice návratu je Reload Nuke at, nebo níž: Kill at minus jeden proces v největší velikosti, jakou v tomto renderu procesy měly (do té doby Cache + 4 GB). Místa se vracejí po jednom: další až po prvním framu toho vráceného, dokud paměť místa drží. Místo uvolněné koncem renderu nebo filmu se vrátí hned.</td></tr>
+</table>
+</section>
+
+<section class="page" style="font-size:9.3pt">
+<h3 style="margin-top:0">Všechny časy a hranice</h3>
+<table>
+<tr><th style="width:62mm">Co</th><th style="width:30mm">Hodnota</th><th>Kde se mění</th></tr>
+<tr><td>Reload Nuke at (RAM, VRAM)</td><td>95 %, 95 %</td><td>Settings › Performance and Optimization</td></tr>
+<tr><td>Kill at (RAM, VRAM)</td><td>98 %, 98 %</td><td>Settings, nikdy pod Reload Nuke at</td></tr>
+<tr><td>Jak dlouho musí paměť držet nad Reload Nuke at</td><td>10 s</td><td>Settings › Reload Nuke after (1–600 s)</td></tr>
+<tr><td>Start nového Nuka po reloadu</td><td>3 s</td><td>pevně</td></tr>
+<tr><td>Pravidlo 1.3: čekání místa / růst procesu</td><td>5 s / 1,3×</td><td>pevně</td></tr>
+<tr><td>GPU frozen: od VRAM</td><td>90 %</td><td>pevně</td></tr>
+<tr><td>GPU frozen: bez CPU</td><td>15 s a 2× doba framu</td><td>pevně</td></tr>
+<tr><td>GPU frozen: žádný frame</td><td>2,5× doba framu, aspoň 45 s</td><td>pevně</td></tr>
+<tr><td>Mezi dvěma zavřeními GPU frozen</td><td>15 s</td><td>pevně</td></tr>
+<tr><td>Návrat místa: po zavření / paměť volná v kuse</td><td>5 s / 5 s</td><td>pevně</td></tr>
+<tr><td>Rozestup startů Nuků</td><td>0,3 s</td><td>pevně</td></tr>
+<tr><td>Kolikrát se frame zkusí, než se vzdá</td><td>3× (pokaždé v novém Nuku, v každém 3 pokusy)</td><td>pevně</td></tr>
+</table>
+</section>
+
+<section class="page" style="font-size:9.3pt">
+<h3>Texty ve sloupci State</h3>
+<table class="small">
+<tr><th style="width:62mm">State</th><th>Co znamená</th></tr>
+<tr><td>loading · idle · busy · paused</td><td>Nuke startuje a otevírá script · čeká na chunk · renderuje · pozastavený.</td></tr>
+<tr><td>quitting</td><td>Nuke se právě zavírá.</td></tr>
+<tr><td>running afterRender hooks</td><td>Spouští afterRender hooky renderu, jednou na konci; potom se zavře.</td></tr>
+<tr><td>busy → reload (VRAM over 95 %)</td><td>Paměť je po dobu Reload Nuke after nad Reload Nuke at a tento proces drží nejvíc: po framu nebo chunku načte Nuke znovu.</td></tr>
+<tr><td>busy → reload (1.3 rule)</td><td>Místo čeká na paměť a tento proces narostl 1,3×: načte se znovu.</td></tr>
+<tr><td>busy → reload</td><td>Reload Nuke: After every chunk.</td></tr>
+<tr><td>quitting → reload (1.3 rule)</td><td>Zavírá se kvůli reloadu, v závorce proč.</td></tr>
+<tr><td>busy → closes (RAM full) · (VRAM full)</td><td>Paměť drží místa dole: proces se zavře po framu nebo chunku.</td></tr>
+<tr><td>busy → closes by me</td><td>Dal jsi Close after this chunk.</td></tr>
+<tr><td>busy → move to Write2</td><td>Přejde na jiný render (Work on nebo jeho místo dostane render, který začal vedle).</td></tr>
+<tr><td>busy → another render</td><td>Jeho místo dostane jiný render.</td></tr>
+<tr><td>closed (reload)</td><td>Zavřený kvůli reloadu, nový Nuke hned nastartuje.</td></tr>
+<tr><td>closed (RAM 98 %) · closed (VRAM 98 %)</td><td>Zavřený pravidlem Kill at.</td></tr>
+<tr><td>closed (GPU frozen)</td><td>Zavřený, protože karta zamrzla.</td></tr>
+<tr><td>closed by me · closed</td><td>Zavřel jsi ho ty · zavřený bez důvodu od JKrenderu (konec renderu).</td></tr>
+<tr><td>wait: 5 s</td><td>Místo se může vrátit za 5 s.</td></tr>
+<tr><td>wait: Reload at 85 % of VRAM (2 starting)</td><td>Místo se vrátí, až VRAM klesne pod 85 %; dva procesy se ještě rozjíždějí a JKrender jim drží místo.</td></tr>
+<tr><td>wait: VRAM ok, checking</td><td>Paměť je pod hranicí, ověřuje se, že tam 5 s vydrží.</td></tr>
+<tr><td>wait: W03 1st frame</td><td>Čeká, až W03 vyrenderuje první frame, aby bylo vidět, kolik proces bere.</td></tr>
+<tr><td>coming back</td><td>Místo právě startuje znovu.</td></tr>
+</table>
+<div class="box small">Log zapisuje každé čekání: <i>A place waits for RAM: it comes back under 85 % (now 97 %…)</i>, <i>RAM 84 %: under 85 %, a place comes back once it stays there 5 s</i> a <i>The places waiting for RAM are back after 5:04, 7 s after it dropped under the mark</i>.</div>
+<div class="box b small"><b>VRAM strop na proces neexistuje.</b> Cache (<code>-c</code>) omezuje jen RAM cache Nuka. Paměť grafické karty jeden proces omezit nejde: Windows to neumí a nastavení Blink cache v Nuku se v renderu neprojeví (změřeno). Proto JKrender řídí VRAM počtem procesů a Reload Nuke.</div>
+</section>
+
+<!-- ============ 14 KONTROLY, ZVUK, PÁD, DATA ============ -->
+<section class="page tight" style="font-size:8.6pt">
+<h2>14  Kontroly, zvuky, pád a data</h2>
+<h3>Kontrola výstupu</h3>
+<div class="shot"><img src="shots/c_problems.png"></div>
+<p class="cap">Render s useknutým framem (1030) a černým framem (1031), oba najdené ručním Check frames a Check pixels: červený pruh, červené framy v mapě, filtr Problems ukazuje jen je.</p>
+<table>
+<tr><th style="width:40mm">Kontrola</th><th>Kdy</th><th>Co hledá</th></tr>
+<tr><td>Check frames</td><td>Po skončení renderu a po Stopu (lze vypnout) a tlačítkem. Vždy při otevření renderu a před Renderem.</td><td>Chybějící, prázdné, useknuté a nečitelné soubory (EXR, PNG, JPEG, DPX), podezřele malé framy.</td></tr>
+<tr><td>Check pixels</td><td>Po skončení renderu, při otevření (lze vypnout) a tlačítkem.</td><td>R, G a B u EXR, PNG, JPEG, TIFF a DPX: černé, prázdné a jednobarevné framy, framy stejné jako jiný, slate, na kterém nic není, odlišná velikost a bitová hloubka. U EXR navíc NaN, inf a komprese; jeho další vrstvy se neposuzují (frame jen z nich: <i>no RGB</i>). Ostatní formáty: jen stejné soubory.</td></tr>
+<tr><td>Movie check</td><td>U MOV, MP4 a MXF, po skončení renderu a tlačítkem Check video.</td><td>Kodek, profil, fps, rozlišení, timecode a počet framů proti nastavení Writu; se zapnutým Check pixels i černé, jednobarevné a zamrzlé framy (stejné jako ten předchozí), jako chyba.</td></tr>
+</table>
+<h3>Zvuk po renderu</h3>
+<p>Po renderu běží kontroly v pořadí <b>Check frames → Check pixels</b>; zvuk zazní, až doběhnou ty zapnuté (s vypnutými hned po renderu).</p>
+<p><b>Veselý zvuk</b>: všechno v pořádku. <b>Chybový zvuk</b>: render selhal, má rozbité framy nebo pixelová kontrola našla problém. Ručně zastavený render je potichu.</p>
+<h3>Když spadne Nuke proces</h3>
+<p>Jeho rozpracovaný frame se smaže a chunk se vrátí do fronty. Frame, který skončí chybou, se zkusí znovu ve stejném Nuku (když pak Nuke mlčí a nic nezapíše, jako u Writu bez kanálů, jde se dál hned), pak v novém Nuku, nejvýš 3×; teprve pak se vzdá jen tento frame a zbytek chunku se renderuje dál. Karta kvůli pádu nezčervená, tooltip karty řekne, kolikrát Nuke spadl. Ve Workers ukáže tooltip chunku <i>Nuke crashed (exit code …)</i>.</p>
+</section>
+
+<section class="page" style="font-size:9.4pt">
+<h3>Render hooky pipeline</h3>
+<p>Hook knoby Writu a to, co pipeline přidá přes <code>nuke.addBeforeRender</code> / <code>nuke.addAfterRender</code>, běží, jako když celý rozsah renderuje jeden Nuke: <b>afterRender</b> jednou, až jsou na disku všechny framy, v procesu, který renderoval poslední chunk (<code>nuke.thisNode()</code> je Write); <b>beforeRender</b> jednou v každém Nuku před jeho prvním framem; <b>beforeFrameRender / afterFrameRender</b> u každého framu. Hook, který si něco sbírá frame po framu, vidí jen framy svého procesu. Hook, který selže, obarví kartu na červeno; traceback je v logu procesu.</p>
+<h3>Když JKrender spadne</h3>
+<p>Karty se vrátí při dalším otevření JKrenderu (třeba dalším renderem poslaným z Nuku). Co je na disku, se započítá a zbylé Nuke procesy se ukončí. Render, který běžel, čeká na Render a pak dorenderuje, co chybí. Když okno zavřeš normálně, nic se nevrací.</p>
+<h3>Render data</h3>
+<p>Každý render zapíše do své složky logu <code>report.json</code>: CPU, RAM a grafickou kartu tohoto PC, nastavení, rychlost, špičky paměti, zavírání kvůli limitům, start Nuka, otevření scriptu a druhy nodů ve scriptu. <b>Nejsou v něm názvy scriptů, cesty ani chyby</b>; script se pozná jen podle ID, které je stejné napříč jeho verzemi. Když narazíš na chybu, pošli složku logu renderu.</p>
+</section>
+
+<!-- ============ 15 TAHÁK ============ -->
+<section class="page tight" style="font-size:9.6pt">
+<h2>15  Myš a klávesy: tahák</h2>
+<table>
+<tr><th style="width:62mm">Kde a co</th><th>Výsledek</th></tr>
+<tr><td><span class="kbd">Ctrl+Alt+R</span> v Nuku</td><td>Pošle vybrané Writy do JKrenderu.</td></tr>
+<tr><td>Klik na kartu renderu</td><td>Vybere render; celé okno ukazuje jeho data.</td></tr>
+<tr><td><span class="kbd">Shift</span> + klik na karty</td><td>Vybere víc renderů pro Render, Render again, Pause, Stop.</td></tr>
+<tr><td>Klik na frame v mapě framů</td><td>Otevře frame v náhledu.</td></tr>
+<tr><td><span class="kbd">Space</span></td><td>Přehrát / zastavit náhled (nikdy nezastaví render).</td></tr>
+<tr><td>Kolečko / tažení v náhledu</td><td>Zoom / posun obrazu.</td></tr>
+<tr><td>Dvojklik v náhledu</td><td>Celý frame; když už je celý, velký náhled.</td></tr>
+<tr><td>Pravé tlačítko v náhledu</td><td>Show the whole format: EXR na svém formátu, nebo jen jeho bbox.</td></tr>
+<tr><td><span class="kbd">Esc</span></td><td>Zpět z velkého náhledu.</td></tr>
+<tr><td>Pravé tlačítko na framu (Output)</td><td>Render this frame / batch, Delete this frame / batch.</td></tr>
+<tr><td>Najetí myší na chunk (Workers)</td><td>Framy, jak chunk skončil a co proces udělal potom; nad fialovým blokem render hooky a jak dlouho trvaly.</td></tr>
+<tr><td>Pravé tlačítko na chunku (Chunks)</td><td>Render again, Show process log, Delete frames from chunk.</td></tr>
+<tr><td>Pravé tlačítko na procesu (System, Workers)</td><td>Pause, Close after this chunk, Close, Remove process, Work on, Add process, Start again, Show process log.</td></tr>
+<tr><td>Pravé tlačítko do prázdného místa v System</td><td>Add process, Remove process.</td></tr>
+<tr><td>Klik na hlavičku tabulky System</td><td>Výběr a pořadí sloupců.</td></tr>
+<tr><td>Tažení hranice panelů</td><td>Změní velikost panelů (uloží se).</td></tr>
+<tr><td>Framerange + <span class="kbd">Enter</span></td><td>Potvrdí nový rozsah (tab Job).</td></tr>
+</table>
+<div class="shot" style="width:78%; margin-left:auto; margin-right:auto"><img src="shots/09_done.png"></div>
+<p class="cap">Hotový render: zelený pruh, karta vpravo nahoře ukazuje, jak dlouho rendery trvaly.</p>
+</section>
+
+<!-- ============ 16 PROBLÉMY ============ -->
+<section class="page tight" style="font-size:8.8pt">
+<h2>16  Když něco nejde</h2>
+<table>
+<tr><th style="width:58mm">Problém</th><th>Co s tím</th></tr>
+<tr><td>Nuke procesy dlouho startují (30–50 s)</td><td>Obvykle start Nuka (licence, startovací skripty pipeline) ve chvíli, kdy PC renderuje. Log ukazuje rozdělení <i>Nuke started in … / script opened in …</i>.</td></tr>
+<tr><td>Procesy se zavírají a startují znovu</td><td>Došla RAM nebo VRAM (State v System, Log). Méně procesů s více vlákny nebo menší Cache; Test this script ukáže, co je nejrychlejší.</td></tr>
+<tr><td>Ve State je <i>busy → reload (…)</i></td><td>RAM nebo VRAM je po dobu Reload Nuke after (10 s) nad Reload Nuke at; proces, který drží nejvíc, načte Nuke znovu po framu nebo chunku (Settings › Reload after). Když se to děje pořád, běží procesů víc, než se vejde.</td></tr>
+<tr><td>Místo dlouho čeká (<i>wait: Reload at …</i>)</td><td>Další proces se do paměti nevejde. Tooltip v State a Log řeknou, pod kolik musí paměť klesnout. Když paměť drží jiný program, zavři ho; místo se pak vrátí samo do pár sekund.</td></tr>
+<tr><td><i>closed (GPU frozen)</i></td><td>Grafická karta byla tak plná, že Nuky stály. Méně procesů nebo nižší VRAM Reload Nuke at.</td></tr>
+<tr><td>Render je celý pomalejší než minule</td><td>Zkontroluj Cache: příliš malá (např. 4 GB u těžkého scriptu) znamená, že Nuke zahazuje a přepočítává, a framy trvají několikrát déle.</td></tr>
+<tr><td>Script se v Nuku otevírá s chybou knobu</td><td>Např. <i>LensDistortion2.serialiseKnob: Failed to load</i> (node z jiné verze, chybějící plugin). JKrender renderuje dál, jako to dělá Nuke v GUI; hláška je v logu procesu.</td></tr>
+<tr><td>Žlutý pruh „not checked“</td><td>Kontrola framů je vypnutá (Check frames when a render ends) nebo neproběhla. Stiskni Check frames.</td></tr>
+<tr><td>Červená karta nebo pruh</td><td>Tooltip karty řekne, co se pokazilo; Output › filtr Problems ukáže, které framy. Pravým tlačítkem <i>Render this frame / batch</i>. Pruh se přepočítá i po ručním Check frames a Check pixels.</td></tr>
+<tr><td>Náhled EXR se neukazuje</td><td>Chybí numpy/OpenEXR. Smaž <code>lib/DECLINED</code> a restartuj Nuke, nebo je nainstaluj podle README.</td></tr>
+<tr><td>Film se nekontroluje ani nepřehrává</td><td>Chybí ffmpeg. Smaž <code>lib/DECLINED_FFMPEG</code> a restartuj Nuke, nebo <code>winget install ffmpeg</code>.</td></tr>
+<tr><td>Nenabízí se aktualizace</td><td>JKrender se ptá GitHubu při otevření; offline nebo za firewallem se nic neukáže. Settings › Check for updates řekne, jestli se GitHub podařilo zastihnout. Git klon se aktualizuje přes <code>git pull</code>.</td></tr>
+<tr><td>Render nezačal hned</td><td>Stav Waiting: jiné rendery už vytěžují PC (Max renders at once), nebo se čeká na paměť.</td></tr>
+<tr><td>Vyčištění cache Nuka nefunguje</td><td>Po aktualizaci JKrenderu je potřeba Nuke jednou restartovat.</td></tr>
+<tr><td>Log píše, že procesy čekaly ve stejnou chvíli</td><td>Něco společného je zdrželo, zpravidla disk, na který jdou framy (nebo ze kterého se čtou plates). Víc procesů nepomůže, pomůže rychlejší disk (NVMe) nebo méně dat na frame.</td></tr>
+<tr><td>Červená karta: selhal afterRender hook</td><td>Framy jsou v pořádku, jen hook (publish, csv…) nedoběhl. Který, řekne tooltip karty; traceback je v logu procesu.</td></tr>
+<tr><td>Nuke 15 nebo starší: <i>JKrender needs a Python with PySide6</i></td><td>Nainstaluj Python 3.10 nebo novější a <code>python -m pip install PySide6 psutil</code>, nebo nastav <code>JKRENDER_PYTHON</code>.</td></tr>
+<tr><td>Nevím, co se renderovalo</td><td>Panel Details a Log › Open log folder (snapshot scriptu a job.json).</td></tr>
+</table>
+<div class="box r"><b>Narazil jsi na chybu?</b> Pošli autorovi složku logu renderu (Open Renders Folder) a popis, co se stalo.</div>
+<p class="dim small" style="margin-top:10mm">JKrender 1.0 · github.com/JanKanta/JKrender · návod aktualizován 27. 11. 2026. Snímky jsou z ukázkového renderu (shoty sh010 a sh020).</p>
+</section>
+
+</body>
+</html>

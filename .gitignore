@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+log/
+lib/
+tests/_runs/
+tests/fakenuke/build/
+docs/manual/navod_*.html
+docs/manual/shots/*.jpg
+docs/manual/home/
+docs/manual/FakeNuke.exe
+docs/manual/navod_pdf.html

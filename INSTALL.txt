@@ -1,0 +1,54 @@
+JKrender - install
+
+1. Copy the whole JKrender folder into %USERPROFILE%\.nuke\
+   The folder may come with another name (a zip from GitHub gives JKrender-main): always rename it to JKrender.
+2. Add this line to %USERPROFILE%\.nuke\init.py (create the file if it is not there):
+
+       nuke.pluginAddPath("./JKrender")
+
+3. Restart Nuke. On the first start, JKrender asks to download numpy and OpenEXR
+   for the EXR preview (about 15 MB) and, if the PC has no ffmpeg, ffmpeg for checking and
+   playing movies (about 77 MB). They download in the background into JKrender\lib.
+   If you say No, rendering still works, only without the EXR preview or the movie check,
+   and you are not asked again. To be asked again, delete JKrender\lib\DECLINED
+   (numpy, OpenEXR) or JKrender\lib\DECLINED_FFMPEG.
+
+Use: select a Write (or a Group with Writes) and choose JKrender > Render Selected Write(s), or press Ctrl+Alt+R.
+
+With Nuke 16 and later the window runs in Nuke's own Python, so nothing else needs installing.
+Nuke 13-15 need a Python of your own: Python 3.10 or later, then  python -m pip install PySide6 psutil
+(JKrender finds it, or set JKRENDER_PYTHON to its python executable; see the README).
+Nuke 13 and later, on Windows, macOS and Linux.
+
+ffmpeg already on the PC (on PATH, or from winget install ffmpeg) is used first.
+
+Each render's logs, script copy and job file are in the JKrender\log folder (deleted after 15 days; Settings can change it).
+The script copies of renders not open are packed (.gz) after an hour; JKrender unpacks one when it renders again.
+Your settings are in JKrender\settings.
+Update: copy the new files over the old ones; lib, log and settings stay.
+Uninstall: delete the line from init.py and the JKrender folder.
+
+macOS
+1. In Terminal:  cd ~/.nuke && git clone https://github.com/JanKanta/JKrender.git
+   (or download the zip from GitHub and unpack it into ~/.nuke). The folder may come with another name
+   (the zip gives JKrender-main): always rename it to JKrender.
+   ~/.nuke is hidden in Finder: Cmd+Shift+G and type ~/.nuke.
+2. Add  nuke.pluginAddPath("./JKrender")  to ~/.nuke/init.py, as on Windows, and restart Nuke.
+3. ffmpeg for movies: on the first start JKrender offers it, as on Windows (the static builds for Apple silicon
+   or Intel, about 60 MB, into lib/ffmpeg). An ffmpeg the Mac already has (brew install ffmpeg) is used first.
+On a Mac without an NVIDIA card the GPU and VRAM tiles stay empty and the VRAM rules have nothing to act on;
+the RAM rules work as on Windows. Nuke Non-commercial works there too (scripts .nknc).
+
+Linux
+1. In a terminal:  cd ~/.nuke && git clone https://github.com/JanKanta/JKrender.git
+   (or download the zip from GitHub and unpack it into ~/.nuke). The folder may come with another name
+   (the zip gives JKrender-main): always rename it to JKrender.
+   Update later with:  cd ~/.nuke/JKrender && git pull
+2. Add  nuke.pluginAddPath("./JKrender")  to ~/.nuke/init.py, as on Windows, and restart Nuke.
+3. ffmpeg for movies: on the first start JKrender offers it, as on Windows (the LGPL build, about 63 MB to download,
+   160 MB in lib/ffmpeg; no sudo needed). An ffmpeg the PC already has (sudo apt install ffmpeg) is used first.
+4. The end sound plays through paplay, pw-play or aplay, whichever the PC has (Ubuntu has paplay).
+With an NVIDIA card System shows GPU and VRAM per Nuke process (nvidia-smi), with an AMD card too (the amdgpu
+driver). Under WSL the driver lists no
+processes: there the tiles show the whole card only, and WSL gives Linux half the PC's RAM unless
+%USERPROFILE%\.wslconfig says otherwise ([wsl2] memory=80GB).
